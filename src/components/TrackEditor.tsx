@@ -251,62 +251,70 @@ const PROCEDURAL_ARCHETYPE_OPTIONS: Array<{
   id: ProceduralTrackArchetype;
   label: string;
 }> = [
-  { id: "RANDOM", label: "🎲 Surprise Me (Random)" },
-  { id: "SWEEPER", label: "🏎️ Grand Prix Dogleg & Chicane" },
-  { id: "SWITCHBACK", label: "🐍 Serpentine Touge Slalom" },
+  { id: "RANDOM", label: "🎲 Surprise Shape (Random)" },
+  { id: "SWEEPER", label: "🏎️ Dogleg & Chicane Sweeper" },
+  { id: "SWITCHBACK", label: "🐍 Serpentine Touge Hairpins" },
   { id: "KIDNEY", label: "🥨 Deep Boomerang / U-Valley" },
-  { id: "CANYON", label: "⛰️ Tri-Lobe Clover Peninsula" },
-  { id: "STADIUM", label: "🏟️ Twin-Hairpin Parallel Gauntlet" },
+  { id: "CANYON", label: "⛰️ Multi-Lobe Peninsula Gorge" },
+  { id: "STADIUM", label: "🏟️ Stadium Gauntlet & Slalom" },
+];
+
+type ProceduralTrackSize =
+  | "RANDOM"
+  | "COMPACT"
+  | "STANDARD"
+  | "LARGE"
+  | "MEGA";
+
+const PROCEDURAL_SIZE_OPTIONS: Array<{
+  id: ProceduralTrackSize;
+  label: string;
+}> = [
+  { id: "RANDOM", label: "📏 Any Size" },
+  { id: "COMPACT", label: "🏁 Compact (~950m)" },
+  { id: "STANDARD", label: "🏎️ Standard (~1.5km)" },
+  { id: "LARGE", label: "🏔️ Large (~2.2km)" },
+  { id: "MEGA", label: "🚀 Mega (~3.0km)" },
 ];
 
 /**
  * Detects control nodes where the road/curb ribbon pinches or buckles at the inner seam
  * (only flags true inner-edge reversals/folds or acute single-node kinks > 96 deg).
  */
-function detectBuckledControlNodes(
+function evaluateSplineCurbAndClearance(
   pts: Array<{ x: number; y: number; z: number }>,
   roadHalfWidth: number,
-  splineSamples: Array<{
+  precomputedSamples?: Array<{
     position: Vector3;
     tangent: Vector3;
     binormal: Vector3;
   }>
-): Set<number> {
-  const buckled = new Set<number>();
+): {
+  minCurbRatio: number;
+  pinchedNodes: Set<number>;
+  minNonAdjDist: number;
+} {
+  const samples =
+    precomputedSamples ?? computeTrackSplineSamples(pts, 18, []).samples;
+  const curbOffset = roadHalfWidth + 1.8;
+  let minCurbRatio = Infinity;
+  const pinchedNodes = new Set<number>();
   const n = pts.length;
-  if (n < 4) return buckled;
+  const sCount = samples.length;
 
-  const minSafeChord = Math.max(30, roadHalfWidth * 2.2);
-  for (let i = 1; i < n; i++) {
+  // Check for degenerate stacked control points (< 4m apart)
+  for (let i = 0; i < n; i++) {
     const prev = pts[(i - 1 + n) % n];
     const curr = pts[i];
-    const next = pts[(i + 1) % n];
-    const ux1 = curr.x - prev.x;
-    const uz1 = curr.z - prev.z;
-    const ux2 = next.x - curr.x;
-    const uz2 = next.z - curr.z;
-    const len1 = Math.hypot(ux1, uz1);
-    const len2 = Math.hypot(ux2, uz2);
-    if (len1 < 1 || len2 < 1) {
-      buckled.add(i);
-      continue;
-    }
-    const cosTurn = (ux1 * ux2 + uz1 * uz2) / (len1 * len2);
-    // Single-node acute turn > ~96 deg or bunched chord with sharp bend causes inner curb folding
-    if (
-      cosTurn < -0.1 ||
-      (Math.min(len1, len2) < minSafeChord && cosTurn < 0.45)
-    ) {
-      buckled.add(i);
+    if (Math.hypot(curr.x - prev.x, curr.z - prev.z) < 4) {
+      pinchedNodes.add(i);
+      minCurbRatio = Math.min(minCurbRatio, -1);
     }
   }
 
-  // Exact differential-geometry inner-curb ribbon fold check along sampled spline
-  const curbOffset = roadHalfWidth + 1.8;
-  const sCount = splineSamples.length;
   for (let k = 0; k < sCount; k++) {
-    const s0 = splineSamples[k];
-    const s1 = splineSamples[(k + 1) % sCount];
+    const s0 = samples[k];
+    const s1 = samples[(k + 1) % sCount];
     const ds = Math.hypot(
       s1.position.x - s0.position.x,
       s1.position.z - s0.position.z
@@ -327,12 +335,15 @@ function detectBuckledControlNodes(
       ((l1x - l0x) * s0.tangent.x + (l1z - l0z) * s0.tangent.z) / ds;
     const ratioR =
       ((r1x - r0x) * s0.tangent.x + (r1z - r0z) * s0.tangent.z) / ds;
+    const r = Math.min(ratioL, ratioR);
+    if (r < minCurbRatio) {
+      minCurbRatio = r;
+    }
 
-    if (Math.min(ratioL, ratioR) < 0.08) {
-      // Map pinched ribbon sample to nearest movable control node (idx >= 1)
+    if (r < 0.12) {
       let bestIdx = -1;
-      let bestDist = 64;
-      for (let i = 1; i < n; i++) {
+      let bestDist = 220;
+      for (let i = 0; i < n; i++) {
         const d = Math.hypot(
           pts[i].x - s0.position.x,
           pts[i].z - s0.position.z
@@ -342,23 +353,56 @@ function detectBuckledControlNodes(
           bestIdx = i;
         }
       }
-      if (bestIdx >= 1) {
-        buckled.add(bestIdx);
+      if (bestIdx >= 0) {
+        pinchedNodes.add(bestIdx);
       }
     }
   }
 
-  return buckled;
+  // Compute minimum non-adjacent sample distance around the loop to prevent any self-overlap
+  let minNonAdjDist = Infinity;
+  const skipWindow = Math.max(20, Math.floor(sCount * 0.1));
+  for (let i = 0; i < sCount; i += 2) {
+    for (let j = i + skipWindow; j < sCount; j += 2) {
+      if (sCount - (j - i) < skipWindow) continue;
+      const d = Math.hypot(
+        samples[i].position.x - samples[j].position.x,
+        samples[i].position.z - samples[j].position.z
+      );
+      if (d < minNonAdjDist) {
+        minNonAdjDist = d;
+      }
+    }
+  }
+
+  return { minCurbRatio, pinchedNodes, minNonAdjDist };
+}
+
+function detectBuckledControlNodes(
+  pts: Array<{ x: number; y: number; z: number }>,
+  roadHalfWidth: number,
+  splineSamples: Array<{
+    position: Vector3;
+    tangent: Vector3;
+    binormal: Vector3;
+  }>
+): Set<number> {
+  if (pts.length < 4) return new Set<number>();
+  return evaluateSplineCurbAndClearance(pts, roadHalfWidth, splineSamples)
+    .pinchedNodes;
 }
 
 /**
- * Local Corner-Shoulder Beveling Solver:
- * Eliminates inner-seam curb buckling by inserting local entry/exit shoulder points right at sharp corners
- * without shrinking or circularizing the overall track geometry.
+ * Non-Overlapping Local Corner Unbuckler:
+ * Preserves existing P0/P1 world coordinates on custom tracks and tests candidate
+ * symmetric corner bevels, angle-bisector nudges, and local 2/3-node window relaxations,
+ * strictly accepting only moves that improve inner-curb ribbon ratios without reducing
+ * non-adjacent track separation (never creating self-intersections).
  */
 function unbuckleAndRefineControlPoints(
   rawPts: Array<{ x: number; y: number; z: number }>,
-  roadHalfWidth: number
+  roadHalfWidth: number,
+  lockStartNode = false
 ): {
   pts: Array<{ x: number; y: number; z: number }>;
   subdividedCount: number;
@@ -372,146 +416,193 @@ function unbuckleAndRefineControlPoints(
     return { pts, subdividedCount, relaxedCount };
   }
 
-  const targetShoulderDist = Math.max(38, roadHalfWidth * 2.8);
+  const minSafeTrackSeparation = (roadHalfWidth + 2.5) * 2.3;
 
-  for (let pass = 0; pass < 3; pass++) {
-    // Keep P0 anchored at (0,0,0) and P1 aligned along the +Z start/finish straight
-    pts[0] = { x: 0, y: 0, z: 0 };
-    if (pts.length > 1) {
-      pts[1] = {
-        x: 0,
-        y: Number(Math.max(0, Math.min(2.0, pts[1].y)).toFixed(1)),
-        z: Number(Math.max(88, Math.min(130, pts[1].z)).toFixed(1)),
-      };
-    }
+  for (let pass = 0; pass < 14; pass++) {
+    const health = evaluateSplineCurbAndClearance(pts, roadHalfWidth);
+    if (health.pinchedNodes.size === 0) break;
 
-    // 1. Merge accidentally stacked control points (< 2.0 * roadHalfWidth apart)
-    if (pts.length > 8) {
-      const merged: typeof pts = [pts[0], pts[1]];
-      let i = 2;
-      while (i < pts.length) {
-        if (i < pts.length - 1) {
-          const d = Math.hypot(
-            pts[i + 1].x - pts[i].x,
-            pts[i + 1].z - pts[i].z
-          );
-          if (d < roadHalfWidth * 2.0 && merged.length + (pts.length - i) > 8) {
-            merged.push({
-              x: Number(((pts[i].x + pts[i + 1].x) * 0.5).toFixed(1)),
-              y: Number(((pts[i].y + pts[i + 1].y) * 0.5).toFixed(1)),
-              z: Number(((pts[i].z + pts[i + 1].z) * 0.5).toFixed(1)),
+    let bestCandidate: typeof pts | null = null;
+    let bestScore = health.minCurbRatio;
+    let bestType: "sub" | "rel" | null = null;
+    const n = pts.length;
+
+    for (const bIdx of Array.from(health.pinchedNodes)) {
+      const prev2Idx = (bIdx - 2 + n) % n;
+      const prevIdx = (bIdx - 1 + n) % n;
+      const nextIdx = (bIdx + 1) % n;
+      const next2Idx = (bIdx + 2) % n;
+      const prev = pts[prevIdx];
+      const curr = pts[bIdx];
+      const next = pts[nextIdx];
+      const ux1 = curr.x - prev.x;
+      const uz1 = curr.z - prev.z;
+      const ux2 = next.x - curr.x;
+      const uz2 = next.z - curr.z;
+      const len1 = Math.hypot(ux1, uz1);
+      const len2 = Math.hypot(ux2, uz2);
+      if (len1 < 1 || len2 < 1) continue;
+      const dirInX = ux1 / len1;
+      const dirInZ = uz1 / len1;
+      const dirOutX = ux2 / len2;
+      const dirOutZ = uz2 / len2;
+
+      const candidates: Array<{ pts: typeof pts; type: "sub" | "rel" }> = [];
+
+      // 1. Symmetric Equal-Chord Corner Bevel (replaces curr with 2 shoulders at equal distance d)
+      if (
+        (!lockStartNode || bIdx > 0) &&
+        n < 34 &&
+        Math.min(len1, len2) > roadHalfWidth * 3.0
+      ) {
+        for (const frac of [0.22, 0.30, 0.38]) {
+          const d = Math.min(len1 * frac, len2 * frac, 95);
+          const sIn = {
+            x: Number((curr.x - dirInX * d).toFixed(1)),
+            y: Number((prev.y * 0.25 + curr.y * 0.75).toFixed(1)),
+            z: Number((curr.z - dirInZ * d).toFixed(1)),
+          };
+          const sOut = {
+            x: Number((curr.x + dirOutX * d).toFixed(1)),
+            y: Number((curr.y * 0.75 + next.y * 0.25).toFixed(1)),
+            z: Number((curr.z + dirOutZ * d).toFixed(1)),
+          };
+          candidates.push({
+            pts: [...pts.slice(0, bIdx), sIn, sOut, ...pts.slice(bIdx + 1)],
+            type: "sub",
+          });
+        }
+      }
+
+      // 2. Single-node angle-bisector & neighbor-midpoint relaxation
+      if (!lockStartNode || bIdx > 0) {
+        const bisX = dirOutX - dirInX;
+        const bisZ = dirOutZ - dirInZ;
+        const bisLen = Math.hypot(bisX, bisZ);
+        if (bisLen > 0.05) {
+          for (const stepDist of [
+            roadHalfWidth * 1.0,
+            roadHalfWidth * 2.0,
+            roadHalfWidth * 3.2,
+          ]) {
+            const moved = {
+              x: Number((curr.x + (bisX / bisLen) * stepDist).toFixed(1)),
+              y: curr.y,
+              z: Number((curr.z + (bisZ / bisLen) * stepDist).toFixed(1)),
+            };
+            candidates.push({
+              pts: pts.map((p, idx) => (idx === bIdx ? moved : p)),
+              type: "rel",
             });
-            relaxedCount++;
-            i += 2;
-            continue;
           }
         }
-        merged.push(pts[i]);
-        i++;
-      }
-      pts = merged;
-    }
-
-    // 2. Local Corner-Shoulder Beveling: replace acute single-vertex corners with a wide-radius 2-point shoulder turn
-    if (pts.length < 28) {
-      const nextPts: typeof pts = [pts[0], pts[1]];
-      const n = pts.length;
-      for (let i = 2; i < n; i++) {
-        const prev = nextPts[nextPts.length - 1];
-        const curr = pts[i];
-        const next = pts[(i + 1) % n];
-        const ux1 = curr.x - prev.x;
-        const uz1 = curr.z - prev.z;
-        const ux2 = next.x - curr.x;
-        const uz2 = next.z - curr.z;
-        const len1 = Math.hypot(ux1, uz1);
-        const len2 = Math.hypot(ux2, uz2);
-        const cosTurn =
-          len1 > 1 && len2 > 1 ? (ux1 * ux2 + uz1 * uz2) / (len1 * len2) : 1;
-
-        // Only bevel genuinely sharp corners (> ~86 deg turn) where segments have room for local shoulders
-        if (
-          i < n - 1 &&
-          cosTurn < 0.06 &&
-          len1 > targetShoulderDist * 1.45 &&
-          len2 > targetShoulderDist * 1.45 &&
-          nextPts.length + (n - i) < 29
-        ) {
-          const dIn = Math.min(len1 * 0.32, targetShoulderDist);
-          const dOut = Math.min(len2 * 0.32, targetShoulderDist);
-          const dirInX = ux1 / len1;
-          const dirInZ = uz1 / len1;
-          const dirOutX = ux2 / len2;
-          const dirOutZ = uz2 / len2;
-
-          const shoulderIn = {
-            x: Number((curr.x - dirInX * dIn + dirOutX * 4.5).toFixed(1)),
-            y: Number((prev.y * 0.25 + curr.y * 0.75).toFixed(1)),
-            z: Number((curr.z - dirInZ * dIn + dirOutZ * 4.5).toFixed(1)),
+        const midX = (prev.x + next.x) * 0.5;
+        const midZ = (prev.z + next.z) * 0.5;
+        for (const alpha of [0.20, 0.35, 0.50]) {
+          const moved = {
+            x: Number((curr.x * (1 - alpha) + midX * alpha).toFixed(1)),
+            y: curr.y,
+            z: Number((curr.z * (1 - alpha) + midZ * alpha).toFixed(1)),
           };
-          const shoulderOut = {
-            x: Number((curr.x + dirOutX * dOut - dirInX * 4.5).toFixed(1)),
-            y: Number((curr.y * 0.75 + next.y * 0.25).toFixed(1)),
-            z: Number((curr.z + dirOutZ * dOut - dirInZ * 4.5).toFixed(1)),
-          };
-          nextPts.push(shoulderIn, shoulderOut);
-          subdividedCount++;
-        } else {
-          nextPts.push(curr);
+          candidates.push({
+            pts: pts.map((p, idx) => (idx === bIdx ? moved : p)),
+            type: "rel",
+          });
         }
       }
-      pts = nextPts;
+
+      // 3. Local 2-, 3-, or 5-node window relaxation (cures S-hook / asymmetric long-chord zig-zags)
+      for (const windowIndices of [
+        [prevIdx, bIdx],
+        [bIdx, nextIdx],
+        [prevIdx, bIdx, nextIdx],
+        [prev2Idx, prevIdx, bIdx, nextIdx, next2Idx],
+      ]) {
+        for (const alpha of [0.22, 0.38]) {
+          const nextPts = pts.map((p, idx) => {
+            if (!windowIndices.includes(idx) || (lockStartNode && idx === 0)) {
+              return p;
+            }
+            const pP = pts[(idx - 1 + n) % n];
+            const pN = pts[(idx + 1) % n];
+            return {
+              x: Number(
+                (p.x * (1 - alpha) + (pP.x + pN.x) * 0.5 * alpha).toFixed(1)
+              ),
+              y: p.y,
+              z: Number(
+                (p.z * (1 - alpha) + (pP.z + pN.z) * 0.5 * alpha).toFixed(1)
+              ),
+            };
+          });
+          candidates.push({ pts: nextPts, type: "rel" });
+        }
+      }
+
+      for (const cand of candidates) {
+        const ch = evaluateSplineCurbAndClearance(cand.pts, roadHalfWidth);
+        if (
+          ch.minNonAdjDist >=
+            Math.min(health.minNonAdjDist * 0.9, minSafeTrackSeparation) &&
+          ch.minCurbRatio > bestScore + 0.008
+        ) {
+          bestScore = ch.minCurbRatio;
+          bestCandidate = cand.pts;
+          bestType = cand.type;
+        }
+      }
     }
 
-    // 3. Strictly Local Relaxation ONLY on nodes that still fail the differential-geometry inner-curb fold check
-    const sampled = computeTrackSplineSamples(pts, 18, []);
-    const buckledSet = detectBuckledControlNodes(
-      pts,
-      roadHalfWidth,
-      sampled.samples
-    );
-    if (buckledSet.size === 0) break;
-
-    const n = pts.length;
-    const relaxedPts = pts.map((p) => ({ ...p }));
-    for (const bIdx of Array.from(buckledSet)) {
-      if (bIdx < 2 || bIdx >= n) continue;
-      const prev = pts[(bIdx - 1 + n) % n];
-      const curr = pts[bIdx];
-      const next = pts[(bIdx + 1) % n];
-      const midX = (prev.x + next.x) * 0.5;
-      const midZ = (prev.z + next.z) * 0.5;
-      relaxedPts[bIdx].x = Number((curr.x * 0.72 + midX * 0.28).toFixed(1));
-      relaxedPts[bIdx].z = Number((curr.z * 0.72 + midZ * 0.28).toFixed(1));
-      relaxedCount++;
-    }
-    pts = relaxedPts;
+    if (!bestCandidate || !bestType) break;
+    pts = bestCandidate;
+    if (bestType === "sub") subdividedCount++;
+    else relaxedCount++;
   }
 
   return { pts, subdividedCount, relaxedCount };
 }
 
 /**
- * Generates a large-scale (1,800m - 2,800m), wildly varied multi-sector circuit spline
- * using 5 distinct geometric topologies + local corner-shoulder beveling so shapes stay dramatic and buckle-free.
+ * True Generative Multi-Sector Circuit Spline Synthesizer:
+ * Synthesizes genuinely unique circuit topologies on every roll using continuous polar harmonics,
+ * randomized chirality (East vs. West loop), variable aspect & skew, randomized sector features
+ * (hairpins, concave boomerang valleys, multi-lobe peninsulas, stadium slaloms), and configurable size tiers
+ * (COMPACT ~950m, STANDARD ~1.5km, LARGE ~2.2km, MEGA ~3.0km), guaranteed 100% buckle-free and non-overlapping.
  */
 function generateProceduralCircuitControlPoints(
   requestedArchetype: ProceduralTrackArchetype,
+  requestedSize: ProceduralTrackSize,
   seed: number,
   currentRoadHalfWidth: number
 ): {
   resolvedArchetype: Exclude<ProceduralTrackArchetype, "RANDOM">;
+  resolvedSize: Exclude<ProceduralTrackSize, "RANDOM">;
   archetypeTitle: string;
+  sizeTitle: string;
   controlPoints: Array<{ x: number; y: number; z: number }>;
   roadHalfWidth: number;
   terrainHillScale: number;
 } {
-  let s = (seed ^ 0x9e3779b9) >>> 0;
+  // High-entropy Mulberry32 PRNG mixed with Math.random() / Web Crypto so every click produces a brand-new circuit
+  let s =
+    (seed ^
+      Math.floor(Math.random() * 0xffffffff) ^
+      0x9e3779b9) >>>
+    0;
+  if (typeof window !== "undefined" && window.crypto?.getRandomValues) {
+    const buf = new Uint32Array(1);
+    window.crypto.getRandomValues(buf);
+    s = (s ^ buf[0]) >>> 0;
+  }
   const rand = () => {
-    s = (Math.imul(1664525, s) + 1013904223) >>> 0;
-    return s / 4294967296;
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
   const randRange = (min: number, max: number) => min + rand() * (max - min);
+  const randInt = (min: number, max: number) =>
+    Math.floor(randRange(min, max + 1));
 
   const concreteArchetypes: Array<Exclude<ProceduralTrackArchetype, "RANDOM">> =
     ["SWEEPER", "SWITCHBACK", "KIDNEY", "CANYON", "STADIUM"];
@@ -520,133 +611,254 @@ function generateProceduralCircuitControlPoints(
       ? concreteArchetypes[Math.floor(rand() * concreteArchetypes.length)]
       : requestedArchetype;
 
+  const concreteSizes: Array<Exclude<ProceduralTrackSize, "RANDOM">> = [
+    "COMPACT",
+    "STANDARD",
+    "LARGE",
+    "MEGA",
+  ];
+  const resolvedSize: Exclude<ProceduralTrackSize, "RANDOM"> =
+    requestedSize === "RANDOM"
+      ? concreteSizes[Math.floor(rand() * concreteSizes.length)]
+      : requestedSize;
+
   const archetypeTitleMap: Record<
     Exclude<ProceduralTrackArchetype, "RANDOM">,
     string
   > = {
-    SWEEPER: "Grand Prix Dogleg & Chicane",
-    SWITCHBACK: "Serpentine Touge Slalom",
+    SWEEPER: "Dogleg & Chicane Sweeper",
+    SWITCHBACK: "Serpentine Touge Hairpins",
     KIDNEY: "Deep Boomerang U-Valley",
-    CANYON: "Tri-Lobe Clover Peninsula",
-    STADIUM: "Twin-Hairpin Parallel Gauntlet",
+    CANYON: "Multi-Lobe Peninsula Gorge",
+    STADIUM: "Stadium Gauntlet & Slalom",
+  };
+
+  const sizeTitleMap: Record<Exclude<ProceduralTrackSize, "RANDOM">, string> = {
+    COMPACT: "Compact",
+    STANDARD: "Standard",
+    LARGE: "Large",
+    MEGA: "Mega",
   };
 
   const roadHalfWidth =
     requestedArchetype === "RANDOM"
-      ? Number(randRange(13.0, 15.0).toFixed(1))
+      ? Number(
+          randRange(
+            resolvedSize === "COMPACT" ? 12.0 : 13.0,
+            resolvedSize === "COMPACT" ? 13.8 : 15.0
+          ).toFixed(1)
+        )
       : currentRoadHalfWidth;
 
-  // Large-scale world stretch factors so every roll has distinct proportions (spanning 450m - 750m)
-  const scaleX = randRange(0.92, 1.24);
-  const scaleZ = randRange(0.92, 1.24);
-  const pt = (x: number, y: number, z: number) => ({
-    x: Number((x * scaleX + randRange(-14, 14)).toFixed(1)),
-    y: Number(Math.max(0, y + randRange(-0.8, 1.2)).toFixed(1)),
-    z: Number((z * scaleZ + randRange(-14, 14)).toFixed(1)),
-  });
+  const sizeConfig: Record<
+    Exclude<ProceduralTrackSize, "RANDOM">,
+    {
+      rMin: number;
+      rMax: number;
+      startZ: [number, number];
+      endZ: [number, number];
+      modScale: number;
+      elevRange: [number, number];
+    }
+  > = {
+    COMPACT: {
+      rMin: 125,
+      rMax: 158,
+      startZ: [68, 82],
+      endZ: [-62, -50],
+      modScale: 0.72,
+      elevRange: [5, 11],
+    },
+    STANDARD: {
+      rMin: 185,
+      rMax: 235,
+      startZ: [82, 98],
+      endZ: [-74, -58],
+      modScale: 0.88,
+      elevRange: [8, 15],
+    },
+    LARGE: {
+      rMin: 265,
+      rMax: 335,
+      startZ: [94, 114],
+      endZ: [-84, -68],
+      modScale: 1.0,
+      elevRange: [11, 20],
+    },
+    MEGA: {
+      rMin: 355,
+      rMax: 445,
+      startZ: [106, 130],
+      endZ: [-96, -76],
+      modScale: 1.08,
+      elevRange: [14, 24],
+    },
+  };
 
-  const rawPts: Array<{ x: number; y: number; z: number }> = [
-    { x: 0, y: 0, z: 0 },
-    { x: 0, y: 1.0, z: Math.round(randRange(96, 118)) },
-  ];
+  const sz = sizeConfig[resolvedSize];
+  const minSafeSep = (roadHalfWidth + 2.5) * 2.3;
+  let bestPts: Array<{ x: number; y: number; z: number }> = [];
+  let bestMinRatio = -Infinity;
 
-  if (resolvedArchetype === "SWEEPER") {
-    // 1. GRAND PRIX DOGLEG & CHICANE: Massive north straight -> 90-deg East Dogleg -> fast diagonal backstretch -> infield chicane -> south bowl
-    rawPts.push(
-      pt(12, 5.5, 360),
-      pt(95, 10.5, 445),
-      pt(275, 12.5, 430),
-      pt(330, 9.0, 295),
-      pt(535, 11.0, 285),
-      pt(565, 7.5, 125),
-      pt(395, 4.5, 10),
-      pt(485, 6.5, -155),
-      pt(340, 3.5, -210),
-      pt(255, 2.0, -335),
-      pt(85, 1.0, -310),
-      pt(-35, 0.4, -195)
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const baseR = randRange(sz.rMin, sz.rMax);
+    // Randomize loop chirality (+1 = expands East, -1 = expands West), aspect ratio, north-south center shift, and diagonal skew
+    const dirX = rand() < 0.5 ? 1 : -1;
+    const aspectX = randRange(0.78, 1.34);
+    const aspectZ = randRange(0.78, 1.34);
+    const rx = baseR * aspectX;
+    const rz = baseR * aspectZ;
+    const skewXZ = randRange(-0.22, 0.22);
+    const centerShiftZ = randRange(-0.2, 0.24) * rz;
+    const cx = dirX * (rx * randRange(0.96, 1.14) + 32);
+    const cz = centerShiftZ;
+
+    const sectorCount =
+      resolvedArchetype === "SWITCHBACK"
+        ? randInt(11, 14)
+        : resolvedArchetype === "CANYON"
+        ? randInt(11, 14)
+        : randInt(10, 13);
+
+    const p1Z = randRange(sz.startZ[0], sz.startZ[1]);
+    const pLastZ = randRange(sz.endZ[0], sz.endZ[1]);
+    const pLastX = dirX * randRange(5, 14);
+
+    let phiStart = Math.atan2(p1Z - cz, (0 - cx) * dirX);
+    if (phiStart < 0) phiStart += Math.PI * 2;
+    if (phiStart > Math.PI) phiStart -= Math.PI * 2;
+    let phiEnd = Math.atan2(pLastZ - cz, (pLastX - cx) * dirX);
+    if (phiEnd > 0) phiEnd -= Math.PI * 2;
+
+    phiStart = Math.max(1.9, Math.min(2.65, phiStart));
+    phiEnd = Math.min(-1.9, Math.max(-2.65, phiEnd));
+
+    const phase2 = randRange(0, Math.PI * 2);
+    const phase3 = randRange(0, Math.PI * 2);
+    const phase4 = randRange(0, Math.PI * 2);
+    const amp2 = randRange(0.12, 0.26) * sz.modScale;
+    const amp3 = randRange(0.1, 0.22) * sz.modScale;
+
+    const bayU1 = randRange(0.22, 0.78);
+    const bayU2 = (bayU1 + randRange(0.36, 0.54)) % 1;
+    const bayWidth = randRange(0.12, 0.18);
+    const bayDepth = randRange(0.36, 0.54) * sz.modScale;
+
+    const lobeCount = randInt(3, 4);
+    const lobePhase = randRange(0, Math.PI * 2);
+
+    const hairpinSlots = new Set<number>();
+    const numHairpins = resolvedSize === "COMPACT" ? 2 : randInt(2, 3);
+    let hpTry = 0;
+    while (hairpinSlots.size < numHairpins && hpTry < 30) {
+      hpTry++;
+      const idx = randInt(2, sectorCount - 3);
+      if (!hairpinSlots.has(idx - 1) && !hairpinSlots.has(idx + 1)) {
+        hairpinSlots.add(idx);
+      }
+    }
+
+    const elevPeak = randRange(sz.elevRange[0], sz.elevRange[1]);
+    const elevFreq = randInt(1, 3);
+    const elevPhase = randRange(0, Math.PI * 2);
+
+    const rawPts: Array<{ x: number; y: number; z: number }> = [
+      { x: 0, y: 0, z: 0 },
+      { x: 0, y: Number(randRange(0.6, 1.8).toFixed(1)), z: Math.round(p1Z) },
+    ];
+
+    for (let i = 0; i < sectorCount; i++) {
+      const uBase = (i + 0.85) / (sectorCount + 0.7);
+      const u = Math.max(
+        0.05,
+        Math.min(0.95, uBase + randRange(-0.018, 0.018))
+      );
+      const phi = phiStart + u * (phiEnd - phiStart);
+
+      let rFactor = 1.0;
+      if (resolvedArchetype === "SWEEPER") {
+        rFactor =
+          1.0 +
+          amp2 * Math.cos(2 * phi + phase2) +
+          amp3 * Math.sin(3 * phi + phase3);
+        if (Math.abs(u - bayU1) < 0.09) {
+          rFactor *=
+            rand() < 0.5 ? 1 - 0.25 * sz.modScale : 1 + 0.22 * sz.modScale;
+        }
+      } else if (resolvedArchetype === "SWITCHBACK") {
+        rFactor = 1.0 + 0.14 * Math.cos(2 * phi + phase2);
+        if (hairpinSlots.has(i)) {
+          rFactor *= 1 - randRange(0.36, 0.48) * sz.modScale;
+        } else if (hairpinSlots.has(i - 1) || hairpinSlots.has(i + 1)) {
+          rFactor *= 1 + randRange(0.16, 0.28) * sz.modScale;
+        }
+      } else if (resolvedArchetype === "KIDNEY") {
+        const d1 = (u - bayU1) / bayWidth;
+        const d2 = rand() < 0.45 ? (u - bayU2) / (bayWidth * 0.9) : 99;
+        const dip =
+          bayDepth * Math.exp(-d1 * d1) +
+          (d2 < 10 ? bayDepth * 0.6 * Math.exp(-d2 * d2) : 0);
+        rFactor = 1.15 + 0.14 * Math.cos(2 * phi + phase2) - dip;
+      } else if (resolvedArchetype === "CANYON") {
+        rFactor =
+          1.0 +
+          0.3 * sz.modScale * Math.cos(lobeCount * phi + lobePhase) +
+          0.12 * sz.modScale * Math.sin(2 * phi + phase3);
+      } else {
+        const superR = Math.pow(
+          Math.pow(Math.abs(Math.cos(phi)), 2.6) +
+            Math.pow(Math.abs(Math.sin(phi)), 2.6),
+          -1 / 2.6
+        );
+        const slalom =
+          Math.abs(u - bayU1) < 0.18
+            ? 0.22 * sz.modScale * Math.sin(((u - bayU1) / 0.18) * Math.PI)
+            : 0;
+        rFactor = superR * (0.95 + slalom + 0.1 * Math.cos(2 * phi + phase4));
+      }
+
+      rFactor = Math.max(0.42, Math.min(1.48, rFactor));
+
+      const localX = rx * rFactor * Math.cos(phi);
+      const localZ = rz * rFactor * Math.sin(phi);
+      const worldX = cx + dirX * (localX + skewXZ * localZ);
+      const worldZ = cz + localZ + skewXZ * 0.35 * localX;
+
+      const env = Math.sin(u * Math.PI);
+      const rawY =
+        env *
+        elevPeak *
+        (0.55 +
+          0.45 * Math.sin(elevFreq * u * Math.PI * 2 + elevPhase) +
+          randRange(-0.1, 0.1));
+
+      rawPts.push({
+        x: Number(worldX.toFixed(1)),
+        y: Number(Math.max(0.3, rawY).toFixed(1)),
+        z: Number(worldZ.toFixed(1)),
+      });
+    }
+
+    rawPts.push({
+      x: Number(pLastX.toFixed(1)),
+      y: 0,
+      z: Math.round(pLastZ),
+    });
+
+    const { pts: refined } = unbuckleAndRefineControlPoints(
+      rawPts,
+      roadHalfWidth,
+      true
     );
-  } else if (resolvedArchetype === "SWITCHBACK") {
-    // 2. SERPENTINE TOUGE SLALOM: 3 deep alternating hairpin fingers cutting in and out across the mountain face
-    rawPts.push(
-      pt(35, 6.0, 355),
-      pt(175, 12.0, 455),
-      pt(445, 14.0, 435),
-      pt(470, 11.5, 285),
-      pt(195, 8.5, 235),
-      pt(185, 6.5, 105),
-      pt(545, 9.5, 125),
-      pt(565, 7.0, -25),
-      pt(225, 4.5, -65),
-      pt(215, 3.0, -195),
-      pt(495, 5.5, -230),
-      pt(435, 3.5, -355),
-      pt(145, 1.5, -335),
-      pt(-28, 0.4, -200)
-    );
-  } else if (resolvedArchetype === "KIDNEY") {
-    // 3. DEEP BOOMERANG / U-VALLEY: Shoots far north, dives deep into a central canyon down to Z=-55, climbs back to a high east wing
-    rawPts.push(
-      pt(20, 6.5, 385),
-      pt(145, 11.5, 465),
-      pt(255, 9.5, 385),
-      pt(210, 4.5, 130),
-      pt(245, 2.5, -55),
-      pt(365, 3.5, -45),
-      pt(385, 8.0, 185),
-      pt(435, 13.0, 415),
-      pt(565, 11.5, 375),
-      pt(585, 6.5, 95),
-      pt(525, 3.5, -205),
-      pt(345, 2.0, -335),
-      pt(105, 1.0, -295),
-      pt(-25, 0.4, -185)
-    );
-  } else if (resolvedArchetype === "CANYON") {
-    // 4. TRI-LOBE CLOVER PENINSULA: Three giant outer peninsulas (North Mesa, Far-East Cliff, Deep South Gorge) with two narrow pinch bays
-    rawPts.push(
-      pt(-45, 7.5, 330),
-      pt(95, 13.5, 475),
-      pt(275, 14.5, 420),
-      pt(215, 6.5, 185),
-      pt(485, 10.5, 285),
-      pt(605, 12.5, 135),
-      pt(545, 8.0, -55),
-      pt(265, 4.0, -90),
-      pt(445, 6.5, -265),
-      pt(295, 3.5, -395),
-      pt(80, 1.5, -345),
-      pt(-35, 0.5, -205)
-    );
-  } else {
-    // 5. STADIUM: TWIN-HAIRPIN PARALLEL GAUNTLET: Long parallel drag straights connected by 180-deg turnarounds + diagonal stadium chicane
-    rawPts.push(
-      pt(8, 3.5, 435),
-      pt(155, 5.5, 460),
-      pt(165, 2.5, 95),
-      pt(315, 2.5, 85),
-      pt(335, 6.5, 430),
-      pt(525, 7.5, 415),
-      pt(565, 4.5, 115),
-      pt(515, 2.5, -215),
-      pt(310, 3.5, -180),
-      pt(215, 1.8, -320),
-      pt(55, 0.8, -280),
-      pt(-22, 0.3, -175)
-    );
+    const h = evaluateSplineCurbAndClearance(refined, roadHalfWidth);
+    if (h.minCurbRatio > bestMinRatio || bestPts.length === 0) {
+      bestMinRatio = h.minCurbRatio;
+      bestPts = refined;
+    }
+    if (h.pinchedNodes.size === 0 && h.minNonAdjDist >= minSafeSep) {
+      break;
+    }
   }
-
-  // Final point approaches P0(0,0,0) smoothly from -Z
-  rawPts.push({
-    x: Number(randRange(-9, -3).toFixed(1)),
-    y: 0,
-    z: Number(randRange(-78, -62).toFixed(1)),
-  });
-
-  const { pts: refinedPts } = unbuckleAndRefineControlPoints(
-    rawPts,
-    roadHalfWidth
-  );
 
   const terrainHillScale =
     resolvedArchetype === "CANYON"
@@ -657,8 +869,10 @@ function generateProceduralCircuitControlPoints(
 
   return {
     resolvedArchetype,
+    resolvedSize,
     archetypeTitle: archetypeTitleMap[resolvedArchetype],
-    controlPoints: refinedPts,
+    sizeTitle: sizeTitleMap[resolvedSize],
+    controlPoints: bestPts,
     roadHalfWidth,
     terrainHillScale,
   };
@@ -696,6 +910,8 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
   const [traceTick, setTraceTick] = useState<number>(0);
   const [proceduralArchetype, setProceduralArchetype] =
     useState<ProceduralTrackArchetype>("RANDOM");
+  const [proceduralSize, setProceduralSize] =
+    useState<ProceduralTrackSize>("RANDOM");
   const proceduralGenCountRef = useRef<number>(1);
 
   // Explicit Local Working State, Dirty Flag, Undo/Redo Stacks & Manual Save
@@ -1281,74 +1497,100 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     );
   };
 
-  // Feature 4: Auto-Place Safe Jumps (relocates hazardous corner jumps & places fun straightaway/crest stunt ramps on the AI line)
-  const handleAutoPlaceSafeJumps = () => {
-    const currentDef = trackDefRef.current;
-    const totalLen = Math.max(200, splineData.totalTrackLength);
-
-    const queryConsensusLateralAtNormT = (targetNormT: number): number => {
-      if (recordedAiTraces.length === 0) return 0;
-      const lats: number[] = [];
-      for (const r of recordedAiTraces) {
-        for (const s of r.pathSamples) {
-          let diffT = Math.abs(s.normT - targetNormT);
-          if (diffT > 0.5) diffT = 1.0 - diffT;
-          if (diffT <= 0.025 && (s.surface !== "OFFROAD" || s.boosting)) {
-            lats.push(s.signedLat);
-          }
+  // Shared helper: query recorded AI consensus lateral offset at normT (or 0 if no traces)
+  const queryAiConsensusLateral = (
+    targetNormT: number,
+    roadHalfWidth: number
+  ): number | null => {
+    if (recordedAiTraces.length === 0) return null;
+    const lats: number[] = [];
+    for (const r of recordedAiTraces) {
+      for (const s of r.pathSamples) {
+        let diffT = Math.abs(s.normT - targetNormT);
+        if (diffT > 0.5) diffT = 1.0 - diffT;
+        if (diffT <= 0.025 && (s.surface !== "OFFROAD" || s.boosting)) {
+          lats.push(s.signedLat);
         }
       }
-      if (lats.length === 0) return 0;
-      lats.sort((a, b) => a - b);
-      const mid = Math.floor(lats.length / 2);
-      const medianLat =
-        lats.length % 2 === 1
-          ? lats[mid]
-          : (lats[mid - 1] + lats[mid]) * 0.5;
-      const maxSafeLat = Math.max(1.5, currentDef.roadHalfWidth - 2.6);
-      return Math.max(-maxSafeLat, Math.min(maxSafeLat, medianLat));
-    };
+    }
+    if (lats.length === 0) return null;
+    lats.sort((a, b) => a - b);
+    const mid = Math.floor(lats.length / 2);
+    const medianLat =
+      lats.length % 2 === 1 ? lats[mid] : (lats[mid - 1] + lats[mid]) * 0.5;
+    const maxSafeLat = Math.max(1.5, roadHalfWidth - 2.5);
+    return Math.max(-maxSafeLat, Math.min(maxSafeLat, medianLat));
+  };
 
-    // Evaluate whether a normalized spline position is a safe, fun launch zone with a straight 48m landing runway
-    const evaluateJumpSafetyAtNormT = (
+  // Shared helper: Place length-scaled Safe Stunt Jumps on hill crests AND long straightaways
+  const buildCuratedSafeJumps = (
+    targetSpline: ReturnType<typeof computeTrackSplineSamples>,
+    roadHalfWidth: number,
+    existingObstacles: CustomTrackDefinition["obstacles"],
+    useAiTraces: boolean,
+    idPrefix: string
+  ): {
+    keptAndNewJumps: CustomTrackDefinition["obstacles"];
+    nonJumpObstacles: CustomTrackDefinition["obstacles"];
+    jumpNormTs: number[];
+    removedHazardJumps: number;
+  } => {
+    const totalLen = Math.max(200, targetSpline.totalTrackLength);
+    const evaluateJumpAtNormT = (
       normT: number
-    ): { safe: boolean; score: number } => {
-      // Keep start/finish straight clear for standing starts & lap line
-      if (normT < 0.065 || normT > 0.915) {
-        return { safe: false, score: -1 };
+    ): { safe: boolean; score: number; isLongStretch: boolean } => {
+      if (normT < 0.06 || normT > 0.92) {
+        return { safe: false, score: -1, isLongStretch: false };
       }
 
-      const dBehind = 18 / totalLen;
-      const dAhead15 = 15 / totalLen;
-      const dAhead30 = 30 / totalLen;
-      const dAhead46 = 46 / totalLen;
-
-      const s0 = splineData.getPointAtNormalizedT(normT, 0);
-      const sBehind = splineData.getPointAtNormalizedT(
-        (normT - dBehind + 1) % 1,
+      const s0 = targetSpline.getPointAtNormalizedT(normT, 0);
+      const sBehind20 = targetSpline.getPointAtNormalizedT(
+        (normT - 20 / totalLen + 1) % 1,
         0
       );
-      const s15 = splineData.getPointAtNormalizedT((normT + dAhead15) % 1, 0);
-      const s30 = splineData.getPointAtNormalizedT((normT + dAhead30) % 1, 0);
-      const s46 = splineData.getPointAtNormalizedT((normT + dAhead46) % 1, 0);
+      const sBehind48 = targetSpline.getPointAtNormalizedT(
+        (normT - 48 / totalLen + 1) % 1,
+        0
+      );
+      const s15 = targetSpline.getPointAtNormalizedT(
+        (normT + 15 / totalLen) % 1,
+        0
+      );
+      const s30 = targetSpline.getPointAtNormalizedT(
+        (normT + 30 / totalLen) % 1,
+        0
+      );
+      const s46 = targetSpline.getPointAtNormalizedT(
+        (normT + 46 / totalLen) % 1,
+        0
+      );
+      const s72 = targetSpline.getPointAtNormalizedT(
+        (normT + 72 / totalLen) % 1,
+        0
+      );
 
       const tan0 = new Vector3(s0.tangent.x, 0, s0.tangent.z).normalize();
-      const tanBehind = new Vector3(
-        sBehind.tangent.x,
+      const tanBehind20 = new Vector3(
+        sBehind20.tangent.x,
         0,
-        sBehind.tangent.z
+        sBehind20.tangent.z
+      ).normalize();
+      const tanBehind48 = new Vector3(
+        sBehind48.tangent.x,
+        0,
+        sBehind48.tangent.z
       ).normalize();
       const tan15 = new Vector3(s15.tangent.x, 0, s15.tangent.z).normalize();
       const tan30 = new Vector3(s30.tangent.x, 0, s30.tangent.z).normalize();
       const tan46 = new Vector3(s46.tangent.x, 0, s46.tangent.z).normalize();
+      const tan72 = new Vector3(s72.tangent.x, 0, s72.tangent.z).normalize();
 
-      const dotBehind = Vector3.Dot(tan0, tanBehind);
+      const dotBehind = Vector3.Dot(tan0, tanBehind20);
       const dot15 = Vector3.Dot(tan0, tan15);
       const dot30 = Vector3.Dot(tan0, tan30);
       const dot46 = Vector3.Dot(tan0, tan46);
 
-      // Compute horizontal cross-track drift at 42m ahead if a kart flies straight along tan0
-      const s42 = splineData.getPointAtNormalizedT(
+      const s42 = targetSpline.getPointAtNormalizedT(
         (normT + 42 / totalLen) % 1,
         0
       );
@@ -1358,111 +1600,156 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
       const crossTrackLandingOffset = Math.abs(Vector3.Dot(toLanding, binorm0));
 
       const isSafe =
-        dotBehind >= 0.90 &&
-        dot15 >= 0.95 &&
-        dot30 >= 0.92 &&
-        dot46 >= 0.88 &&
-        crossTrackLandingOffset <= currentDef.roadHalfWidth * 0.62;
+        dotBehind >= 0.89 &&
+        dot15 >= 0.94 &&
+        dot30 >= 0.91 &&
+        dot46 >= 0.87 &&
+        crossTrackLandingOffset <= roadHalfWidth * 0.64;
 
       if (!isSafe) {
-        return { safe: false, score: -1 };
+        return { safe: false, score: -1, isLongStretch: false };
       }
 
-      // Score higher for dead-straight runways, hill crests, and high AI speed sectors
-      const crestBonus = Math.max(0, (s0.position.y - s30.position.y) * 0.12);
-      const straightnessScore =
+      // Detect if this candidate sits inside a long straightaway/sweeper stretch (120m+ corridor)
+      const dotLongBehind = Vector3.Dot(tan0, tanBehind48);
+      const dotLongAhead = Vector3.Dot(tan0, tan72);
+      const isLongStretch = dotLongBehind >= 0.86 && dotLongAhead >= 0.85;
+      const longStretchBonus = isLongStretch
+        ? (dotLongBehind + dotLongAhead) * 18
+        : 0;
+      const crestBonus = Math.max(0, (s0.position.y - s30.position.y) * 2.2);
+      const score =
         (dotBehind + dot15 * 1.5 + dot30 * 1.5 + dot46 * 1.2) * 20 -
         crossTrackLandingOffset * 1.8 +
-        crestBonus;
+        crestBonus +
+        longStretchBonus;
 
-      return { safe: true, score: straightnessScore };
+      return { safe: true, score, isLongStretch };
     };
 
-    // 1. Keep non-jump obstacles, and check existing JUMP_RAMP obstacles (remove hazardous corner ramps)
-    const nonJumpObstacles = currentDef.obstacles.filter(
+    const nonJumpObstacles = existingObstacles.filter(
       (o) => o.type !== "JUMP_RAMP"
     );
-    const existingJumps = currentDef.obstacles.filter(
+    const existingJumps = existingObstacles.filter(
       (o) => o.type === "JUMP_RAMP"
     );
 
     let removedHazardJumps = 0;
-    const keptSafeJumps: typeof existingJumps = [];
-    const occupiedNormTs: number[] = [];
+    const keptAndNewJumps: typeof existingJumps = [];
+    const jumpNormTs: number[] = [];
 
     for (const jump of existingJumps) {
-      const q = splineData.queryClosestTrackPoint(
+      const q = targetSpline.queryClosestTrackPoint(
         new Vector3(jump.x, 0, jump.z)
       );
-      const check = evaluateJumpSafetyAtNormT(q.normalizedSplineT);
+      const check = evaluateJumpAtNormT(q.normalizedSplineT);
       if (check.safe) {
-        // Align kept safe jump to AI consensus line
-        const targetLat = queryConsensusLateralAtNormT(q.normalizedSplineT);
-        const aligned = splineData.getPointAtNormalizedT(
+        const aiLat = useAiTraces
+          ? queryAiConsensusLateral(q.normalizedSplineT, roadHalfWidth) ?? 0
+          : 0;
+        const aligned = targetSpline.getPointAtNormalizedT(
           q.normalizedSplineT,
-          targetLat
+          aiLat
         );
         const yaw = Math.atan2(aligned.tangent.x, aligned.tangent.z);
-        keptSafeJumps.push({
+        keptAndNewJumps.push({
           ...jump,
           x: Number(aligned.position.x.toFixed(1)),
           z: Number(aligned.position.z.toFixed(1)),
           rotationY: Number(yaw.toFixed(2)),
         });
-        occupiedNormTs.push(q.normalizedSplineT);
+        jumpNormTs.push(q.normalizedSplineT);
       } else {
         removedHazardJumps++;
       }
     }
 
-    // 2. Scan 160 candidate points around the track for the best safe jump locations
-    const candidates: Array<{ normT: number; score: number }> = [];
-    const steps = 160;
+    const steps = 220;
+    const candidates: Array<{
+      normT: number;
+      score: number;
+      isLongStretch: boolean;
+    }> = [];
     for (let i = 0; i < steps; i++) {
       const normT = i / steps;
-      const res = evaluateJumpSafetyAtNormT(normT);
+      const res = evaluateJumpAtNormT(normT);
       if (res.safe) {
-        candidates.push({ normT, score: res.score });
+        candidates.push({
+          normT,
+          score: res.score,
+          isLongStretch: res.isLongStretch,
+        });
       }
     }
     candidates.sort((a, b) => b.score - a.score);
 
-    const targetJumpCount = Math.min(3, Math.max(2, Math.round(totalLen / 340)));
-    const minSpacingT = Math.max(0.20, 140 / totalLen);
-    const newJumps: typeof existingJumps = [...keptSafeJumps];
+    // Scale target jump count with track length: 2-3 on compact (~950m) up to 6-7 on mega (~3,000m)
+    const targetJumpCount = Math.min(
+      7,
+      Math.max(2, Math.round(totalLen / 350))
+    );
+    const minSpacingT = Math.max(0.11, 165 / totalLen);
 
-    for (const cand of candidates) {
-      if (newJumps.length >= targetJumpCount) break;
-      const tooClose = occupiedNormTs.some((t) => {
-        let diff = Math.abs(t - cand.normT);
+    const tryAddJumpAt = (normT: number, scale = 1.15) => {
+      const tooClose = jumpNormTs.some((t) => {
+        let diff = Math.abs(t - normT);
         if (diff > 0.5) diff = 1.0 - diff;
         return diff < minSpacingT;
       });
-      if (tooClose) continue;
+      if (tooClose) return false;
 
-      const lat = queryConsensusLateralAtNormT(cand.normT);
-      const sample = splineData.getPointAtNormalizedT(cand.normT, lat);
+      const aiLat = useAiTraces
+        ? queryAiConsensusLateral(normT, roadHalfWidth) ?? 0
+        : 0;
+      const sample = targetSpline.getPointAtNormalizedT(normT, aiLat);
       const yaw = Math.atan2(sample.tangent.x, sample.tangent.z);
-
-      newJumps.push({
-        id: `auto_jump_${Date.now()}_${newJumps.length}`,
+      keptAndNewJumps.push({
+        id: `${idPrefix}_${keptAndNewJumps.length}`,
         type: "JUMP_RAMP",
         x: Number(sample.position.x.toFixed(1)),
         z: Number(sample.position.z.toFixed(1)),
         rotationY: Number(yaw.toFixed(2)),
-        scale: 1.15,
+        scale,
       });
-      occupiedNormTs.push(cand.normT);
+      jumpNormTs.push(normT);
+      return true;
+    };
+
+    // Pass 1: Prioritize long-stretch straightaways & high-scoring crests
+    for (const cand of candidates) {
+      if (keptAndNewJumps.length >= targetJumpCount) break;
+      tryAddJumpAt(cand.normT, cand.isLongStretch ? 1.2 : 1.15);
     }
 
-    // If strict thresholds found no candidates on a very twisty track, relax slightly to place at least 1 safe straightaway jump
-    if (newJumps.length === 0) {
+    // Pass 2: Check for any huge empty sector (> 460m without a jump) and place a safe jump if available
+    if (jumpNormTs.length > 0 && keptAndNewJumps.length < targetJumpCount + 1) {
+      const sorted = [...jumpNormTs].sort((a, b) => a - b);
+      for (let i = 0; i < sorted.length; i++) {
+        const tA = sorted[i];
+        const tB = i + 1 < sorted.length ? sorted[i + 1] : sorted[0] + 1;
+        const gapMeters = (tB - tA) * totalLen;
+        if (gapMeters > 460) {
+          const midT = ((tA + tB) * 0.5) % 1;
+          const gapCand = candidates.find((c) => {
+            let d = Math.abs(c.normT - midT);
+            if (d > 0.5) d = 1 - d;
+            return d * totalLen < gapMeters * 0.35;
+          });
+          if (gapCand) {
+            tryAddJumpAt(gapCand.normT, 1.18);
+          }
+        }
+      }
+    }
+
+    // Fallback if track is super twisty and had 0 strict candidates
+    if (keptAndNewJumps.length === 0) {
       let bestT = 0.25;
       let bestDot = -1;
-      for (let i = 12; i < steps - 14; i++) {
+      for (let i = 15; i < steps - 18; i++) {
         const normT = i / steps;
-        const s0 = splineData.getPointAtNormalizedT(normT, 0);
-        const s28 = splineData.getPointAtNormalizedT(
+        const s0 = targetSpline.getPointAtNormalizedT(normT, 0);
+        const s28 = targetSpline.getPointAtNormalizedT(
           (normT + 28 / totalLen) % 1,
           0
         );
@@ -1472,27 +1759,235 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
           bestT = normT;
         }
       }
-      const lat = queryConsensusLateralAtNormT(bestT);
-      const sample = splineData.getPointAtNormalizedT(bestT, lat);
-      const yaw = Math.atan2(sample.tangent.x, sample.tangent.z);
-      newJumps.push({
-        id: `auto_jump_${Date.now()}_0`,
-        type: "JUMP_RAMP",
-        x: Number(sample.position.x.toFixed(1)),
-        z: Number(sample.position.z.toFixed(1)),
-        rotationY: Number(yaw.toFixed(2)),
-        scale: 1.1,
-      });
-      occupiedNormTs.push(bestT);
+      tryAddJumpAt(bestT, 1.1);
     }
 
-    // 3. Nudge any Item Box Rows out of mid-air jump trajectories so racers don't fly over item boxes
-    const jumpFlightArcT = 42 / totalLen;
+    return {
+      keptAndNewJumps,
+      nonJumpObstacles,
+      jumpNormTs,
+      removedHazardJumps,
+    };
+  };
+
+  // Shared helper: Populate Corner-Exit Boosters + Long-Stretch Speed-Chain Boosters + Scaled Item Box Rows
+  const buildCuratedBoostsAndItemRows = (
+    targetSpline: ReturnType<typeof computeTrackSplineSamples>,
+    roadHalfWidth: number,
+    jumpNormTs: number[],
+    useAiTraces: boolean,
+    boostIdPrefix: string,
+    rowIdPrefix: string
+  ): {
+    boostPads: CustomTrackDefinition["boostPads"];
+    itemBoxRows: CustomTrackDefinition["itemBoxRows"];
+    longStretchBoostsAdded: number;
+  } => {
+    const totalLen = Math.max(200, targetSpline.totalTrackLength);
+    const isInsideJumpCorridor = (
+      normT: number,
+      bufferAheadMeters = 45,
+      bufferBehindMeters = 14
+    ): boolean => {
+      const arcT = bufferAheadMeters / totalLen;
+      const beforeT = bufferBehindMeters / totalLen;
+      return jumpNormTs.some((jT) => {
+        const ahead = (normT - jT + 1) % 1;
+        const behind = (jT - normT + 1) % 1;
+        return ahead <= arcT || behind <= beforeT;
+      });
+    };
+
+    const targetBoostCount = Math.min(
+      12,
+      Math.max(4, Math.round(totalLen / 205))
+    );
+    const minBoostSpacingT = Math.max(0.045, 78 / totalLen);
+    const chosenBoosts: Array<{ normT: number; lat: number }> = [];
+
+    const tryAddBoost = (normT: number, defaultLat: number): boolean => {
+      if (normT < 0.05 || normT > 0.94) return false;
+      if (isInsideJumpCorridor(normT, 42, 12)) return false;
+      const tooClose = chosenBoosts.some((b) => {
+        let diff = Math.abs(b.normT - normT);
+        if (diff > 0.5) diff = 1.0 - diff;
+        return diff < minBoostSpacingT;
+      });
+      if (tooClose) return false;
+      const aiLat = useAiTraces
+        ? queryAiConsensusLateral(normT, roadHalfWidth)
+        : null;
+      const clampedLat = Math.max(
+        -(roadHalfWidth - 2.4),
+        Math.min(roadHalfWidth - 2.4, aiLat ?? defaultLat)
+      );
+      chosenBoosts.push({
+        normT,
+        lat: Number(clampedLat.toFixed(2)),
+      });
+      return true;
+    };
+
+    // 1. Score Corner Exits around the track
+    const steps = 220;
+    const exitCandidates: Array<{ normT: number; score: number; lat: number }> =
+      [];
+    for (let i = 0; i < steps; i++) {
+      const normT = i / steps;
+      if (normT < 0.055 || normT > 0.935) continue;
+      if (isInsideJumpCorridor(normT, 42, 12)) continue;
+
+      const sBack = targetSpline.getPointAtNormalizedT(
+        (normT - 24 / totalLen + 1) % 1,
+        0
+      );
+      const sHere = targetSpline.getPointAtNormalizedT(normT, 0);
+      const sAhead = targetSpline.getPointAtNormalizedT(
+        (normT + 28 / totalLen) % 1,
+        0
+      );
+
+      const turnBefore = 1.0 - Vector3.Dot(sBack.tangent, sHere.tangent);
+      const straightAhead = Vector3.Dot(sHere.tangent, sAhead.tangent);
+
+      if (straightAhead >= 0.9 && turnBefore >= 0.035) {
+        const turnCross =
+          sBack.tangent.x * sHere.tangent.z - sBack.tangent.z * sHere.tangent.x;
+        const apexExitLat =
+          Math.sign(turnCross) * Math.min(2.8, roadHalfWidth * 0.2);
+        exitCandidates.push({
+          normT,
+          score: turnBefore * 10 + straightAhead * 3,
+          lat: apexExitLat,
+        });
+      }
+    }
+    exitCandidates.sort((a, b) => b.score - a.score);
+
+    const maxCornerExitQuota = Math.ceil(targetBoostCount * 0.55);
+    for (const cand of exitCandidates) {
+      if (chosenBoosts.length >= maxCornerExitQuota) break;
+      tryAddBoost(cand.normT, cand.lat);
+    }
+
+    // 2. Long-Stretch Straightaway Speed-Chain & Slalom Populator:
+    // Find any stretch > 175m between existing action points (jumps + corner-exit boosts) and inject speed chains!
+    let longStretchBoostsAdded = 0;
+    const actionAnchors = [
+      0.04,
+      ...jumpNormTs,
+      ...chosenBoosts.map((b) => b.normT),
+      0.95,
+    ].sort((a, b) => a - b);
+
+    let slalomSign = 1;
+    for (let i = 0; i < actionAnchors.length - 1; i++) {
+      const tStart = actionAnchors[i];
+      const tEnd = actionAnchors[i + 1];
+      const gapMeters = (tEnd - tStart) * totalLen;
+      if (gapMeters < 175) continue;
+
+      // Determine how many speed-chain boosters fit comfortably inside this long stretch (1 every ~125m)
+      const chainCount = Math.min(3, Math.max(1, Math.floor(gapMeters / 135)));
+      for (let c = 1; c <= chainCount; c++) {
+        if (chosenBoosts.length >= targetBoostCount + 2) break;
+        const candT = tStart + ((tEnd - tStart) * c) / (chainCount + 1);
+        const sHere = targetSpline.getPointAtNormalizedT(candT, 0);
+        const sAhead = targetSpline.getPointAtNormalizedT(
+          (candT + 24 / totalLen) % 1,
+          0
+        );
+        const straightness = Vector3.Dot(sHere.tangent, sAhead.tangent);
+        // Weave left/right on straightaways for fun arcade slalom lines
+        const weaveLat =
+          straightness > 0.94
+            ? slalomSign * Math.min(3.4, roadHalfWidth * 0.25)
+            : 0;
+        if (tryAddBoost(candT, weaveLat)) {
+          longStretchBoostsAdded++;
+          slalomSign *= -1;
+        }
+      }
+    }
+
+    // 3. Fill any remaining quota from top corner exits or evenly spaced straightaways
+    for (const cand of exitCandidates) {
+      if (chosenBoosts.length >= targetBoostCount) break;
+      tryAddBoost(cand.normT, cand.lat);
+    }
+    if (chosenBoosts.length < 4) {
+      for (const fallbackT of [0.16, 0.36, 0.58, 0.78]) {
+        if (chosenBoosts.length >= 4) break;
+        tryAddBoost(fallbackT, 0);
+      }
+    }
+
+    chosenBoosts.sort((a, b) => a.normT - b.normT);
+    const boostPads = chosenBoosts.map((b, idx) => ({
+      id: `${boostIdPrefix}_${idx}`,
+      normT: Number(b.normT.toFixed(4)),
+      lateral: b.lat,
+    }));
+
+    // 4. Scale Grounded Item Box Rows with track length (3 on compact ~950m up to 7 on mega ~3,000m)
+    const targetItemRowCount = Math.min(
+      7,
+      Math.max(3, Math.round(totalLen / 375))
+    );
+    const itemBoxRows: CustomTrackDefinition["itemBoxRows"] = [];
+    for (let rIdx = 0; rIdx < targetItemRowCount; rIdx++) {
+      const anchorT = 0.12 + ((rIdx + 0.5) / targetItemRowCount) * 0.78;
+      let bestT = anchorT;
+      let bestScore = -999;
+      for (let offset = -14; offset <= 14; offset++) {
+        const candT = (anchorT + offset * 0.0045 + 1) % 1;
+        if (candT < 0.065 || candT > 0.93) continue;
+        if (isInsideJumpCorridor(candT, 46, 14)) continue;
+        const s0 = targetSpline.getPointAtNormalizedT(candT, 0);
+        const sAhead = targetSpline.getPointAtNormalizedT(
+          (candT + 22 / totalLen) % 1,
+          0
+        );
+        const straightness = Vector3.Dot(s0.tangent, sAhead.tangent);
+        // Bonus if this item row sits inside a long stretch between boost pads
+        const score = straightness - Math.abs(offset) * 0.008;
+        if (score > bestScore) {
+          bestScore = score;
+          bestT = candT;
+        }
+      }
+      itemBoxRows.push({
+        id: `${rowIdPrefix}_${rIdx}`,
+        normT: Number(bestT.toFixed(4)),
+      });
+    }
+
+    return { boostPads, itemBoxRows, longStretchBoostsAdded };
+  };
+
+  // Feature 4: Auto-Place Safe Jumps (scales with track length, populates long stretches & crests, and clears item boxes from jump arcs)
+  const handleAutoPlaceSafeJumps = () => {
+    const currentDef = trackDefRef.current;
+    const totalLen = Math.max(200, splineData.totalTrackLength);
+    const {
+      keptAndNewJumps,
+      nonJumpObstacles,
+      jumpNormTs,
+      removedHazardJumps,
+    } = buildCuratedSafeJumps(
+      splineData,
+      currentDef.roadHalfWidth,
+      currentDef.obstacles,
+      true,
+      `auto_jump_${Date.now()}`
+    );
+
+    // Nudge any Item Box Rows out of mid-air jump trajectories so racers don't fly over item boxes
+    const jumpFlightArcT = 44 / totalLen;
     const adjustedItemRows = currentDef.itemBoxRows.map((row) => {
-      for (const jT of occupiedNormTs) {
+      for (const jT of jumpNormTs) {
         const deltaAhead = (row.normT - jT + 1) % 1;
         if (deltaAhead >= 0 && deltaAhead < jumpFlightArcT) {
-          // Place row safely after the landing zone
           return {
             ...row,
             normT: Number(((jT + jumpFlightArcT + 0.018) % 1).toFixed(4)),
@@ -1505,7 +2000,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     commitWorkingEdit(
       {
         ...currentDef,
-        obstacles: [...nonJumpObstacles, ...newJumps],
+        obstacles: [...nonJumpObstacles, ...keptAndNewJumps],
         itemBoxRows: adjustedItemRows,
       },
       true
@@ -1515,44 +2010,18 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
       removedHazardJumps > 0
         ? `Relocated ${removedHazardJumps} corner-hazard jump${
             removedHazardJumps === 1 ? "" : "s"
-          } & placed ${newJumps.length} Safe Stunt Jump${
-            newJumps.length === 1 ? "" : "s"
-          } on straightaways!`
-        : `Placed ${newJumps.length} Safe Stunt Jump${
-            newJumps.length === 1 ? "" : "s"
-          } with clear landing runways on the AI line!`
+          } & placed ${keptAndNewJumps.length} Safe Stunt Jump${
+            keptAndNewJumps.length === 1 ? "" : "s"
+          } across crests & long straightaways!`
+        : `Placed ${keptAndNewJumps.length} Safe Stunt Jump${
+            keptAndNewJumps.length === 1 ? "" : "s"
+          } across crests & long straightaways (${Math.round(totalLen)}m loop)!`
     );
   };
 
-  // Feature 5: Auto-Curate Corner-Exit Boost Pads & Grounded Item Box Rows
+  // Feature 5: Auto-Curate Corner-Exit + Long-Stretch Speed-Chain Boost Pads & Scaled Item Box Rows
   const handleAutoCurateBoostsAndBoxes = () => {
     const currentDef = trackDefRef.current;
-    const totalLen = Math.max(200, splineData.totalTrackLength);
-
-    const queryConsensusLateralAtNormT = (targetNormT: number): number => {
-      if (recordedAiTraces.length === 0) return 0;
-      const lats: number[] = [];
-      for (const r of recordedAiTraces) {
-        for (const s of r.pathSamples) {
-          let diffT = Math.abs(s.normT - targetNormT);
-          if (diffT > 0.5) diffT = 1.0 - diffT;
-          if (diffT <= 0.025 && (s.surface !== "OFFROAD" || s.boosting)) {
-            lats.push(s.signedLat);
-          }
-        }
-      }
-      if (lats.length === 0) return 0;
-      lats.sort((a, b) => a - b);
-      const mid = Math.floor(lats.length / 2);
-      const medianLat =
-        lats.length % 2 === 1
-          ? lats[mid]
-          : (lats[mid - 1] + lats[mid]) * 0.5;
-      const maxSafeLat = Math.max(1.5, currentDef.roadHalfWidth - 2.4);
-      return Math.max(-maxSafeLat, Math.min(maxSafeLat, medianLat));
-    };
-
-    // Find normalizedTs of existing Jump Ramps so we don't put boost pads or item boxes inside mid-air jump arcs
     const jumpNormTs = currentDef.obstacles
       .filter((o) => o.type === "JUMP_RAMP")
       .map(
@@ -1561,115 +2030,28 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
             .normalizedSplineT
       );
 
-    const isInsideJumpCorridor = (normT: number, bufferMeters = 45): boolean => {
-      const arcT = bufferMeters / totalLen;
-      const beforeT = 12 / totalLen;
-      return jumpNormTs.some((jT) => {
-        const ahead = (normT - jT + 1) % 1;
-        const behind = (jT - normT + 1) % 1;
-        return ahead <= arcT || behind <= beforeT;
-      });
-    };
-
-    // 1. Score Corner Exits around the track (curvature behind transitioning into straightaway ahead)
-    const exitCandidates: Array<{ normT: number; score: number }> = [];
-    const steps = 160;
-    for (let i = 0; i < steps; i++) {
-      const normT = i / steps;
-      if (normT < 0.06 || normT > 0.93) continue;
-      if (isInsideJumpCorridor(normT, 38)) continue;
-
-      const sBack = splineData.getPointAtNormalizedT(
-        (normT - 24 / totalLen + 1) % 1,
-        0
+    const now = Date.now();
+    const { boostPads, itemBoxRows, longStretchBoostsAdded } =
+      buildCuratedBoostsAndItemRows(
+        splineData,
+        currentDef.roadHalfWidth,
+        jumpNormTs,
+        true,
+        `boost_auto_${now}`,
+        `item_row_auto_${now}`
       );
-      const sHere = splineData.getPointAtNormalizedT(normT, 0);
-      const sAhead = splineData.getPointAtNormalizedT(
-        (normT + 28 / totalLen) % 1,
-        0
-      );
-
-      const turnBefore = 1.0 - Vector3.Dot(sBack.tangent, sHere.tangent);
-      const straightAhead = Vector3.Dot(sHere.tangent, sAhead.tangent);
-
-      if (straightAhead >= 0.91 && turnBefore >= 0.04) {
-        exitCandidates.push({
-          normT,
-          score: turnBefore * 10 + straightAhead * 3,
-        });
-      }
-    }
-    exitCandidates.sort((a, b) => b.score - a.score);
-
-    const chosenBoostTs: number[] = [];
-    const minBoostSpacing = Math.max(0.16, 105 / totalLen);
-    for (const cand of exitCandidates) {
-      if (chosenBoostTs.length >= 4) break;
-      const tooClose = chosenBoostTs.some((t) => {
-        let diff = Math.abs(t - cand.normT);
-        if (diff > 0.5) diff = 1.0 - diff;
-        return diff < minBoostSpacing;
-      });
-      if (tooClose) continue;
-      chosenBoostTs.push(cand.normT);
-    }
-
-    // Fallback if track is mostly gentle curves
-    if (chosenBoostTs.length < 3) {
-      for (const fallbackT of [0.18, 0.46, 0.74]) {
-        if (chosenBoostTs.length >= 3) break;
-        if (!isInsideJumpCorridor(fallbackT, 30)) {
-          chosenBoostTs.push(fallbackT);
-        }
-      }
-    }
-    chosenBoostTs.sort((a, b) => a - b);
-
-    const curatedBoostPads = chosenBoostTs.map((normT, idx) => ({
-      id: `boost_auto_${Date.now()}_${idx}`,
-      normT: Number(normT.toFixed(4)),
-      lateral: Number(queryConsensusLateralAtNormT(normT).toFixed(2)),
-    }));
-
-    // 2. Place 3 evenly spaced Item Box Rows on settled straightaways outside jump arcs
-    const targetRowAnchors = [0.22, 0.52, 0.80];
-    const curatedItemRows = targetRowAnchors.map((anchorT, idx) => {
-      let bestT = anchorT;
-      let bestScore = -999;
-      for (let offset = -12; offset <= 12; offset++) {
-        const candT = (anchorT + offset * 0.006 + 1) % 1;
-        if (candT < 0.07 || candT > 0.92) continue;
-        if (isInsideJumpCorridor(candT, 46)) continue;
-        const s0 = splineData.getPointAtNormalizedT(candT, 0);
-        const sAhead = splineData.getPointAtNormalizedT(
-          (candT + 20 / totalLen) % 1,
-          0
-        );
-        const straightness = Vector3.Dot(s0.tangent, sAhead.tangent);
-        const distPenalty = Math.abs( offset ) * 0.01;
-        const score = straightness - distPenalty;
-        if (score > bestScore) {
-          bestScore = score;
-          bestT = candT;
-        }
-      }
-      return {
-        id: `item_row_auto_${Date.now()}_${idx}`,
-        normT: Number(bestT.toFixed(4)),
-      };
-    });
 
     commitWorkingEdit(
       {
         ...currentDef,
-        boostPads: curatedBoostPads,
-        itemBoxRows: curatedItemRows,
+        boostPads,
+        itemBoxRows,
       },
       true
     );
 
     flashIoNotice(
-      `Auto-curated ${curatedBoostPads.length} Corner-Exit Boost Pads (on AI line) & ${curatedItemRows.length} Grounded Item Box Rows!`
+      `Curated ${boostPads.length} Boost Pads (${longStretchBoostsAdded} on long stretches) & ${itemBoxRows.length} Grounded Item Box Rows!`
     );
   };
 
@@ -1679,7 +2061,8 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     const { pts: nextPts, subdividedCount, relaxedCount } =
       unbuckleAndRefineControlPoints(
         currentDef.controlPoints,
-        currentDef.roadHalfWidth
+        currentDef.roadHalfWidth,
+        false
       );
 
     commitWorkingEdit(
@@ -1700,12 +2083,12 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
       );
     } else {
       flashIoNotice(
-        "All corners already have clean inner-seam radii — applied gentle elevation & spacing polish!"
+        "All corners already have clean inner-seam radii — zero buckled corners found!"
       );
     }
   };
 
-  // Feature 7: 1-Click Procedural Track Generator (archetype spline + anti-buckle + safe jumps + boosts + item boxes + scenery)
+  // Feature 7: 1-Click Procedural Track Generator (true generative spline + size control + long-stretch action populator + scenery)
   const handleGenerateProceduralTrack = () => {
     const currentDef = trackDefRef.current;
     proceduralGenCountRef.current += 1;
@@ -1716,6 +2099,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
 
     const generated = generateProceduralCircuitControlPoints(
       proceduralArchetype,
+      proceduralSize,
       seed,
       currentDef.roadHalfWidth
     );
@@ -1727,194 +2111,25 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     );
     const totalLen = Math.max(200, newSpline.totalTrackLength);
 
-    // 1. Auto-place 2-3 Safe Stunt Jumps on straightaways/crests with >= 46m clear landing runways
-    const jumpCandidates: Array<{ normT: number; score: number }> = [];
-    const steps = 160;
-    for (let i = 0; i < steps; i++) {
-      const normT = i / steps;
-      if (normT < 0.07 || normT > 0.91) continue;
-      const s0 = newSpline.getPointAtNormalizedT(normT, 0);
-      const sBehind = newSpline.getPointAtNormalizedT(
-        (normT - 18 / totalLen + 1) % 1,
-        0
+    // 1. Populate length-scaled Safe Stunt Jumps across hill crests & long straightaways
+    const { keptAndNewJumps: safeJumps, jumpNormTs } = buildCuratedSafeJumps(
+      newSpline,
+      generated.roadHalfWidth,
+      [],
+      false,
+      `proc_jump_${seed}`
+    );
+
+    // 2. Populate Corner-Exit + Long-Stretch Slalom Speed-Chain Boost Pads & Scaled Item Box Rows
+    const { boostPads: procBoostPads, itemBoxRows: procItemRows } =
+      buildCuratedBoostsAndItemRows(
+        newSpline,
+        generated.roadHalfWidth,
+        jumpNormTs,
+        false,
+        `proc_boost_${seed}`,
+        `proc_item_row_${seed}`
       );
-      const s15 = newSpline.getPointAtNormalizedT(
-        (normT + 15 / totalLen) % 1,
-        0
-      );
-      const s30 = newSpline.getPointAtNormalizedT(
-        (normT + 30 / totalLen) % 1,
-        0
-      );
-      const s46 = newSpline.getPointAtNormalizedT(
-        (normT + 46 / totalLen) % 1,
-        0
-      );
-
-      const tan0 = new Vector3(s0.tangent.x, 0, s0.tangent.z).normalize();
-      const tanBehind = new Vector3(
-        sBehind.tangent.x,
-        0,
-        sBehind.tangent.z
-      ).normalize();
-      const tan15 = new Vector3(s15.tangent.x, 0, s15.tangent.z).normalize();
-      const tan30 = new Vector3(s30.tangent.x, 0, s30.tangent.z).normalize();
-      const tan46 = new Vector3(s46.tangent.x, 0, s46.tangent.z).normalize();
-
-      const dotBehind = Vector3.Dot(tan0, tanBehind);
-      const dot15 = Vector3.Dot(tan0, tan15);
-      const dot30 = Vector3.Dot(tan0, tan30);
-      const dot46 = Vector3.Dot(tan0, tan46);
-
-      const s42 = newSpline.getPointAtNormalizedT(
-        (normT + 42 / totalLen) % 1,
-        0
-      );
-      const toLanding = s42.position.subtract(s0.position);
-      toLanding.y = 0;
-      const binorm0 = new Vector3(s0.binormal.x, 0, s0.binormal.z).normalize();
-      const crossTrackOffset = Math.abs(Vector3.Dot(toLanding, binorm0));
-
-      if (
-        dotBehind >= 0.9 &&
-        dot15 >= 0.95 &&
-        dot30 >= 0.92 &&
-        dot46 >= 0.88 &&
-        crossTrackOffset <= generated.roadHalfWidth * 0.62
-      ) {
-        const crestBonus = Math.max(0, (s0.position.y - s30.position.y) * 0.12);
-        const score =
-          (dotBehind + dot15 * 1.5 + dot30 * 1.5 + dot46 * 1.2) * 20 -
-          crossTrackOffset * 1.8 +
-          crestBonus;
-        jumpCandidates.push({ normT, score });
-      }
-    }
-    jumpCandidates.sort((a, b) => b.score - a.score);
-
-    const targetJumps = Math.min(3, Math.max(2, Math.round(totalLen / 340)));
-    const minJumpSpace = Math.max(0.2, 140 / totalLen);
-    const jumpNormTs: number[] = [];
-    const safeJumps: CustomTrackDefinition["obstacles"] = [];
-
-    for (const cand of jumpCandidates) {
-      if (safeJumps.length >= targetJumps) break;
-      const tooClose = jumpNormTs.some((t) => {
-        let diff = Math.abs(t - cand.normT);
-        if (diff > 0.5) diff = 1.0 - diff;
-        return diff < minJumpSpace;
-      });
-      if (tooClose) continue;
-      const sample = newSpline.getPointAtNormalizedT(cand.normT, 0);
-      const yaw = Math.atan2(sample.tangent.x, sample.tangent.z);
-      safeJumps.push({
-        id: `proc_jump_${seed}_${safeJumps.length}`,
-        type: "JUMP_RAMP",
-        x: Number(sample.position.x.toFixed(1)),
-        z: Number(sample.position.z.toFixed(1)),
-        rotationY: Number(yaw.toFixed(2)),
-        scale: 1.15,
-      });
-      jumpNormTs.push(cand.normT);
-    }
-
-    const isInsideJumpCorridor = (normT: number, bufferMeters = 45): boolean => {
-      const arcT = bufferMeters / totalLen;
-      const beforeT = 12 / totalLen;
-      return jumpNormTs.some((jT) => {
-        const ahead = (normT - jT + 1) % 1;
-        const behind = (jT - normT + 1) % 1;
-        return ahead <= arcT || behind <= beforeT;
-      });
-    };
-
-    // 2. Auto-place 4 Corner-Exit Boost Pads outside jump flight arcs
-    const boostCandidates: Array<{ normT: number; score: number; lat: number }> =
-      [];
-    for (let i = 0; i < steps; i++) {
-      const normT = i / steps;
-      if (normT < 0.06 || normT > 0.93) continue;
-      if (isInsideJumpCorridor(normT, 38)) continue;
-      const sBack = newSpline.getPointAtNormalizedT(
-        (normT - 24 / totalLen + 1) % 1,
-        0
-      );
-      const sHere = newSpline.getPointAtNormalizedT(normT, 0);
-      const sAhead = newSpline.getPointAtNormalizedT(
-        (normT + 28 / totalLen) % 1,
-        0
-      );
-      const turnBefore = 1.0 - Vector3.Dot(sBack.tangent, sHere.tangent);
-      const straightAhead = Vector3.Dot(sHere.tangent, sAhead.tangent);
-      if (straightAhead >= 0.91 && turnBefore >= 0.04) {
-        // Nudge slightly toward the apex-exit side
-        const turnCross =
-          sBack.tangent.x * sHere.tangent.z - sBack.tangent.z * sHere.tangent.x;
-        const lat = Number(
-          (Math.sign(turnCross) * Math.min(2.4, generated.roadHalfWidth * 0.16)).toFixed(2)
-        );
-        boostCandidates.push({
-          normT,
-          score: turnBefore * 10 + straightAhead * 3,
-          lat,
-        });
-      }
-    }
-    boostCandidates.sort((a, b) => b.score - a.score);
-
-    const chosenBoosts: Array<{ normT: number; lat: number }> = [];
-    const minBoostSpace = Math.max(0.16, 105 / totalLen);
-    for (const cand of boostCandidates) {
-      if (chosenBoosts.length >= 4) break;
-      const tooClose = chosenBoosts.some((b) => {
-        let diff = Math.abs(b.normT - cand.normT);
-        if (diff > 0.5) diff = 1.0 - diff;
-        return diff < minBoostSpace;
-      });
-      if (tooClose) continue;
-      chosenBoosts.push({ normT: cand.normT, lat: cand.lat });
-    }
-    if (chosenBoosts.length < 3) {
-      for (const fallbackT of [0.18, 0.46, 0.74]) {
-        if (chosenBoosts.length >= 3) break;
-        if (!isInsideJumpCorridor(fallbackT, 30)) {
-          chosenBoosts.push({ normT: fallbackT, lat: 0 });
-        }
-      }
-    }
-    chosenBoosts.sort((a, b) => a.normT - b.normT);
-
-    const procBoostPads = chosenBoosts.map((b, idx) => ({
-      id: `proc_boost_${seed}_${idx}`,
-      normT: Number(b.normT.toFixed(4)),
-      lateral: b.lat,
-    }));
-
-    // 3. Auto-place 3 Grounded Item Box Rows outside mid-air jump trajectories
-    const procItemRows = [0.22, 0.52, 0.8].map((anchorT, idx) => {
-      let bestT = anchorT;
-      let bestScore = -999;
-      for (let offset = -12; offset <= 12; offset++) {
-        const candT = (anchorT + offset * 0.006 + 1) % 1;
-        if (candT < 0.07 || candT > 0.92) continue;
-        if (isInsideJumpCorridor(candT, 46)) continue;
-        const s0 = newSpline.getPointAtNormalizedT(candT, 0);
-        const sAhead = newSpline.getPointAtNormalizedT(
-          (candT + 20 / totalLen) % 1,
-          0
-        );
-        const straightness = Vector3.Dot(s0.tangent, sAhead.tangent);
-        const score = straightness - Math.abs(offset) * 0.01;
-        if (score > bestScore) {
-          bestScore = score;
-          bestT = candT;
-        }
-      }
-      return {
-        id: `proc_item_row_${seed}_${idx}`,
-        normT: Number(bestT.toFixed(4)),
-      };
-    });
 
     const nextScenerySeed = (currentDef.scenerySeed ?? 0) + 1;
     const populatedTrack = syncTracksideSceneryAndClearRoad({
@@ -1938,11 +2153,11 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     commitWorkingEdit(populatedTrack, true);
 
     flashIoNotice(
-      `Generated "${generated.archetypeTitle}" (${Math.round(
+      `Generated ${generated.sizeTitle} "${generated.archetypeTitle}" (${Math.round(
         totalLen
-      )}m, ${generated.controlPoints.length} buckle-free nodes, ${
-        safeJumps.length
-      } jumps, ${procBoostPads.length} boosts)!`
+      )}m, ${safeJumps.length} jumps, ${procBoostPads.length} boosts, ${
+        procItemRows.length
+      } item rows)!`
     );
   };
 
@@ -2154,13 +2369,20 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     );
     camera.lowerBetaLimit = 0.08;
     camera.upperBetaLimit = Math.PI / 2 - 0.06;
-    camera.lowerRadiusLimit = 45;
-    camera.upperRadiusLimit = 1100;
+    camera.lowerRadiusLimit = 35;
+    camera.upperRadiusLimit = 1800;
     camera.wheelPrecision = 0.6;
     camera.panningSensibility = 18;
-    camera.maxZ = 2200;
-    camera.attachControl(canvas, true);
+    camera.maxZ = 3800;
+    camera.attachControl(canvas, false);
     camera3dRef.current = camera;
+
+    const preventCanvasWheelPageScroll = (e: WheelEvent) => {
+      e.preventDefault();
+    };
+    canvas.addEventListener("wheel", preventCanvasWheelPageScroll, {
+      passive: false,
+    });
 
     // 3D Brush Ring Cursor on Terrain
     const brushRing = MeshBuilder.CreateTorus(
@@ -2312,7 +2534,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     scene.onPointerUp = () => {
       if (dragged3dNodeIdx !== null) {
         dragged3dNodeIdx = null;
-        camera.attachControl(canvas, true);
+        camera.attachControl(canvas, false);
       }
     };
 
@@ -2324,6 +2546,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     window.addEventListener("resize", handleResize);
 
     return () => {
+      canvas.removeEventListener("wheel", preventCanvasWheelPageScroll);
       window.removeEventListener("resize", handleResize);
       sceneRef.current = null;
       camera3dRef.current = null;
@@ -2659,7 +2882,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
   return (
     <div
       data-testid="track-editor-screen"
-      className="min-h-screen w-full bg-slate-950 text-white flex flex-col select-none"
+      className="h-screen w-full overflow-hidden overscroll-none bg-slate-950 text-white flex flex-col select-none"
     >
       {/* Hidden File Input for Importing Track / Cup / Catalog JSON */}
       <input
@@ -2888,8 +3111,23 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
             ⚡ AUTO-CURATE BOOSTS &amp; BOXES
           </button>
 
-          {/* 1-Click Procedural Circuit Generator (Archetype Selector + Generate Button) */}
+          {/* 1-Click Procedural Circuit Generator (Size Selector + Archetype Selector + Generate Button) */}
           <div className="flex items-center gap-1 rounded-lg border border-amber-400/50 bg-amber-950/40 p-0.5">
+            <select
+              data-testid="editor-procedural-size-select"
+              value={proceduralSize}
+              onChange={(e) =>
+                setProceduralSize(e.target.value as ProceduralTrackSize)
+              }
+              className="rounded bg-slate-900 px-1.5 py-1 text-[10px] font-black uppercase text-emerald-200 border border-emerald-400/30 focus:outline-none cursor-pointer"
+              title="Select generated circuit size tier (Compact ~950m, Standard ~1.5km, Large ~2.2km, Mega ~3.0km, or Any Size)"
+            >
+              {PROCEDURAL_SIZE_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
             <select
               data-testid="editor-procedural-archetype-select"
               value={proceduralArchetype}
@@ -2912,7 +3150,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
               data-testid="editor-generate-track-btn"
               onClick={handleGenerateProceduralTrack}
               className="inline-flex items-center gap-1 rounded bg-amber-400 px-2 py-1 text-[10px] font-black uppercase text-slate-950 hover:bg-amber-300 transition cursor-pointer"
-              title="Procedurally generate a brand-new, buckle-free circuit spline with elevation hills, safe stunt jumps, corner-exit boost pads, item boxes, and scenery (supports Ctrl+Z Undo)"
+              title="Procedurally synthesize a brand-new, buckle-free circuit spline with elevation hills, long-stretch stunt jumps, slalom speed-chain boost pads, item box rows, and scenery (supports Ctrl+Z Undo)"
             >
               <Sparkles className="h-3 w-3" />
               GENERATE TRACK
@@ -3059,9 +3297,9 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
       </header>
 
       {/* Main Editor Body */}
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 overflow-hidden">
+      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 overflow-hidden">
         {/* Left Sidebar: Cup/Map Switcher, 3D Spline, 3D Terrain Sculptor, Forest, Boost Pads & Obstacles */}
-        <aside className="lg:col-span-4 xl:col-span-3 border-r border-white/10 bg-slate-900/80 p-4 overflow-y-auto space-y-5 max-h-[calc(100vh-68px)]">
+        <aside className="lg:col-span-4 xl:col-span-3 border-r border-white/10 bg-slate-900/80 p-4 overflow-y-auto overscroll-contain space-y-5 h-full min-h-0">
           {/* 0. Grand Prix Cup & Map Switcher */}
           {cupsCatalog.length > 0 && (
             <div className="rounded-2xl border border-amber-400/35 bg-slate-950/80 p-3 space-y-2.5">
@@ -3815,15 +4053,15 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
             viewportLayout === "SPLIT_3D_2D"
               ? "grid-cols-1 xl:grid-cols-2"
               : "grid-cols-1"
-          } h-[calc(100vh-68px)] overflow-hidden bg-slate-950`}
+          } h-full min-h-0 overscroll-none overflow-hidden bg-slate-950`}
         >
           {/* 3D Interactive Babylon.js Viewport */}
           {viewportLayout !== "2D_ONLY" && (
-            <div className="relative h-full w-full border-r border-white/10 overflow-hidden">
+            <div className="relative h-full w-full min-h-0 border-r border-white/10 overflow-hidden overscroll-none">
               <canvas
                 ref={canvas3dRef}
                 data-testid="editor-3d-canvas"
-                className="h-full w-full block outline-none touch-none"
+                className="h-full w-full block outline-none touch-none overscroll-none"
               />
 
               {/* 3D Camera Preset Overlay */}
