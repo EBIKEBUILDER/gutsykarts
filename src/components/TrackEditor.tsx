@@ -252,16 +252,16 @@ const PROCEDURAL_ARCHETYPE_OPTIONS: Array<{
   label: string;
 }> = [
   { id: "RANDOM", label: "🎲 Surprise Me (Random)" },
-  { id: "SWEEPER", label: "🏎️ High-Speed Sweeper" },
-  { id: "SWITCHBACK", label: "🐍 Technical Switchback" },
-  { id: "KIDNEY", label: "🥨 Kidney / Twin-Lobe" },
-  { id: "CANYON", label: "⛰️ Canyon Hairpin Run" },
-  { id: "STADIUM", label: "🏟️ Stadium Grand Oval" },
+  { id: "SWEEPER", label: "🏎️ Grand Prix Dogleg & Chicane" },
+  { id: "SWITCHBACK", label: "🐍 Serpentine Touge Slalom" },
+  { id: "KIDNEY", label: "🥨 Deep Boomerang / U-Valley" },
+  { id: "CANYON", label: "⛰️ Tri-Lobe Clover Peninsula" },
+  { id: "STADIUM", label: "🏟️ Twin-Hairpin Parallel Gauntlet" },
 ];
 
 /**
  * Detects control nodes where the road/curb ribbon pinches or buckles at the inner seam
- * (either because the Catmull-Rom inner curb edge moves backward/stalls or a single control node makes an acute bend).
+ * (only flags true inner-edge reversals/folds or acute single-node kinks > 96 deg).
  */
 function detectBuckledControlNodes(
   pts: Array<{ x: number; y: number; z: number }>,
@@ -276,7 +276,7 @@ function detectBuckledControlNodes(
   const n = pts.length;
   if (n < 4) return buckled;
 
-  const minSafeChord = Math.max(36, roadHalfWidth * 2.5);
+  const minSafeChord = Math.max(30, roadHalfWidth * 2.2);
   for (let i = 1; i < n; i++) {
     const prev = pts[(i - 1 + n) % n];
     const curr = pts[i];
@@ -292,17 +292,17 @@ function detectBuckledControlNodes(
       continue;
     }
     const cosTurn = (ux1 * ux2 + uz1 * uz2) / (len1 * len2);
-    // Single-node turn > ~76 deg or tight chord with turn > ~48 deg causes Catmull-Rom inner curb pinching
+    // Single-node acute turn > ~96 deg or bunched chord with sharp bend causes inner curb folding
     if (
-      cosTurn < 0.24 ||
-      (Math.min(len1, len2) < minSafeChord && cosTurn < 0.66)
+      cosTurn < -0.1 ||
+      (Math.min(len1, len2) < minSafeChord && cosTurn < 0.45)
     ) {
       buckled.add(i);
     }
   }
 
-  // Exact differential-geometry inner-curb ribbon check along sampled spline
-  const curbOffset = roadHalfWidth + 2.2;
+  // Exact differential-geometry inner-curb ribbon fold check along sampled spline
+  const curbOffset = roadHalfWidth + 1.8;
   const sCount = splineSamples.length;
   for (let k = 0; k < sCount; k++) {
     const s0 = splineSamples[k];
@@ -328,7 +328,7 @@ function detectBuckledControlNodes(
     const ratioR =
       ((r1x - r0x) * s0.tangent.x + (r1z - r0z) * s0.tangent.z) / ds;
 
-    if (Math.min(ratioL, ratioR) < 0.24) {
+    if (Math.min(ratioL, ratioR) < 0.08) {
       // Map pinched ribbon sample to nearest movable control node (idx >= 1)
       let bestIdx = -1;
       let bestDist = 64;
@@ -352,8 +352,9 @@ function detectBuckledControlNodes(
 }
 
 /**
- * Automatically subdivides/bevels harsh corners, enforces minimum chord spacing,
- * separates close non-adjacent corridors, and relaxes curvature until the inner curb seam never buckles.
+ * Local Corner-Shoulder Beveling Solver:
+ * Eliminates inner-seam curb buckling by inserting local entry/exit shoulder points right at sharp corners
+ * without shrinking or circularizing the overall track geometry.
  */
 function unbuckleAndRefineControlPoints(
   rawPts: Array<{ x: number; y: number; z: number }>,
@@ -371,28 +372,30 @@ function unbuckleAndRefineControlPoints(
     return { pts, subdividedCount, relaxedCount };
   }
 
-  const minSpacing = Math.max(42, roadHalfWidth * 2.95);
-  const minCorridorDist = Math.max(54, roadHalfWidth * 3.8);
+  const targetShoulderDist = Math.max(38, roadHalfWidth * 2.8);
 
-  for (let pass = 0; pass < 8; pass++) {
+  for (let pass = 0; pass < 3; pass++) {
     // Keep P0 anchored at (0,0,0) and P1 aligned along the +Z start/finish straight
     pts[0] = { x: 0, y: 0, z: 0 };
     if (pts.length > 1) {
       pts[1] = {
         x: 0,
         y: Number(Math.max(0, Math.min(2.0, pts[1].y)).toFixed(1)),
-        z: Number(Math.max(84, Math.min(116, pts[1].z)).toFixed(1)),
+        z: Number(Math.max(88, Math.min(130, pts[1].z)).toFixed(1)),
       };
     }
 
-    // 1. Merge overly bunched non-start control points that cause micro-kinks
-    if (pts.length > 10) {
+    // 1. Merge accidentally stacked control points (< 2.0 * roadHalfWidth apart)
+    if (pts.length > 8) {
       const merged: typeof pts = [pts[0], pts[1]];
       let i = 2;
       while (i < pts.length) {
         if (i < pts.length - 1) {
-          const d = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].z - pts[i].z);
-          if (d < roadHalfWidth * 2.15 && merged.length + (pts.length - i) > 9) {
+          const d = Math.hypot(
+            pts[i + 1].x - pts[i].x,
+            pts[i + 1].z - pts[i].z
+          );
+          if (d < roadHalfWidth * 2.0 && merged.length + (pts.length - i) > 8) {
             merged.push({
               x: Number(((pts[i].x + pts[i + 1].x) * 0.5).toFixed(1)),
               y: Number(((pts[i].y + pts[i + 1].y) * 0.5).toFixed(1)),
@@ -409,8 +412,8 @@ function unbuckleAndRefineControlPoints(
       pts = merged;
     }
 
-    // 2. Bevel / Subdivide any acute single-point corner into two rounded shoulder nodes
-    if (pts.length < 22) {
+    // 2. Local Corner-Shoulder Beveling: replace acute single-vertex corners with a wide-radius 2-point shoulder turn
+    if (pts.length < 28) {
       const nextPts: typeof pts = [pts[0], pts[1]];
       const n = pts.length;
       for (let i = 2; i < n; i++) {
@@ -426,23 +429,30 @@ function unbuckleAndRefineControlPoints(
         const cosTurn =
           len1 > 1 && len2 > 1 ? (ux1 * ux2 + uz1 * uz2) / (len1 * len2) : 1;
 
+        // Only bevel genuinely sharp corners (> ~86 deg turn) where segments have room for local shoulders
         if (
           i < n - 1 &&
-          cosTurn < 0.28 &&
-          len1 > 48 &&
-          len2 > 48 &&
-          nextPts.length + (n - i) < 23
+          cosTurn < 0.06 &&
+          len1 > targetShoulderDist * 1.45 &&
+          len2 > targetShoulderDist * 1.45 &&
+          nextPts.length + (n - i) < 29
         ) {
-          // Split sharp apex into two smooth entry/exit shoulder points
+          const dIn = Math.min(len1 * 0.32, targetShoulderDist);
+          const dOut = Math.min(len2 * 0.32, targetShoulderDist);
+          const dirInX = ux1 / len1;
+          const dirInZ = uz1 / len1;
+          const dirOutX = ux2 / len2;
+          const dirOutZ = uz2 / len2;
+
           const shoulderIn = {
-            x: Number((curr.x - ux1 * 0.28 + ux2 * 0.04).toFixed(1)),
-            y: Number((prev.y * 0.28 + curr.y * 0.72).toFixed(1)),
-            z: Number((curr.z - uz1 * 0.28 + uz2 * 0.04).toFixed(1)),
+            x: Number((curr.x - dirInX * dIn + dirOutX * 4.5).toFixed(1)),
+            y: Number((prev.y * 0.25 + curr.y * 0.75).toFixed(1)),
+            z: Number((curr.z - dirInZ * dIn + dirOutZ * 4.5).toFixed(1)),
           };
           const shoulderOut = {
-            x: Number((curr.x + ux2 * 0.28 - ux1 * 0.04).toFixed(1)),
-            y: Number((curr.y * 0.72 + next.y * 0.28).toFixed(1)),
-            z: Number((curr.z + uz2 * 0.28 - uz1 * 0.04).toFixed(1)),
+            x: Number((curr.x + dirOutX * dOut - dirInX * 4.5).toFixed(1)),
+            y: Number((curr.y * 0.75 + next.y * 0.25).toFixed(1)),
+            z: Number((curr.z + dirOutZ * dOut - dirInZ * 4.5).toFixed(1)),
           };
           nextPts.push(shoulderIn, shoulderOut);
           subdividedCount++;
@@ -453,108 +463,37 @@ function unbuckleAndRefineControlPoints(
       pts = nextPts;
     }
 
-    // 3. Detect buckled / high-curvature nodes on the live Catmull-Rom spline and relax them
+    // 3. Strictly Local Relaxation ONLY on nodes that still fail the differential-geometry inner-curb fold check
     const sampled = computeTrackSplineSamples(pts, 18, []);
     const buckledSet = detectBuckledControlNodes(
       pts,
       roadHalfWidth,
       sampled.samples
     );
+    if (buckledSet.size === 0) break;
 
     const n = pts.length;
     const relaxedPts = pts.map((p) => ({ ...p }));
-    for (let i = 2; i < n; i++) {
-      const prev = pts[(i - 1 + n) % n];
-      const curr = pts[i];
-      const next = pts[(i + 1) % n];
-      const ux1 = curr.x - prev.x;
-      const uz1 = curr.z - prev.z;
-      const ux2 = next.x - curr.x;
-      const uz2 = next.z - curr.z;
-      const len1 = Math.hypot(ux1, uz1);
-      const len2 = Math.hypot(ux2, uz2);
-      const cosTurn =
-        len1 > 1 && len2 > 1 ? (ux1 * ux2 + uz1 * uz2) / (len1 * len2) : 1;
-
-      if (buckledSet.has(i) || cosTurn < 0.36) {
-        const blend = buckledSet.has(i) ? 0.36 : 0.24;
-        const midX = (prev.x + next.x) * 0.5;
-        const midZ = (prev.z + next.z) * 0.5;
-        relaxedPts[i].x = Number(
-          (curr.x * (1 - blend) + midX * blend).toFixed(1)
-        );
-        relaxedPts[i].z = Number(
-          (curr.z * (1 - blend) + midZ * blend).toFixed(1)
-        );
-        relaxedCount++;
-      }
+    for (const bIdx of Array.from(buckledSet)) {
+      if (bIdx < 2 || bIdx >= n) continue;
+      const prev = pts[(bIdx - 1 + n) % n];
+      const curr = pts[bIdx];
+      const next = pts[(bIdx + 1) % n];
+      const midX = (prev.x + next.x) * 0.5;
+      const midZ = (prev.z + next.z) * 0.5;
+      relaxedPts[bIdx].x = Number((curr.x * 0.72 + midX * 0.28).toFixed(1));
+      relaxedPts[bIdx].z = Number((curr.z * 0.72 + midZ * 0.28).toFixed(1));
+      relaxedCount++;
     }
     pts = relaxedPts;
-
-    // 4. Enforce minimum spacing between adjacent nodes & minimum corridor separation between non-adjacent nodes
-    for (let i = 2; i < n; i++) {
-      const prev = pts[i - 1];
-      const curr = pts[i];
-      const dx = curr.x - prev.x;
-      const dz = curr.z - prev.z;
-      const d = Math.hypot(dx, dz);
-      if (d > 0.1 && d < minSpacing) {
-        const push = (minSpacing - d) * 0.55;
-        curr.x = Number((curr.x + (dx / d) * push).toFixed(1));
-        curr.z = Number((curr.z + (dz / d) * push).toFixed(1));
-      }
-    }
-
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 2; j < n; j++) {
-        if (i === 0 && j === n - 1) continue;
-        if (i === 1 && j === n - 1) continue;
-        const dx = pts[j].x - pts[i].x;
-        const dz = pts[j].z - pts[i].z;
-        const d = Math.hypot(dx, dz);
-        if (d > 0.1 && d < minCorridorDist) {
-          const push = (minCorridorDist - d) * 0.5;
-          const nx = dx / d;
-          const nz = dz / d;
-          if (i >= 2) {
-            pts[i].x = Number((pts[i].x - nx * push).toFixed(1));
-            pts[i].z = Number((pts[i].z - nz * push).toFixed(1));
-          }
-          if (j >= 2) {
-            pts[j].x = Number((pts[j].x + nx * push).toFixed(1));
-            pts[j].z = Number((pts[j].z + nz * push).toFixed(1));
-          }
-        }
-      }
-    }
-
-    // 5. Keep final control point aligned for a straight, buckle-free entry into P0(0,0,0) -> P1(0,y,z)
-    const lastIdx = pts.length - 1;
-    if (lastIdx >= 3) {
-      pts[lastIdx].x = Number(
-        Math.max(-18, Math.min(-3, pts[lastIdx].x)).toFixed(1)
-      );
-      pts[lastIdx].z = Number(
-        Math.max(-84, Math.min(-54, pts[lastIdx].z)).toFixed(1)
-      );
-      pts[lastIdx].y = 0;
-    }
-  }
-
-  // Final smooth elevation pass (preserving flat start/finish zone at P0, P1, and P_last)
-  const n = pts.length;
-  for (let i = 2; i < n - 1; i++) {
-    const prevY = pts[i - 1].y;
-    const nextY = pts[(i + 1) % n].y;
-    const smoothedY = pts[i].y * 0.65 + (prevY + nextY) * 0.175;
-    pts[i].y = Number(Math.max(0, Math.min(15, smoothedY)).toFixed(1));
   }
 
   return { pts, subdividedCount, relaxedCount };
 }
 
 /**
- * Generates a complete, buckle-free closed-loop circuit spline for a chosen archetype & seed.
+ * Generates a large-scale (1,800m - 2,800m), wildly varied multi-sector circuit spline
+ * using 5 distinct geometric topologies + local corner-shoulder beveling so shapes stay dramatic and buckle-free.
  */
 function generateProceduralCircuitControlPoints(
   requestedArchetype: ProceduralTrackArchetype,
@@ -585,11 +524,11 @@ function generateProceduralCircuitControlPoints(
     Exclude<ProceduralTrackArchetype, "RANDOM">,
     string
   > = {
-    SWEEPER: "High-Speed Sweeper",
-    SWITCHBACK: "Technical Switchback",
-    KIDNEY: "Kidney Twin-Lobe",
-    CANYON: "Canyon Hairpin Run",
-    STADIUM: "Stadium Grand Oval",
+    SWEEPER: "Grand Prix Dogleg & Chicane",
+    SWITCHBACK: "Serpentine Touge Slalom",
+    KIDNEY: "Deep Boomerang U-Valley",
+    CANYON: "Tri-Lobe Clover Peninsula",
+    STADIUM: "Twin-Hairpin Parallel Gauntlet",
   };
 
   const roadHalfWidth =
@@ -597,114 +536,111 @@ function generateProceduralCircuitControlPoints(
       ? Number(randRange(13.0, 15.0).toFixed(1))
       : currentRoadHalfWidth;
 
-  const rawPts: Array<{ x: number; y: number; z: number }> = [];
-  // P0 and P1 anchor the start/finish straight at (0,0,0) -> (0, y1, z1)
-  const startStraightZ = Math.round(randRange(86, 102));
-  rawPts.push({ x: 0, y: 0, z: 0 });
-  rawPts.push({ x: 0, y: 0.8, z: startStraightZ });
+  // Large-scale world stretch factors so every roll has distinct proportions (spanning 450m - 750m)
+  const scaleX = randRange(0.92, 1.24);
+  const scaleZ = randRange(0.92, 1.24);
+  const pt = (x: number, y: number, z: number) => ({
+    x: Number((x * scaleX + randRange(-14, 14)).toFixed(1)),
+    y: Number(Math.max(0, y + randRange(-0.8, 1.2)).toFixed(1)),
+    z: Number((z * scaleZ + randRange(-14, 14)).toFixed(1)),
+  });
 
-  // Center of the clockwise loop sits to the east (+X) so P0->P1 (+Z) is the westmost tangent straight
-  const centerX =
-    resolvedArchetype === "CANYON"
-      ? randRange(165, 195)
-      : resolvedArchetype === "STADIUM"
-      ? randRange(155, 175)
-      : randRange(130, 158);
-  const centerZ = randRange(-25, 15);
-  const baseRx =
-    resolvedArchetype === "CANYON"
-      ? randRange(155, 185)
-      : resolvedArchetype === "STADIUM"
-      ? randRange(148, 172)
-      : randRange(125, 148);
-  const baseRz =
-    resolvedArchetype === "CANYON"
-      ? randRange(215, 250)
-      : resolvedArchetype === "STADIUM"
-      ? randRange(195, 225)
-      : randRange(185, 220);
+  const rawPts: Array<{ x: number; y: number; z: number }> = [
+    { x: 0, y: 0, z: 0 },
+    { x: 0, y: 1.0, z: Math.round(randRange(96, 118)) },
+  ];
 
-  const interiorCount =
-    resolvedArchetype === "SWITCHBACK" || resolvedArchetype === "CANYON"
-      ? 12
-      : resolvedArchetype === "KIDNEY"
-      ? 11
-      : 10;
-
-  const phase2 = randRange(-0.35, 0.35);
-  const phase3 = randRange(-0.4, 0.4);
-  const hillPhase = randRange(0, Math.PI * 1.5);
-  const maxElevation =
-    resolvedArchetype === "CANYON"
-      ? randRange(11.5, 14.5)
-      : resolvedArchetype === "STADIUM"
-      ? randRange(4.5, 7.0)
-      : randRange(7.5, 11.5);
-
-  // Sweep clockwise from top-west (angle ~ +0.72*PI) through north (+PI/2), east (0), south (-PI/2), to bottom-west (-0.76*PI)
-  const startAngle = Math.PI * 0.72;
-  const endAngle = -Math.PI * 0.76;
-
-  for (let i = 0; i < interiorCount; i++) {
-    const u = i / (interiorCount - 1);
-    const theta = startAngle + u * (endAngle - startAngle);
-
-    let radiusMod = 1.0;
-    if (resolvedArchetype === "SWEEPER") {
-      radiusMod =
-        1.0 +
-        0.16 * Math.sin(2 * theta + phase2) +
-        0.08 * Math.cos(3 * theta + phase3);
-    } else if (resolvedArchetype === "SWITCHBACK") {
-      // Rhythmic S-chicanes along the eastern and southern sectors
-      radiusMod =
-        1.0 +
-        0.24 * Math.sin(3 * theta + phase3) +
-        0.12 * Math.cos(2 * theta + phase2);
-    } else if (resolvedArchetype === "KIDNEY") {
-      // Classic kidney bean indentation on the eastern backstretch (theta near 0)
-      const eastIndent = Math.exp(-Math.pow(theta - 0.05, 2) / 0.28);
-      radiusMod =
-        1.08 - 0.38 * eastIndent + 0.12 * Math.sin(2 * theta + phase2);
-    } else if (resolvedArchetype === "CANYON") {
-      // Wide northern ridge + deep southern canyon switchback
-      radiusMod =
-        1.04 +
-        0.22 * Math.cos(2 * theta + phase2) +
-        0.16 * Math.sin(3 * theta + phase3);
-    } else if (resolvedArchetype === "STADIUM") {
-      // Broad stadium oval with a subtle bus-stop chicane on the backstretch
-      const chicane = Math.sin(4 * theta + phase2) * 0.09;
-      radiusMod = 1.02 + 0.1 * Math.cos(2 * theta) + chicane;
-    }
-
-    const rX = baseRx * Math.max(0.58, radiusMod);
-    const rZ = baseRz * Math.max(0.62, radiusMod);
-
-    const x = Math.max(22, centerX + Math.cos(theta) * rX);
-    const z = centerZ + Math.sin(theta) * rZ;
-
-    // Smooth hill profile that tapers to 0 near the start and finish ends
-    const envelope = Math.sin(Math.PI * u);
-    const rawHill =
-      (0.55 +
-        0.45 * Math.sin(u * Math.PI * 2.0 + hillPhase) +
-        0.2 * Math.cos(u * Math.PI * 3.0)) *
-      envelope;
-    const y = Math.max(0.2, Math.min(14.5, rawHill * maxElevation));
-
-    rawPts.push({
-      x: Number(x.toFixed(1)),
-      y: Number(y.toFixed(1)),
-      z: Number(z.toFixed(1)),
-    });
+  if (resolvedArchetype === "SWEEPER") {
+    // 1. GRAND PRIX DOGLEG & CHICANE: Massive north straight -> 90-deg East Dogleg -> fast diagonal backstretch -> infield chicane -> south bowl
+    rawPts.push(
+      pt(12, 5.5, 360),
+      pt(95, 10.5, 445),
+      pt(275, 12.5, 430),
+      pt(330, 9.0, 295),
+      pt(535, 11.0, 285),
+      pt(565, 7.5, 125),
+      pt(395, 4.5, 10),
+      pt(485, 6.5, -155),
+      pt(340, 3.5, -210),
+      pt(255, 2.0, -335),
+      pt(85, 1.0, -310),
+      pt(-35, 0.4, -195)
+    );
+  } else if (resolvedArchetype === "SWITCHBACK") {
+    // 2. SERPENTINE TOUGE SLALOM: 3 deep alternating hairpin fingers cutting in and out across the mountain face
+    rawPts.push(
+      pt(35, 6.0, 355),
+      pt(175, 12.0, 455),
+      pt(445, 14.0, 435),
+      pt(470, 11.5, 285),
+      pt(195, 8.5, 235),
+      pt(185, 6.5, 105),
+      pt(545, 9.5, 125),
+      pt(565, 7.0, -25),
+      pt(225, 4.5, -65),
+      pt(215, 3.0, -195),
+      pt(495, 5.5, -230),
+      pt(435, 3.5, -355),
+      pt(145, 1.5, -335),
+      pt(-28, 0.4, -200)
+    );
+  } else if (resolvedArchetype === "KIDNEY") {
+    // 3. DEEP BOOMERANG / U-VALLEY: Shoots far north, dives deep into a central canyon down to Z=-55, climbs back to a high east wing
+    rawPts.push(
+      pt(20, 6.5, 385),
+      pt(145, 11.5, 465),
+      pt(255, 9.5, 385),
+      pt(210, 4.5, 130),
+      pt(245, 2.5, -55),
+      pt(365, 3.5, -45),
+      pt(385, 8.0, 185),
+      pt(435, 13.0, 415),
+      pt(565, 11.5, 375),
+      pt(585, 6.5, 95),
+      pt(525, 3.5, -205),
+      pt(345, 2.0, -335),
+      pt(105, 1.0, -295),
+      pt(-25, 0.4, -185)
+    );
+  } else if (resolvedArchetype === "CANYON") {
+    // 4. TRI-LOBE CLOVER PENINSULA: Three giant outer peninsulas (North Mesa, Far-East Cliff, Deep South Gorge) with two narrow pinch bays
+    rawPts.push(
+      pt(-45, 7.5, 330),
+      pt(95, 13.5, 475),
+      pt(275, 14.5, 420),
+      pt(215, 6.5, 185),
+      pt(485, 10.5, 285),
+      pt(605, 12.5, 135),
+      pt(545, 8.0, -55),
+      pt(265, 4.0, -90),
+      pt(445, 6.5, -265),
+      pt(295, 3.5, -395),
+      pt(80, 1.5, -345),
+      pt(-35, 0.5, -205)
+    );
+  } else {
+    // 5. STADIUM: TWIN-HAIRPIN PARALLEL GAUNTLET: Long parallel drag straights connected by 180-deg turnarounds + diagonal stadium chicane
+    rawPts.push(
+      pt(8, 3.5, 435),
+      pt(155, 5.5, 460),
+      pt(165, 2.5, 95),
+      pt(315, 2.5, 85),
+      pt(335, 6.5, 430),
+      pt(525, 7.5, 415),
+      pt(565, 4.5, 115),
+      pt(515, 2.5, -215),
+      pt(310, 3.5, -180),
+      pt(215, 1.8, -320),
+      pt(55, 0.8, -280),
+      pt(-22, 0.3, -175)
+    );
   }
 
   // Final point approaches P0(0,0,0) smoothly from -Z
   rawPts.push({
-    x: Number(randRange(-10, -4).toFixed(1)),
+    x: Number(randRange(-9, -3).toFixed(1)),
     y: 0,
-    z: Number(randRange(-72, -58).toFixed(1)),
+    z: Number(randRange(-78, -62).toFixed(1)),
   });
 
   const { pts: refinedPts } = unbuckleAndRefineControlPoints(
@@ -714,10 +650,10 @@ function generateProceduralCircuitControlPoints(
 
   const terrainHillScale =
     resolvedArchetype === "CANYON"
-      ? 1.3
+      ? 1.35
       : resolvedArchetype === "STADIUM"
       ? 0.85
-      : 1.05;
+      : 1.1;
 
   return {
     resolvedArchetype,
