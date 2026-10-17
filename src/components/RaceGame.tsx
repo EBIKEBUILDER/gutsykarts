@@ -545,9 +545,22 @@ export const RaceGame: React.FC = () => {
     });
   }, [trackDef]);
 
+  const getSavedAiSimSpeed = useCallback((): 1 | 4 | 8 => {
+    try {
+      const raw = window.localStorage.getItem("gutsy_karts_ai_sim_speed");
+      if (raw === "8") return 8;
+      if (raw === "4") return 4;
+      return 1;
+    } catch {
+      return 1;
+    }
+  }, []);
+
   const startGrandPrixCupSeries = useCallback(
     (cupId: string, startTrackIndex = 0) => {
       allAiSimModeRef.current = false;
+      setSimSpeedMult(1);
+      simSpeedMultRef.current = 1;
       globalAiBrain.setItemsEnabled(true);
       if (mpRef.current?.activeRoomId && mpRef.current.isHost) {
         shouldHostOnlineRef.current = true;
@@ -585,8 +598,9 @@ export const RaceGame: React.FC = () => {
       autoRepeatTrainingRef.current = true;
       setAutoRepeatTraining(true);
       setShowAiLab(true);
-      setSimSpeedMult(8);
-      simSpeedMultRef.current = 8;
+      const preferredSpeed = getSavedAiSimSpeed();
+      setSimSpeedMult(preferredSpeed);
+      simSpeedMultRef.current = preferredSpeed;
       globalAiBrain.setItemsEnabled(false);
       globalAiBrain.setTrainingTrackMode("ROTATE_CUP");
       handleSelectAiDifficulty("SELF_LEARNING");
@@ -602,12 +616,19 @@ export const RaceGame: React.FC = () => {
       setRaceSessionKey((k) => k + 1);
       setScreen("RACE");
     },
-    [selectedCupId, selectedTrackIdx, handleSelectAiDifficulty]
+    [
+      selectedCupId,
+      selectedTrackIdx,
+      handleSelectAiDifficulty,
+      getSavedAiSimSpeed,
+    ]
   );
 
   const startHostedOnlineRace = useCallback(
     (cupId = selectedCupId, startTrackIndex = selectedTrackIdx) => {
       allAiSimModeRef.current = false;
+      setSimSpeedMult(1);
+      simSpeedMultRef.current = 1;
       shouldHostOnlineRef.current = true;
       shouldHostDedicatedRef.current = false;
       preserveOnlineRoomRef.current = false;
@@ -629,6 +650,8 @@ export const RaceGame: React.FC = () => {
   const startDedicatedServerRoom = useCallback(
     (cupId = selectedCupId, startTrackIndex = selectedTrackIdx) => {
       allAiSimModeRef.current = true;
+      setSimSpeedMult(1);
+      simSpeedMultRef.current = 1;
       shouldHostOnlineRef.current = true;
       shouldHostDedicatedRef.current = true;
       preserveOnlineRoomRef.current = false;
@@ -1446,6 +1469,9 @@ export const RaceGame: React.FC = () => {
       spectateAutoDirectorRef.current = true;
 
       if (!mp || !mp.activeRoomId) {
+        const savedSpeed = getSavedAiSimSpeed();
+        setSimSpeedMult(savedSpeed);
+        simSpeedMultRef.current = savedSpeed;
         pushItemBanner(
           `4-AI Simulation Mode Active — AI took over Slot #${freedSlot + 1} (${currentLocal.name})!`
         );
@@ -1523,6 +1549,8 @@ export const RaceGame: React.FC = () => {
         });
         prepareAssumedAiKartInPlace(targetAi);
         allAiSimModeRef.current = false;
+        setSimSpeedMult(1);
+        simSpeedMultRef.current = 1;
         spectateAutoDirectorRef.current = false;
         spectateSlotIndexRef.current = targetAi.slotIndex;
         pushItemBanner(
@@ -4353,6 +4381,14 @@ export const RaceGame: React.FC = () => {
                   onClick={() => {
                     setSimSpeedMult(spd);
                     simSpeedMultRef.current = spd;
+                    try {
+                      window.localStorage.setItem(
+                        "gutsy_karts_ai_sim_speed",
+                        String(spd)
+                      );
+                    } catch {
+                      // ignore storage errors
+                    }
                   }}
                   className={`rounded-lg px-2 py-1 transition cursor-pointer ${
                     simSpeedMult === spd
@@ -4513,9 +4549,10 @@ export const RaceGame: React.FC = () => {
                         const next = !autoRepeatTraining;
                         setAutoRepeatTraining(next);
                         autoRepeatTrainingRef.current = next;
-                        if (next && simSpeedMultRef.current === 1) {
-                          setSimSpeedMult(8);
-                          simSpeedMultRef.current = 8;
+                        if (next) {
+                          const savedSpeed = getSavedAiSimSpeed();
+                          setSimSpeedMult(savedSpeed);
+                          simSpeedMultRef.current = savedSpeed;
                         }
                       }}
                       className={`rounded-lg border px-2 py-1 text-[10px] font-black uppercase transition cursor-pointer ${
@@ -4671,14 +4708,20 @@ export const RaceGame: React.FC = () => {
                     .map((p) => `${toSvgX(p.x).toFixed(1)},${toSvgY(p.z).toFixed(1)}`)
                     .join(" ");
 
-                  // Spatial bottleneck clustering: group unboosted off-road scrub or severe speed-loss points (>18m apart)
+                  // Spatial bottleneck clustering: group unboosted off-road scrub or true corner deceleration points
                   const bottleneckZones: { x: number; z: number; hits: number }[] = [];
                   for (const r of telemetry.aiLab.racers) {
-                    for (const s of r.pathSamples) {
-                      const isScrub =
-                        (s.surface === "OFFROAD" && !s.boosting) ||
-                        (s.speedRatio > 0.12 && s.speedRatio < 0.6);
-                      if (!isScrub) continue;
+                    const samples = r.pathSamples;
+                    for (let sIdx = 12; sIdx < samples.length; sIdx++) {
+                      const s = samples[sIdx];
+                      const prev = samples[sIdx - 1];
+                      const isUnboostedOffRoad =
+                        s.surface === "OFFROAD" && !s.boosting;
+                      const isCornerSpeedScrub =
+                        s.speedRatio > 0.12 &&
+                        s.speedRatio < 0.58 &&
+                        s.speedRatio < prev.speedRatio - 0.03;
+                      if (!isUnboostedOffRoad && !isCornerSpeedScrub) continue;
                       const existing = bottleneckZones.find(
                         (bz) => Math.hypot(bz.x - s.x, bz.z - s.z) < 22
                       );

@@ -15,6 +15,7 @@ import {
 } from "@babylonjs/core";
 import "@babylonjs/core/Culling/ray";
 import {
+  AiPathSample,
   CustomTrackDefinition,
   GrandPrixCupDefinition,
   ObstaclePrefabType,
@@ -76,6 +77,59 @@ type EditorTool =
   | { kind: "SCENERY"; prefab: SceneryPrefabType };
 
 type ViewportLayout = "3D_ONLY" | "SPLIT_3D_2D" | "2D_ONLY";
+type AiTraceColorMode = "SURFACE" | "SPEED" | "MINI_TURBO";
+
+function getAiTraceSampleColors(
+  s: AiPathSample,
+  mode: AiTraceColorMode
+): { hex: string; color4: Color4 } {
+  if (mode === "SPEED") {
+    if (s.speedRatio < 0.65) {
+      return { hex: "#f43f5e", color4: new Color4(0.96, 0.25, 0.37, 1.0) }; // Red = Slow hairpin / scrub
+    }
+    if (s.speedRatio < 0.85) {
+      return { hex: "#f97316", color4: new Color4(0.98, 0.45, 0.09, 1.0) }; // Orange = Accelerating
+    }
+    if (s.speedRatio < 0.98) {
+      return { hex: "#eab308", color4: new Color4(0.92, 0.7, 0.03, 1.0) }; // Yellow = Cruising
+    }
+    if (s.speedRatio < 1.08) {
+      return { hex: "#10b981", color4: new Color4(0.06, 0.73, 0.51, 1.0) }; // Emerald = Top Speed
+    }
+    return { hex: "#38bdf8", color4: new Color4(0.22, 0.74, 0.97, 1.0) }; // Electric Cyan = Boosted Overdrive
+  }
+
+  if (mode === "MINI_TURBO") {
+    if (s.miniTurboTier === 3) {
+      return { hex: "#d946ef", color4: new Color4(0.85, 0.27, 0.94, 1.0) }; // Tier 3 Ultra Purple
+    }
+    if (s.miniTurboTier === 2) {
+      return { hex: "#f97316", color4: new Color4(0.98, 0.45, 0.09, 1.0) }; // Tier 2 Super Orange
+    }
+    if (s.miniTurboTier === 1) {
+      return { hex: "#38bdf8", color4: new Color4(0.22, 0.74, 0.97, 1.0) }; // Tier 1 Electric Blue
+    }
+    if (s.driftState === "DRIFT_ACTIVE") {
+      return { hex: "#fde047", color4: new Color4(0.99, 0.88, 0.28, 0.95) }; // Pre-spark Drift
+    }
+    if (s.boosting) {
+      return { hex: "#4ade80", color4: new Color4(0.29, 0.87, 0.5, 1.0) }; // Active Boost Release
+    }
+    return { hex: "#64748b", color4: new Color4(0.39, 0.45, 0.55, 0.75) }; // Straightaway
+  }
+
+  // Default: "SURFACE"
+  if (s.surface === "OFFROAD") {
+    if (s.boosting) {
+      return { hex: "#22d3ee", color4: new Color4(0.13, 0.83, 0.93, 1.0) }; // Cyan Boosted Cut
+    }
+    return { hex: "#f43f5e", color4: new Color4(0.96, 0.25, 0.37, 1.0) }; // Red Unboosted Off-Road
+  }
+  if (s.driftState === "DRIFT_ACTIVE") {
+    return { hex: "#fbbf24", color4: new Color4(0.98, 0.75, 0.14, 1.0) }; // Amber Drifting
+  }
+  return { hex: "#34d399", color4: new Color4(0.2, 0.83, 0.6, 0.95) }; // Emerald On-Track
+}
 
 interface TrackEditorProps {
   trackDef: CustomTrackDefinition;
@@ -208,6 +262,8 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
   const [brushRadius, setBrushRadius] = useState<number>(58);
   const [brushStrength, setBrushStrength] = useState<number>(8.5);
   const [showAiTraces, setShowAiTraces] = useState<boolean>(true);
+  const [traceColorMode, setTraceColorMode] =
+    useState<AiTraceColorMode>("SURFACE");
   const [traceTick, setTraceTick] = useState<number>(0);
 
   // Explicit Local Working State, Dirty Flag, Undo/Redo Stacks & Manual Save
@@ -218,6 +274,55 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     globalAiBrain.hydrateFromStorage();
     return globalAiBrain.getTrackAiTraces(trackDef.id || trackDef.name);
   }, [trackDef.id, trackDef.name, traceTick]);
+
+  // Analyze recorded AI traces to map unboosted off-road overshoots or sharp corner deceleration to the nearest spline control nodes
+  const bottleneckNodeMap = useMemo(() => {
+    const map = new Map<
+      number,
+      { hits: number; dxSum: number; dzSum: number }
+    >();
+    const pts = trackDef.controlPoints;
+    if (pts.length === 0 || recordedAiTraces.length === 0) return map;
+
+    for (const r of recordedAiTraces) {
+      const samples = r.pathSamples;
+      for (let sIdx = 12; sIdx < samples.length; sIdx++) {
+        const s = samples[sIdx];
+        const prev = samples[sIdx - 1];
+        const isUnboostedOffRoad = s.surface === "OFFROAD" && !s.boosting;
+        const isCornerSpeedScrub =
+          s.speedRatio > 0.12 &&
+          s.speedRatio < 0.58 &&
+          s.speedRatio < prev.speedRatio - 0.03;
+        if (!isUnboostedOffRoad && !isCornerSpeedScrub) continue;
+
+        let bestIdx = -1;
+        let bestDist = 58;
+        for (let i = 0; i < pts.length; i++) {
+          const d = Math.hypot(pts[i].x - s.x, pts[i].z - s.z);
+          if (d < bestDist) {
+            bestDist = d;
+            bestIdx = i;
+          }
+        }
+        if (bestIdx >= 0) {
+          const entry = map.get(bestIdx) ?? { hits: 0, dxSum: 0, dzSum: 0 };
+          entry.hits += isUnboostedOffRoad ? 2 : 1;
+          entry.dxSum += s.x - pts[bestIdx].x;
+          entry.dzSum += s.z - pts[bestIdx].z;
+          map.set(bestIdx, entry);
+        }
+      }
+    }
+    // Keep nodes with >= 2 weighted scrub hits
+    for (const [k, v] of Array.from(map.entries())) {
+      if (v.hits < 2) {
+        map.delete(k);
+      }
+    }
+    return map;
+  }, [trackDef.controlPoints, recordedAiTraces]);
+
   const [savedBaselineDef, setSavedBaselineDef] =
     useState<CustomTrackDefinition>(initialTrackDef);
   const [undoStack, setUndoStack] = useState<CustomTrackDefinition[]>([]);
@@ -527,6 +632,147 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     setUndoStack([]);
     setRedoStack([]);
     setIsDirty(false);
+  };
+
+  // Feature 1: 1-Click Auto-Smooth AI Bottleneck Corners (relaxes pinch angles & pulls spline slightly toward AI overshoot trajectory)
+  const handleAutoSmoothBottlenecks = () => {
+    const currentDef = trackDefRef.current;
+    const pts = currentDef.controlPoints;
+    const n = pts.length;
+    if (n < 4 || bottleneckNodeMap.size === 0) {
+      flashIoNotice("No AI bottleneck corners detected on this circuit!");
+      return;
+    }
+
+    const smoothedNodes: string[] = [];
+    const nextPts = pts.map((pt, idx) => {
+      // Never shift P0 (Start/Finish line anchor)
+      if (idx === 0) return pt;
+      const bInfo = bottleneckNodeMap.get(idx);
+      if (!bInfo) return pt;
+
+      const prevPt = pts[(idx - 1 + n) % n];
+      const nextPt = pts[(idx + 1) % n];
+      const midX = (prevPt.x + nextPt.x) * 0.5;
+      const midZ = (prevPt.z + nextPt.z) * 0.5;
+
+      const avgOvershootDx = bInfo.dxSum / Math.max(1, bInfo.hits);
+      const avgOvershootDz = bInfo.dzSum / Math.max(1, bInfo.hits);
+
+      let stepX = (midX - pt.x) * 0.22 + avgOvershootDx * 0.18;
+      let stepZ = (midZ - pt.z) * 0.22 + avgOvershootDz * 0.18;
+      const stepLen = Math.hypot(stepX, stepZ);
+      if (stepLen > 8.5) {
+        stepX = (stepX / stepLen) * 8.5;
+        stepZ = (stepZ / stepLen) * 8.5;
+      }
+
+      smoothedNodes.push(`P${idx}`);
+      return {
+        ...pt,
+        x: Number((pt.x + stepX).toFixed(1)),
+        z: Number((pt.z + stepZ).toFixed(1)),
+      };
+    });
+
+    if (smoothedNodes.length === 0) {
+      flashIoNotice("Start line node P0 is locked; no other bottleneck nodes to adjust.");
+      return;
+    }
+
+    commitWorkingEdit(
+      syncTracksideSceneryAndClearRoad({
+        ...currentDef,
+        controlPoints: nextPts,
+      }),
+      true
+    );
+    flashIoNotice(
+      `Auto-smoothed ${smoothedNodes.length} bottleneck corner${
+        smoothedNodes.length > 1 ? "s" : ""
+      } (${smoothedNodes.join(", ")})! Use Undo (Ctrl+Z) to revert.`
+    );
+  };
+
+  // Feature 3: Snap Boost Pads & Stunt Jump Ramps onto the Consensus AI Racing Line
+  const handleSnapPadsAndRampsToAiLine = () => {
+    const currentDef = trackDefRef.current;
+    if (recordedAiTraces.length === 0) {
+      flashIoNotice("No recorded AI traces yet — run a test race first!");
+      return;
+    }
+
+    const queryConsensusLateralAtNormT = (targetNormT: number): number | null => {
+      const lats: number[] = [];
+      for (const r of recordedAiTraces) {
+        for (const s of r.pathSamples) {
+          let diffT = Math.abs(s.normT - targetNormT);
+          if (diffT > 0.5) diffT = 1.0 - diffT;
+          if (diffT <= 0.025 && (s.surface !== "OFFROAD" || s.boosting)) {
+            lats.push(s.signedLat);
+          }
+        }
+      }
+      if (lats.length === 0) return null;
+      lats.sort((a, b) => a - b);
+      const mid = Math.floor(lats.length / 2);
+      const medianLat =
+        lats.length % 2 === 1
+          ? lats[mid]
+          : (lats[mid - 1] + lats[mid]) * 0.5;
+      const maxSafeLat = Math.max(2.0, currentDef.roadHalfWidth - 2.0);
+      return Math.max(-maxSafeLat, Math.min(maxSafeLat, medianLat));
+    };
+
+    let snappedPads = 0;
+    const nextBoostPads = currentDef.boostPads.map((pad) => {
+      const targetLat = queryConsensusLateralAtNormT(pad.normT);
+      if (targetLat === null) return pad;
+      snappedPads += 1;
+      return {
+        ...pad,
+        lateral: Number(targetLat.toFixed(2)),
+      };
+    });
+
+    let snappedRamps = 0;
+    const nextObstacles = currentDef.obstacles.map((obs) => {
+      if (obs.type !== "JUMP_RAMP") return obs;
+      const q = splineData.queryClosestTrackPoint(new Vector3(obs.x, 0, obs.z));
+      const targetLat = queryConsensusLateralAtNormT(q.normalizedSplineT);
+      if (targetLat === null) return obs;
+      const alignedSample = splineData.getPointAtNormalizedT(
+        q.normalizedSplineT,
+        targetLat
+      );
+      const yaw = Math.atan2(alignedSample.tangent.x, alignedSample.tangent.z);
+      snappedRamps += 1;
+      return {
+        ...obs,
+        x: Number(alignedSample.position.x.toFixed(1)),
+        z: Number(alignedSample.position.z.toFixed(1)),
+        rotationY: Number(yaw.toFixed(2)),
+      };
+    });
+
+    if (snappedPads === 0 && snappedRamps === 0) {
+      flashIoNotice("No Boost Pads or Jump Ramps found along recorded AI trace sectors.");
+      return;
+    }
+
+    commitWorkingEdit(
+      {
+        ...currentDef,
+        boostPads: nextBoostPads,
+        obstacles: nextObstacles,
+      },
+      true
+    );
+    flashIoNotice(
+      `Snapped ${snappedPads} Boost Pad${snappedPads === 1 ? "" : "s"} & ${snappedRamps} Jump Ramp${
+        snappedRamps === 1 ? "" : "s"
+      } onto the AI racing line!`
+    );
   };
 
   // Keyboard shortcuts for Undo (Ctrl+Z), Redo (Ctrl+Y / Ctrl+Shift+Z), and Save (Ctrl+S)
@@ -933,8 +1179,16 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     nodeStartMat.diffuseColor = new Color3(0.98, 0.82, 0.12);
     nodeStartMat.emissiveColor = new Color3(0.65, 0.5, 0.05);
 
+    const bottleneckRingMat = new StandardMaterial(
+      "ctrlBottleneckRingMat",
+      scene
+    );
+    bottleneckRingMat.diffuseColor = new Color3(0.96, 0.25, 0.37);
+    bottleneckRingMat.emissiveColor = new Color3(0.85, 0.15, 0.28);
+
     trackDef.controlPoints.forEach((pt, idx) => {
       const isSelected = idx === selectedControlIdx;
+      const isBottleneckNode = showAiTraces && bottleneckNodeMap.has(idx);
       const nodeRoadY = Math.max(
         pt.y,
         splineData.queryClosestTrackPoint(new Vector3(pt.x, 0, pt.z)).roadY
@@ -951,8 +1205,22 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
           ? nodeStartMat
           : isSelected
           ? nodeSelectedMat
+          : isBottleneckNode
+          ? bottleneckRingMat
           : nodeDefaultMat;
       sphere.isPickable = true;
+
+      if (isBottleneckNode) {
+        const warnRing = MeshBuilder.CreateTorus(
+          `ctrlBottleneckRing_${idx}`,
+          { diameter: 13.5, thickness: 0.75, tessellation: 24 },
+          scene
+        );
+        warnRing.parent = gizmoRoot;
+        warnRing.position = new Vector3(pt.x, nodeRoadY + 3.2, pt.z);
+        warnRing.material = bottleneckRingMat;
+        warnRing.isPickable = false;
+      }
 
       // Vertical elevation stalk connecting road node down to y=0 datum
       const stalkHeight = Math.max(3.2, nodeRoadY + 3.2);
@@ -989,27 +1257,19 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
           const y = q.roadY + heightOffset;
           pts.push(new Vector3(s.x, y, s.z));
 
-          if (s.surface === "OFFROAD") {
-            if (s.boosting) {
-              cols.push(new Color4(0.13, 0.83, 0.93, 1.0)); // Cyan boosted cut
-            } else {
-              cols.push(new Color4(0.96, 0.25, 0.37, 1.0)); // Red unboosted off-road overshoot
-              if (sIdx % 2 === 0) {
-                const dot = MeshBuilder.CreateSphere(
-                  `aiOvershoot_${rIdx}_${sIdx}`,
-                  { diameter: 1.5, segments: 8 },
-                  scene
-                );
-                dot.parent = gizmoRoot;
-                dot.position = new Vector3(s.x, y + 0.35, s.z);
-                dot.material = overshootMat;
-                dot.isPickable = false;
-              }
-            }
-          } else if (s.driftState === "DRIFT_ACTIVE") {
-            cols.push(new Color4(0.98, 0.75, 0.14, 1.0)); // Amber drifting
-          } else {
-            cols.push(new Color4(0.2, 0.83, 0.6, 0.95)); // Emerald on-track
+          const sampleColor = getAiTraceSampleColors(s, traceColorMode);
+          cols.push(sampleColor.color4);
+
+          if (s.surface === "OFFROAD" && !s.boosting && sIdx % 2 === 0) {
+            const dot = MeshBuilder.CreateSphere(
+              `aiOvershoot_${rIdx}_${sIdx}`,
+              { diameter: 1.5, segments: 8 },
+              scene
+            );
+            dot.parent = gizmoRoot;
+            dot.position = new Vector3(s.x, y + 0.35, s.z);
+            dot.material = overshootMat;
+            dot.isPickable = false;
           }
         });
 
@@ -1030,7 +1290,9 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     viewportLayout,
     splineData,
     showAiTraces,
+    traceColorMode,
     recordedAiTraces,
+    bottleneckNodeMap,
   ]);
 
   // Convert client mouse coordinates to World (X, Z) on the 2D SVG blueprint
@@ -1317,8 +1579,8 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
           </button>
         </div>
 
-        {/* Recorded AI Racing Paths Overlay Toggle (for inspecting corner overshoots) */}
-        <div className="flex items-center gap-1 rounded-xl border border-fuchsia-400/40 bg-slate-950 p-1">
+        {/* Recorded AI Racing Paths Overlay Toggle + Heatmap Mode + Auto-Smooth Bottlenecks + Snap Pads */}
+        <div className="flex flex-wrap items-center gap-1 rounded-xl border border-fuchsia-400/40 bg-slate-950 p-1">
           <button
             type="button"
             data-testid="editor-toggle-ai-trace-btn"
@@ -1334,10 +1596,65 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
           >
             <Activity className="h-3.5 w-3.5 text-fuchsia-400" />
             <span>
-              AI PATH TRACE ({recordedAiTraces.length} KARTS){" "}
+              AI TRACE ({recordedAiTraces.length}){" "}
               {showAiTraces ? "ON" : "OFF"}
             </span>
           </button>
+
+          {showAiTraces && recordedAiTraces.length > 0 && (
+            <>
+              <button
+                type="button"
+                data-testid="editor-cycle-trace-mode-btn"
+                onClick={() =>
+                  setTraceColorMode((prev) =>
+                    prev === "SURFACE"
+                      ? "SPEED"
+                      : prev === "SPEED"
+                      ? "MINI_TURBO"
+                      : "SURFACE"
+                  )
+                }
+                className="rounded-lg border border-cyan-400/50 bg-cyan-500/20 px-2 py-1.5 text-[10px] font-black uppercase text-cyan-200 hover:bg-cyan-500/30 transition cursor-pointer"
+                title="Cycle 3D/2D AI trace visualization: Surface & Drift -> Speed Heatmap -> Mini-Turbo Spark Tiers"
+              >
+                VIEW:{" "}
+                {traceColorMode === "SURFACE"
+                  ? "SURFACE / DRIFT"
+                  : traceColorMode === "SPEED"
+                  ? "SPEED HEATMAP"
+                  : "MINI-TURBO SPARKS"}
+              </button>
+
+              <button
+                type="button"
+                data-testid="editor-autofix-bottlenecks-btn"
+                onClick={handleAutoSmoothBottlenecks}
+                disabled={bottleneckNodeMap.size === 0}
+                className={`rounded-lg border px-2 py-1.5 text-[10px] font-black uppercase transition cursor-pointer ${
+                  bottleneckNodeMap.size > 0
+                    ? "border-amber-400 bg-amber-500/25 text-amber-200 hover:bg-amber-500/35"
+                    : "border-emerald-400/40 bg-emerald-950/50 text-emerald-300 opacity-75 cursor-default"
+                }`}
+                title="Automatically relax pinch angles and nudge bottleneck control nodes toward the AI racing trajectory (supports Ctrl+Z Undo)"
+              >
+                {bottleneckNodeMap.size > 0
+                  ? `✨ AUTO-FIX BOTTLENECKS (${bottleneckNodeMap.size})`
+                  : "✓ 0 BOTTLENECKS"}
+              </button>
+
+              <button
+                type="button"
+                data-testid="editor-snap-pads-ai-line-btn"
+                onClick={handleSnapPadsAndRampsToAiLine}
+                className="rounded-lg border border-indigo-400/50 bg-indigo-500/20 px-2 py-1.5 text-[10px] font-black uppercase text-indigo-200 hover:bg-indigo-500/30 transition cursor-pointer"
+                title="Snap all Boost Pads and Stunt Jump Ramps laterally onto the consensus AI racing line (supports Ctrl+Z Undo)"
+              >
+                🧲 SNAP PADS TO AI LINE
+              </button>
+            </>
+          )}
+
           {recordedAiTraces.length > 0 && (
             <button
               type="button"
@@ -2263,22 +2580,62 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
 
               {/* AI Path Trace Legend Banner in 3D Viewport */}
               {showAiTraces && recordedAiTraces.length > 0 && (
-                <div className="absolute bottom-3 left-3 z-10 pointer-events-none flex flex-wrap items-center gap-2.5 rounded-xl border border-fuchsia-400/50 bg-slate-950/90 px-3 py-1.5 text-[10px] font-bold backdrop-blur-md shadow-xl">
+                <div className="absolute bottom-3 left-3 z-10 pointer-events-auto flex flex-wrap items-center gap-2.5 rounded-xl border border-fuchsia-400/50 bg-slate-950/90 px-3 py-1.5 text-[10px] font-bold backdrop-blur-md shadow-xl">
                   <span className="text-fuchsia-300 font-black uppercase">
-                    AI PATH TRACE OVERLAY:
+                    3D TRACE ({traceColorMode}):
                   </span>
-                  <span className="inline-flex items-center gap-1 text-emerald-300">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400" /> On-Track
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-amber-300">
-                    <span className="h-2 w-2 rounded-full bg-amber-400" /> Drifting
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-cyan-300">
-                    <span className="h-2 w-2 rounded-full bg-cyan-400" /> Boosted Cut
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-rose-300 font-black">
-                    <span className="h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-white/70" /> Off-Road Overshoot (Adjust Corner!)
-                  </span>
+                  {traceColorMode === "SPEED" ? (
+                    <>
+                      <span className="inline-flex items-center gap-1 text-rose-300">
+                        <span className="h-2 w-2 rounded-full bg-rose-500" /> &lt;65% Scrub
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-orange-300">
+                        <span className="h-2 w-2 rounded-full bg-orange-500" /> 65–85% Accel
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-yellow-300">
+                        <span className="h-2 w-2 rounded-full bg-yellow-400" /> 85–98% Cruise
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-emerald-300">
+                        <span className="h-2 w-2 rounded-full bg-emerald-400" /> 100% Top Spd
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-cyan-300">
+                        <span className="h-2 w-2 rounded-full bg-cyan-400" /> &gt;108% Boosted
+                      </span>
+                    </>
+                  ) : traceColorMode === "MINI_TURBO" ? (
+                    <>
+                      <span className="inline-flex items-center gap-1 text-yellow-200">
+                        <span className="h-2 w-2 rounded-full bg-yellow-300" /> Drift Start
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-cyan-300">
+                        <span className="h-2 w-2 rounded-full bg-cyan-400" /> Tier 1 Blue
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-orange-300">
+                        <span className="h-2 w-2 rounded-full bg-orange-500" /> Tier 2 Orange
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-fuchsia-300">
+                        <span className="h-2 w-2 rounded-full bg-fuchsia-400" /> Tier 3 Purple
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-emerald-300">
+                        <span className="h-2 w-2 rounded-full bg-emerald-400" /> Boost Release
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="inline-flex items-center gap-1 text-emerald-300">
+                        <span className="h-2 w-2 rounded-full bg-emerald-400" /> On-Track
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-amber-300">
+                        <span className="h-2 w-2 rounded-full bg-amber-400" /> Drifting
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-cyan-300">
+                        <span className="h-2 w-2 rounded-full bg-cyan-400" /> Boosted Cut
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-rose-300 font-black">
+                        <span className="h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-white/70" /> Off-Road Overshoot
+                      </span>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -2297,20 +2654,60 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
               {showAiTraces && recordedAiTraces.length > 0 && (
                 <div className="absolute bottom-3 left-3 z-10 pointer-events-none flex flex-wrap items-center gap-2.5 rounded-xl border border-fuchsia-400/50 bg-slate-950/90 px-3 py-1.5 text-[10px] font-bold backdrop-blur-md shadow-xl">
                   <span className="text-fuchsia-300 font-black uppercase">
-                    2D AI RACING TRACE:
+                    2D TRACE ({traceColorMode}):
                   </span>
-                  <span className="inline-flex items-center gap-1 text-emerald-300">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400" /> On-Track
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-amber-300">
-                    <span className="h-2 w-2 rounded-full bg-amber-400" /> Drifting
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-cyan-300">
-                    <span className="h-2 w-2 rounded-full bg-cyan-400" /> Boosted Cut
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-rose-300 font-black">
-                    <span className="h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-white/70" /> Off-Road Overshoot
-                  </span>
+                  {traceColorMode === "SPEED" ? (
+                    <>
+                      <span className="inline-flex items-center gap-1 text-rose-300">
+                        <span className="h-2 w-2 rounded-full bg-rose-500" /> &lt;65% Scrub
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-orange-300">
+                        <span className="h-2 w-2 rounded-full bg-orange-500" /> 65–85% Accel
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-yellow-300">
+                        <span className="h-2 w-2 rounded-full bg-yellow-400" /> 85–98% Cruise
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-emerald-300">
+                        <span className="h-2 w-2 rounded-full bg-emerald-400" /> 100% Top Spd
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-cyan-300">
+                        <span className="h-2 w-2 rounded-full bg-cyan-400" /> &gt;108% Boosted
+                      </span>
+                    </>
+                  ) : traceColorMode === "MINI_TURBO" ? (
+                    <>
+                      <span className="inline-flex items-center gap-1 text-yellow-200">
+                        <span className="h-2 w-2 rounded-full bg-yellow-300" /> Drift Start
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-cyan-300">
+                        <span className="h-2 w-2 rounded-full bg-cyan-400" /> Tier 1 Blue
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-orange-300">
+                        <span className="h-2 w-2 rounded-full bg-orange-500" /> Tier 2 Orange
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-fuchsia-300">
+                        <span className="h-2 w-2 rounded-full bg-fuchsia-400" /> Tier 3 Purple
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-emerald-300">
+                        <span className="h-2 w-2 rounded-full bg-emerald-400" /> Boost Release
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="inline-flex items-center gap-1 text-emerald-300">
+                        <span className="h-2 w-2 rounded-full bg-emerald-400" /> On-Track
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-amber-300">
+                        <span className="h-2 w-2 rounded-full bg-amber-400" /> Drifting
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-cyan-300">
+                        <span className="h-2 w-2 rounded-full bg-cyan-400" /> Boosted Cut
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-rose-300 font-black">
+                        <span className="h-2.5 w-2.5 rounded-full bg-rose-500 ring-2 ring-white/70" /> Off-Road Overshoot
+                      </span>
+                    </>
+                  )}
                 </div>
               )}
 
@@ -2450,14 +2847,10 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                         if (distSq > 1600) return null;
                         const isUnboostedOffRoad =
                           s.surface === "OFFROAD" && !s.boosting;
-                        const strokeColor =
-                          s.surface === "OFFROAD"
-                            ? s.boosting
-                              ? "#22d3ee"
-                              : "#f43f5e"
-                            : s.driftState === "DRIFT_ACTIVE"
-                            ? "#fbbf24"
-                            : "#34d399";
+                        const strokeColor = getAiTraceSampleColors(
+                          s,
+                          traceColorMode
+                        ).hex;
                         return (
                           <React.Fragment key={idx}>
                             <line
@@ -2662,6 +3055,8 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                 {/* 10. Draggable Catmull-Rom Spline Control Points (P0..Pn) */}
                 {trackDef.controlPoints.map((pt, idx) => {
                   const isSelected = idx === selectedControlIdx;
+                  const isBottleneckNode =
+                    showAiTraces && bottleneckNodeMap.has(idx);
                   return (
                     <g
                       key={idx}
@@ -2679,6 +3074,17 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                       }}
                       className="cursor-grab active:cursor-grabbing"
                     >
+                      {isBottleneckNode && (
+                        <circle
+                          cx={0}
+                          cy={0}
+                          r={12.5}
+                          fill="rgba(244, 63, 94, 0.22)"
+                          stroke="#fb7185"
+                          strokeWidth={1.8}
+                          strokeDasharray="3 2"
+                        />
+                      )}
                       <circle
                         cx={0}
                         cy={0}
@@ -2688,6 +3094,8 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                             ? "#facc15"
                             : isSelected
                             ? "#38bdf8"
+                            : isBottleneckNode
+                            ? "#f43f5e"
                             : "#f8fafc"
                         }
                         stroke="#0f172a"
@@ -2697,11 +3105,12 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                         x={0}
                         y={-10}
                         textAnchor="middle"
-                        fill="#f8fafc"
+                        fill={isBottleneckNode ? "#fda4af" : "#f8fafc"}
                         fontSize="8.5"
                         fontWeight="bold"
                       >
                         P{idx} ({pt.y.toFixed(0)}m)
+                        {isBottleneckNode ? " ⚠️" : ""}
                       </text>
                     </g>
                   );
