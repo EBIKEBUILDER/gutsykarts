@@ -669,6 +669,28 @@ export const RaceGame: React.FC = () => {
     setRaceSessionKey((k) => k + 1);
   }, [activeCup]);
 
+  const advanceToNextTrackAcrossAllCups = useCallback(() => {
+    joinedTrackOverrideRef.current = null;
+    pendingWelcomeSnapshotRef.current = null;
+    const totalTracks = activeCup?.tracks.length ?? 1;
+    if (selectedTrackIdx + 1 < totalTracks) {
+      setSelectedTrackIdx(selectedTrackIdx + 1);
+    } else {
+      const curCupIdx = cupsCatalog.findIndex((c) => c.id === activeCup?.id);
+      const nextCup =
+        cupsCatalog[
+          (Math.max(0, curCupIdx) + 1) % Math.max(1, cupsCatalog.length)
+        ];
+      if (nextCup) {
+        setSelectedCupId(nextCup.id);
+      }
+      cupPointsByCharRef.current = {};
+      setCupStandings([]);
+      setSelectedTrackIdx(0);
+    }
+    setRaceSessionKey((k) => k + 1);
+  }, [activeCup, cupsCatalog, selectedTrackIdx]);
+
 
   const toggleMusicMute = useCallback(() => {
     setMusicMuted((prev) => {
@@ -2904,8 +2926,11 @@ export const RaceGame: React.FC = () => {
         if (postRaceAutoAdvanceTimer <= 0) {
           autoAdvanceTriggered = true;
           if (isOfflineAiTrainingLoop) {
-            if (globalAiBrain.getTrainingTrackMode() === "ROTATE_CUP") {
+            const loopMode = globalAiBrain.getTrainingTrackMode();
+            if (loopMode === "ROTATE_CUP") {
               advanceToNextTrackInCup();
+            } else if (loopMode === "ALL_CUPS") {
+              advanceToNextTrackAcrossAllCups();
             } else {
               setRaceSessionKey((k) => k + 1);
             }
@@ -3198,6 +3223,7 @@ export const RaceGame: React.FC = () => {
     handleLobbyUpdated,
     handleWelcomeSnapshot,
     advanceToNextTrackInCup,
+    advanceToNextTrackAcrossAllCups,
     handleLeaveOnlineRaceToMenu,
   ]);
 
@@ -4453,22 +4479,29 @@ export const RaceGame: React.FC = () => {
                       type="button"
                       data-testid="ai-lab-toggle-track-mode-btn"
                       onClick={() => {
+                        const curMode = telemetry.aiLab?.trainingTrackMode;
                         const nextMode =
-                          telemetry.aiLab?.trainingTrackMode === "ROTATE_CUP"
+                          curMode === "ROTATE_CUP"
+                            ? "ALL_CUPS"
+                            : curMode === "ALL_CUPS"
                             ? "SINGLE_TRACK"
                             : "ROTATE_CUP";
                         globalAiBrain.setTrainingTrackMode(nextMode);
                         setPresetUpdateTick((t) => t + 1);
                       }}
                       className={`rounded-lg border px-2 py-1 text-[10px] font-black uppercase transition cursor-pointer ${
-                        telemetry.aiLab.trainingTrackMode === "ROTATE_CUP"
+                        telemetry.aiLab.trainingTrackMode === "ALL_CUPS"
+                          ? "border-fuchsia-400 bg-fuchsia-500/25 text-fuchsia-200"
+                          : telemetry.aiLab.trainingTrackMode === "ROTATE_CUP"
                           ? "border-indigo-400 bg-indigo-500/25 text-indigo-200"
                           : "border-white/15 bg-slate-900 text-slate-300 hover:text-white"
                       }`}
-                      title="Rotate across all Cup tracks each episode (prevents single-track overfitting) or repeat current track"
+                      title="Cycle loop mode: Rotate current Cup (3 tracks) -> All-Cups Gauntlet (every Cup & track in catalog) -> Single Track repeat"
                     >
                       LOOP:{" "}
-                      {telemetry.aiLab.trainingTrackMode === "ROTATE_CUP"
+                      {telemetry.aiLab.trainingTrackMode === "ALL_CUPS"
+                        ? "ALL-CUPS GAUNTLET"
+                        : telemetry.aiLab.trainingTrackMode === "ROTATE_CUP"
                         ? "ROTATE CUP"
                         : "SINGLE TRACK"}
                     </button>
@@ -4616,12 +4649,6 @@ export const RaceGame: React.FC = () => {
             <div className="mt-2.5 grid grid-cols-1 md:grid-cols-12 gap-3 items-start">
               {/* 2D SVG Path Trace Visualizer */}
               <div className="md:col-span-5 rounded-xl border border-white/10 bg-slate-900/95 p-2.5">
-                <div className="flex items-center justify-between text-[10px] font-black uppercase text-slate-300 mb-1.5">
-                  <span>RECORDED AI RACING PATHS (2D TRACE)</span>
-                  <span className="font-mono text-[9px] text-slate-400">
-                    {trackDef.name}
-                  </span>
-                </div>
                 {(() => {
                   const pts = trackDef.controlPoints;
                   let minX = -120,
@@ -4644,65 +4671,131 @@ export const RaceGame: React.FC = () => {
                     .map((p) => `${toSvgX(p.x).toFixed(1)},${toSvgY(p.z).toFixed(1)}`)
                     .join(" ");
 
-                  return (
-                    <svg
-                      viewBox="0 0 240 170"
-                      className="w-full h-36 rounded-lg bg-slate-950 border border-white/10"
-                    >
-                      {/* Track Road Ribbon */}
-                      {pts.length > 2 && (
-                        <>
-                          <polygon
-                            points={trackPoly}
-                            fill="none"
-                            stroke="rgba(148,163,184,0.28)"
-                            strokeWidth="12"
-                            strokeLinejoin="round"
-                          />
-                          <polygon
-                            points={trackPoly}
-                            fill="none"
-                            stroke="rgba(255,255,255,0.18)"
-                            strokeWidth="1"
-                            strokeDasharray="3 3"
-                          />
-                        </>
-                      )}
+                  // Spatial bottleneck clustering: group unboosted off-road scrub or severe speed-loss points (>18m apart)
+                  const bottleneckZones: { x: number; z: number; hits: number }[] = [];
+                  for (const r of telemetry.aiLab.racers) {
+                    for (const s of r.pathSamples) {
+                      const isScrub =
+                        (s.surface === "OFFROAD" && !s.boosting) ||
+                        (s.speedRatio > 0.12 && s.speedRatio < 0.6);
+                      if (!isScrub) continue;
+                      const existing = bottleneckZones.find(
+                        (bz) => Math.hypot(bz.x - s.x, bz.z - s.z) < 22
+                      );
+                      if (existing) {
+                        existing.hits += 1;
+                      } else {
+                        bottleneckZones.push({ x: s.x, z: s.z, hits: 1 });
+                      }
+                    }
+                  }
+                  const majorBottlenecks = bottleneckZones.filter(
+                    (bz) => bz.hits >= 2
+                  );
 
-                      {/* Recorded AI Racer Path Samples */}
-                      {telemetry.aiLab.racers.map((racerSummary) => {
-                        const samples = racerSummary.pathSamples;
-                        if (samples.length < 2) return null;
-                        return (
-                          <g key={racerSummary.racerId}>
-                            {samples.map((s, idx) => {
-                              if (idx === 0) return null;
-                              const prev = samples[idx - 1];
-                              const strokeColor =
-                                s.surface === "OFFROAD"
-                                  ? s.boosting
-                                    ? "#38bdf8" // Cyan = Boosted Grass Shortcut!
-                                    : "#f43f5e" // Rose = Unboosted Grass Drag
-                                  : s.driftState === "DRIFT_ACTIVE"
-                                  ? "#fbbf24" // Amber = Drifting on Pavement/Curb
-                                  : "#34d399"; // Emerald = Clean Pavement
-                              return (
-                                <line
-                                  key={idx}
-                                  x1={toSvgX(prev.x)}
-                                  y1={toSvgY(prev.z)}
-                                  x2={toSvgX(s.x)}
-                                  y2={toSvgY(s.z)}
-                                  stroke={strokeColor}
-                                  strokeWidth="1.6"
-                                  strokeOpacity="0.85"
-                                />
-                              );
-                            })}
-                          </g>
-                        );
-                      })}
-                    </svg>
+                  return (
+                    <>
+                      <div className="flex items-center justify-between text-[10px] font-black uppercase text-slate-300 mb-1.5 gap-1">
+                        <span>RECORDED AI RACING PATHS (2D TRACE)</span>
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`rounded px-1.5 py-0.5 font-mono text-[8px] font-black uppercase ${
+                              majorBottlenecks.length === 0
+                                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-400/40"
+                                : "bg-rose-500/25 text-rose-200 border border-rose-400/50"
+                            }`}
+                            title="Clusters where AI racers experienced unboosted off-road drag or sharp speed scrub"
+                          >
+                            {majorBottlenecks.length === 0
+                              ? "0 BOTTLENECKS"
+                              : `${majorBottlenecks.length} BOTTLENECK${
+                                  majorBottlenecks.length > 1 ? "S" : ""
+                                }`}
+                          </span>
+                          <span className="font-mono text-[9px] text-slate-400 truncate max-w-[110px]">
+                            {trackDef.name}
+                          </span>
+                        </div>
+                      </div>
+                      <svg
+                        viewBox="0 0 240 170"
+                        className="w-full h-36 rounded-lg bg-slate-950 border border-white/10"
+                      >
+                        {/* Track Road Ribbon */}
+                        {pts.length > 2 && (
+                          <>
+                            <polygon
+                              points={trackPoly}
+                              fill="none"
+                              stroke="rgba(148,163,184,0.28)"
+                              strokeWidth="12"
+                              strokeLinejoin="round"
+                            />
+                            <polygon
+                              points={trackPoly}
+                              fill="none"
+                              stroke="rgba(255,255,255,0.18)"
+                              strokeWidth="1"
+                              strokeDasharray="3 3"
+                            />
+                          </>
+                        )}
+
+                        {/* Recorded AI Racer Path Samples */}
+                        {telemetry.aiLab.racers.map((racerSummary) => {
+                          const samples = racerSummary.pathSamples;
+                          if (samples.length < 2) return null;
+                          return (
+                            <g key={racerSummary.racerId}>
+                              {samples.map((s, idx) => {
+                                if (idx === 0) return null;
+                                const prev = samples[idx - 1];
+                                const strokeColor =
+                                  s.surface === "OFFROAD"
+                                    ? s.boosting
+                                      ? "#38bdf8" // Cyan = Boosted Grass Shortcut!
+                                      : "#f43f5e" // Rose = Unboosted Grass Drag
+                                    : s.driftState === "DRIFT_ACTIVE"
+                                    ? "#fbbf24" // Amber = Drifting on Pavement/Curb
+                                    : "#34d399"; // Emerald = Clean Pavement
+                                return (
+                                  <line
+                                    key={idx}
+                                    x1={toSvgX(prev.x)}
+                                    y1={toSvgY(prev.z)}
+                                    x2={toSvgX(s.x)}
+                                    y2={toSvgY(s.z)}
+                                    stroke={strokeColor}
+                                    strokeWidth="1.6"
+                                    strokeOpacity="0.85"
+                                  />
+                                );
+                              })}
+                            </g>
+                          );
+                        })}
+
+                        {/* Bottleneck / Unboosted Scrub Warning Markers */}
+                        {majorBottlenecks.map((bz, idx) => {
+                          const cx = toSvgX(bz.x);
+                          const cy = toSvgY(bz.z);
+                          return (
+                            <g key={`bz-${idx}`}>
+                              <circle
+                                cx={cx}
+                                cy={cy}
+                                r={Math.min(9, 4.5 + bz.hits * 0.5)}
+                                fill="rgba(244,63,94,0.22)"
+                                stroke="#fb7185"
+                                strokeWidth="1.2"
+                                strokeDasharray="2 1.5"
+                              />
+                              <circle cx={cx} cy={cy} r="2" fill="#f43f5e" />
+                            </g>
+                          );
+                        })}
+                      </svg>
+                    </>
                   );
                 })()}
                 <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 text-[9px] font-bold">
@@ -4713,10 +4806,10 @@ export const RaceGame: React.FC = () => {
                     <span className="h-2 w-2 rounded-full bg-amber-400" /> Drifting
                   </span>
                   <span className="inline-flex items-center gap-1 text-cyan-300">
-                    <span className="h-2 w-2 rounded-full bg-cyan-400" /> Boosted Grass Cut
+                    <span className="h-2 w-2 rounded-full bg-cyan-400" /> Boosted Cut
                   </span>
                   <span className="inline-flex items-center gap-1 text-rose-300">
-                    <span className="h-2 w-2 rounded-full bg-rose-400" /> Unboosted Off-Road
+                    <span className="h-2 w-2 rounded-full border border-rose-300 bg-rose-500/40" /> Bottleneck Scrub
                   </span>
                 </div>
               </div>

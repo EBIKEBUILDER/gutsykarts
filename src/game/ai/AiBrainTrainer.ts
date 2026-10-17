@@ -35,40 +35,58 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
   AiPolicyWeights
 > = {
   EASY: {
-    lookAheadBase: 23.5,
-    lookAheadCurve: 17.0,
-    lookAheadDrift: 18.8,
-    apexCutRatio: 0.2,
-    driftCutRatio: 0.22,
-    steerGain: 1.85,
-    driftEntryThreshold: 0.16,
-    preferredChargeSec: 1.35,
-    maxHoldChargeSec: 2.35,
-    driftAngleGain: 2.35,
-    driftLatGain: 1.85,
-    driftVelDamping: 1.65,
+    lookAheadBase: 21.5,
+    lookAheadCurve: 14.5,
+    lookAheadDrift: 15.8,
+    apexCutRatio: 0.19,
+    driftCutRatio: 0.2,
+    steerGain: 2.15,
+    driftEntryThreshold: 0.19,
+    preferredChargeSec: 1.25,
+    maxHoldChargeSec: 1.95,
+    driftAngleGain: 2.331,
+    driftLatGain: 2.012,
+    driftVelDamping: 2.565,
     insideApexTarget: 0.18,
     exitTangentAlignBlend: 0.62,
-    padSeekWeight: 0.35,
-    neuralBias: [0, 0, 0, 0, 0, 0, 0, 0],
+    padSeekWeight: 0.32,
+    neuralBias: [
+      -0.2809,
+      0.231,
+      -0.0123,
+      -0.126,
+      0.0021,
+      -0.1437,
+      -0.0329,
+      -0.0514,
+    ],
   },
   MEDIUM: {
-    lookAheadBase: 22.0,
-    lookAheadCurve: 16.0,
-    lookAheadDrift: 17.8,
-    apexCutRatio: 0.34,
-    driftCutRatio: 0.28,
-    steerGain: 2.15,
-    driftEntryThreshold: 0.12,
-    preferredChargeSec: 2.4,
-    maxHoldChargeSec: 3.55,
-    driftAngleGain: 2.45,
-    driftLatGain: 1.95,
-    driftVelDamping: 1.75,
-    insideApexTarget: 0.2,
-    exitTangentAlignBlend: 0.66,
-    padSeekWeight: 0.68,
-    neuralBias: [0, 0, 0, 0, 0, 0, 0, 0],
+    lookAheadBase: 20.2,
+    lookAheadCurve: 13.4,
+    lookAheadDrift: 14.4,
+    apexCutRatio: 0.235,
+    driftCutRatio: 0.235,
+    steerGain: 2.38,
+    driftEntryThreshold: 0.175,
+    preferredChargeSec: 2.35,
+    maxHoldChargeSec: 3.25,
+    driftAngleGain: 2.331,
+    driftLatGain: 2.012,
+    driftVelDamping: 2.565,
+    insideApexTarget: 0.155,
+    exitTangentAlignBlend: 0.6,
+    padSeekWeight: 0.45,
+    neuralBias: [
+      -0.2809,
+      0.231,
+      -0.0123,
+      -0.126,
+      0.0021,
+      -0.1437,
+      -0.0329,
+      -0.0514,
+    ],
   },
   HARD: {
     lookAheadBase: 19.35,
@@ -435,7 +453,7 @@ interface PersistedBrainState {
   episodesCompleted: number;
   itemsEnabled?: boolean;
   autoBalanceRosterEnabled?: boolean;
-  trainingTrackMode?: "ROTATE_CUP" | "SINGLE_TRACK";
+  trainingTrackMode?: "ROTATE_CUP" | "ALL_CUPS" | "SINGLE_TRACK";
   championGenome: AiPolicyGenome;
   population: AiPolicyGenome[];
   baselineMetrics: {
@@ -454,7 +472,8 @@ export class AiBrainManager {
   private episodesCompleted = 8577;
   private itemsEnabled = true;
   private autoBalanceRosterEnabled = false;
-  private trainingTrackMode: "ROTATE_CUP" | "SINGLE_TRACK" = "ROTATE_CUP";
+  private trainingTrackMode: "ROTATE_CUP" | "ALL_CUPS" | "SINGLE_TRACK" =
+    "ROTATE_CUP";
   private championGenome: AiPolicyGenome;
   private population: AiPolicyGenome[] = [];
   private baselineMetrics: {
@@ -604,6 +623,7 @@ export class AiBrainManager {
       }
       if (
         parsed.trainingTrackMode === "ROTATE_CUP" ||
+        parsed.trainingTrackMode === "ALL_CUPS" ||
         parsed.trainingTrackMode === "SINGLE_TRACK"
       ) {
         this.trainingTrackMode = parsed.trainingTrackMode;
@@ -781,11 +801,13 @@ export class AiBrainManager {
     this.saveToStorage();
   }
 
-  public getTrainingTrackMode(): "ROTATE_CUP" | "SINGLE_TRACK" {
+  public getTrainingTrackMode(): "ROTATE_CUP" | "ALL_CUPS" | "SINGLE_TRACK" {
     return this.trainingTrackMode;
   }
 
-  public setTrainingTrackMode(mode: "ROTATE_CUP" | "SINGLE_TRACK"): void {
+  public setTrainingTrackMode(
+    mode: "ROTATE_CUP" | "ALL_CUPS" | "SINGLE_TRACK"
+  ): void {
     this.trainingTrackMode = mode;
     this.saveToStorage();
   }

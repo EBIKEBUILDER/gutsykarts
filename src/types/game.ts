@@ -288,7 +288,7 @@ export interface AiTrainingLabTelemetry {
   episodesCompleted: number;
   itemsEnabled: boolean;
   autoBalanceRosterEnabled: boolean;
-  trainingTrackMode: "ROTATE_CUP" | "SINGLE_TRACK";
+  trainingTrackMode: "ROTATE_CUP" | "ALL_CUPS" | "SINGLE_TRACK";
   championFitness: number;
   championBestLapMs: number | null;
   baselineFitness: number | null;

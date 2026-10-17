@@ -1049,7 +1049,12 @@ export class KartController implements CollidableKartBody {
     // 8. Throttle & Hairpin Trail-Braking Discipline
     // Modulate throttle and apply proportional trail-braking when entering or rounding an extreme hairpin
     // at excessive speed (or sliding toward the outside edge), while keeping speed safely above the drift threshold.
-    let throttle = 1.0;
+    let throttle =
+      !isAligningForJump && diff === "EASY"
+        ? 0.92
+        : !isAligningForJump && diff === "MEDIUM"
+        ? 0.97
+        : 1.0;
     let brake = 0;
     if (Math.abs(angleError) > 1.05 && !isCommittedToDrift) {
       throttle = 0.65;
