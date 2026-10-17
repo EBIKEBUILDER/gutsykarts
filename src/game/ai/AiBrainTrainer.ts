@@ -375,6 +375,10 @@ interface RacerTelemetryAccumulator {
   currentlyInJump: boolean;
   collisionsGiven: number;
   collisionsTaken: number;
+  itemsUsed: number;
+  itemHitsLanded: number;
+  shortcutBoostsUsed: number;
+  defensiveBlocks: number;
   lastExtremeSide: -1 | 0 | 1;
   lastExtremeTimeSec: number;
   wallHitCooldownSec: number;
@@ -899,6 +903,10 @@ export class AiBrainManager {
         currentlyInJump: false,
         collisionsGiven: 0,
         collisionsTaken: 0,
+        itemsUsed: 0,
+        itemHitsLanded: 0,
+        shortcutBoostsUsed: 0,
+        defensiveBlocks: 0,
         lastExtremeSide: 0,
         lastExtremeTimeSec: -99,
         wallHitCooldownSec: 0,
@@ -1070,6 +1078,30 @@ export class AiBrainManager {
     }
   }
 
+  public recordItemUsed(racerId: string, isShortcutBoost = false): void {
+    const acc = this.accumulators.get(racerId);
+    if (acc) {
+      acc.itemsUsed = (acc.itemsUsed ?? 0) + 1;
+      if (isShortcutBoost) {
+        acc.shortcutBoostsUsed = (acc.shortcutBoostsUsed ?? 0) + 1;
+      }
+    }
+  }
+
+  public recordItemHitLanded(attackerRacerId: string): void {
+    const acc = this.accumulators.get(attackerRacerId);
+    if (acc) {
+      acc.itemHitsLanded = (acc.itemHitsLanded ?? 0) + 1;
+    }
+  }
+
+  public recordDefensiveBlock(defenderRacerId: string): void {
+    const acc = this.accumulators.get(defenderRacerId);
+    if (acc) {
+      acc.defensiveBlocks = (acc.defensiveBlocks ?? 0) + 1;
+    }
+  }
+
   private summarizeAccumulator(
     acc: RacerTelemetryAccumulator
   ): AiRacerTelemetrySummary {
@@ -1101,6 +1133,14 @@ export class AiBrainManager {
       14,
       acc.miniTurbosFired * 1.1 + acc.tier2Count * 0.5 + acc.tier3Count * 0.9
     );
+    const combatUtilityBonus = this.itemsEnabled
+      ? Math.min(
+          6,
+          (acc.itemHitsLanded ?? 0) * 1.4 +
+            (acc.shortcutBoostsUsed ?? 0) * 1.2 +
+            (acc.defensiveBlocks ?? 0) * 1.5
+        )
+      : 0;
     const penalties =
       unboostedOffRoadPct * 1.15 +
       acc.pingPongCrossings * 2.8 +
@@ -1108,7 +1148,12 @@ export class AiBrainManager {
       acc.abortedDrifts * 1.1 +
       Math.max(0, rmsLateralOffset - 4.8) * 1.8;
 
-    const rawFitness = cleanSurfaceScore + speedScore + mtConversionBonus - penalties;
+    const rawFitness =
+      cleanSurfaceScore +
+      speedScore +
+      mtConversionBonus +
+      combatUtilityBonus -
+      penalties;
     const fitnessScore = clamp(Number(rawFitness.toFixed(1)), 5, 100);
 
     return {
@@ -1141,6 +1186,10 @@ export class AiBrainManager {
       airTimePct,
       collisionsGiven: acc.collisionsGiven ?? 0,
       collisionsTaken: acc.collisionsTaken ?? 0,
+      itemsUsed: acc.itemsUsed ?? 0,
+      itemHitsLanded: acc.itemHitsLanded ?? 0,
+      shortcutBoostsUsed: acc.shortcutBoostsUsed ?? 0,
+      defensiveBlocks: acc.defensiveBlocks ?? 0,
       lapsCompleted: acc.lapsCompleted,
       bestLapMs: acc.bestLapMs,
       lastLapMs: acc.lastLapMs,

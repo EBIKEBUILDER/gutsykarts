@@ -95,12 +95,16 @@ export type MiniTurboTier = 0 | 1 | 2 | 3;
 
 export type PowerUpType =
   | "NITRO_CORE"
+  | "TRIPLE_NITRO"
   | "PULSE_SEEKER"
   | "RICOCHET_DISC"
+  | "ORBITAL_SHIELD"
   | "CRYO_MINE"
+  | "GLITCH_PRISM"
+  | "PHASE_CLOAK"
+  | "EMP_SHOCKWAVE"
   | "NOVA_OVERDRIVE"
-  | "LIL_SAUCER"
-  | "GLITCH_PRISM";
+  | "LIL_SAUCER";
 
 export interface PowerUpMetadata {
   id: PowerUpType;
@@ -243,6 +247,10 @@ export interface AiRacerTelemetrySummary {
   airTimePct: number;
   collisionsGiven: number;
   collisionsTaken: number;
+  itemsUsed?: number;
+  itemHitsLanded?: number;
+  shortcutBoostsUsed?: number;
+  defensiveBlocks?: number;
   lapsCompleted: number;
   bestLapMs: number | null;
   lastLapMs: number | null;
@@ -352,6 +360,10 @@ export interface HudTelemetry {
   activeBoostLabel: string | null;
   prolongedRocketBoostActive?: boolean;
   heldItem: PowerUpType | null;
+  heldItemCharges?: number;
+  orbitalShieldCharges?: number;
+  phaseCloakRemaining?: number;
+  empShrinkRemaining?: number;
   rouletteSpinning: boolean;
   roulettePreviewItem: PowerUpType | null;
   novaOverdriveRemaining: number;

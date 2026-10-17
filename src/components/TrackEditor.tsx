@@ -568,6 +568,56 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     flashIoNotice(`Exported ${slug}.gutsycup.json (${cupWithCurrentTrack.tracks.length} maps)`);
   };
 
+  const buildFullCatalogExportPayload = () => {
+    const current = trackDefRef.current;
+    const updatedCatalog = cupsCatalog.map((cup) => {
+      if (cup.id !== activeCupId) return cup;
+      return {
+        ...cup,
+        tracks: cup.tracks.map((t, idx) =>
+          idx === activeTrackIdx ? current : t
+        ),
+      };
+    });
+    const cleanCups = prepareCupsCatalogForRepoCommit(updatedCatalog);
+    const totalTracks = cleanCups.reduce(
+      (sum, c) => sum + (c.tracks?.length ?? 0),
+      0
+    );
+    return {
+      payload: {
+        version: 1,
+        updatedAt: Date.now(),
+        cups: cleanCups,
+      },
+      cupCount: cleanCups.length,
+      totalTracks,
+    };
+  };
+
+  const handleExportAllMapsCatalogJson = () => {
+    const { payload, cupCount, totalTracks } = buildFullCatalogExportPayload();
+    triggerJsonDownload("defaultCups.json", payload);
+    flashIoNotice(
+      `Exported ALL ${totalTracks} maps (${cupCount} Cups) as defaultCups.json!`
+    );
+  };
+
+  const handleCopyAllMapsCatalogJson = async () => {
+    try {
+      const { payload, cupCount, totalTracks } =
+        buildFullCatalogExportPayload();
+      await navigator.clipboard.writeText(
+        `${JSON.stringify(payload, null, 2)}\n`
+      );
+      flashIoNotice(
+        `Copied ALL ${totalTracks} maps (${cupCount} Cups) JSON to clipboard!`
+      );
+    } catch {
+      flashIoNotice("Clipboard copy failed — use EXPORT ALL MAPS instead.");
+    }
+  };
+
   const handleImportJsonFile = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -772,6 +822,398 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
       `Snapped ${snappedPads} Boost Pad${snappedPads === 1 ? "" : "s"} & ${snappedRamps} Jump Ramp${
         snappedRamps === 1 ? "" : "s"
       } onto the AI racing line!`
+    );
+  };
+
+  // Feature 4: Auto-Place Safe Jumps (relocates hazardous corner jumps & places fun straightaway/crest stunt ramps on the AI line)
+  const handleAutoPlaceSafeJumps = () => {
+    const currentDef = trackDefRef.current;
+    const totalLen = Math.max(200, splineData.totalTrackLength);
+
+    const queryConsensusLateralAtNormT = (targetNormT: number): number => {
+      if (recordedAiTraces.length === 0) return 0;
+      const lats: number[] = [];
+      for (const r of recordedAiTraces) {
+        for (const s of r.pathSamples) {
+          let diffT = Math.abs(s.normT - targetNormT);
+          if (diffT > 0.5) diffT = 1.0 - diffT;
+          if (diffT <= 0.025 && (s.surface !== "OFFROAD" || s.boosting)) {
+            lats.push(s.signedLat);
+          }
+        }
+      }
+      if (lats.length === 0) return 0;
+      lats.sort((a, b) => a - b);
+      const mid = Math.floor(lats.length / 2);
+      const medianLat =
+        lats.length % 2 === 1
+          ? lats[mid]
+          : (lats[mid - 1] + lats[mid]) * 0.5;
+      const maxSafeLat = Math.max(1.5, currentDef.roadHalfWidth - 2.6);
+      return Math.max(-maxSafeLat, Math.min(maxSafeLat, medianLat));
+    };
+
+    // Evaluate whether a normalized spline position is a safe, fun launch zone with a straight 48m landing runway
+    const evaluateJumpSafetyAtNormT = (
+      normT: number
+    ): { safe: boolean; score: number } => {
+      // Keep start/finish straight clear for standing starts & lap line
+      if (normT < 0.065 || normT > 0.915) {
+        return { safe: false, score: -1 };
+      }
+
+      const dBehind = 18 / totalLen;
+      const dAhead15 = 15 / totalLen;
+      const dAhead30 = 30 / totalLen;
+      const dAhead46 = 46 / totalLen;
+
+      const s0 = splineData.getPointAtNormalizedT(normT, 0);
+      const sBehind = splineData.getPointAtNormalizedT(
+        (normT - dBehind + 1) % 1,
+        0
+      );
+      const s15 = splineData.getPointAtNormalizedT((normT + dAhead15) % 1, 0);
+      const s30 = splineData.getPointAtNormalizedT((normT + dAhead30) % 1, 0);
+      const s46 = splineData.getPointAtNormalizedT((normT + dAhead46) % 1, 0);
+
+      const tan0 = new Vector3(s0.tangent.x, 0, s0.tangent.z).normalize();
+      const tanBehind = new Vector3(
+        sBehind.tangent.x,
+        0,
+        sBehind.tangent.z
+      ).normalize();
+      const tan15 = new Vector3(s15.tangent.x, 0, s15.tangent.z).normalize();
+      const tan30 = new Vector3(s30.tangent.x, 0, s30.tangent.z).normalize();
+      const tan46 = new Vector3(s46.tangent.x, 0, s46.tangent.z).normalize();
+
+      const dotBehind = Vector3.Dot(tan0, tanBehind);
+      const dot15 = Vector3.Dot(tan0, tan15);
+      const dot30 = Vector3.Dot(tan0, tan30);
+      const dot46 = Vector3.Dot(tan0, tan46);
+
+      // Compute horizontal cross-track drift at 42m ahead if a kart flies straight along tan0
+      const s42 = splineData.getPointAtNormalizedT(
+        (normT + 42 / totalLen) % 1,
+        0
+      );
+      const toLanding = s42.position.subtract(s0.position);
+      toLanding.y = 0;
+      const binorm0 = new Vector3(s0.binormal.x, 0, s0.binormal.z).normalize();
+      const crossTrackLandingOffset = Math.abs(Vector3.Dot(toLanding, binorm0));
+
+      const isSafe =
+        dotBehind >= 0.90 &&
+        dot15 >= 0.95 &&
+        dot30 >= 0.92 &&
+        dot46 >= 0.88 &&
+        crossTrackLandingOffset <= currentDef.roadHalfWidth * 0.62;
+
+      if (!isSafe) {
+        return { safe: false, score: -1 };
+      }
+
+      // Score higher for dead-straight runways, hill crests, and high AI speed sectors
+      const crestBonus = Math.max(0, (s0.position.y - s30.position.y) * 0.12);
+      const straightnessScore =
+        (dotBehind + dot15 * 1.5 + dot30 * 1.5 + dot46 * 1.2) * 20 -
+        crossTrackLandingOffset * 1.8 +
+        crestBonus;
+
+      return { safe: true, score: straightnessScore };
+    };
+
+    // 1. Keep non-jump obstacles, and check existing JUMP_RAMP obstacles (remove hazardous corner ramps)
+    const nonJumpObstacles = currentDef.obstacles.filter(
+      (o) => o.type !== "JUMP_RAMP"
+    );
+    const existingJumps = currentDef.obstacles.filter(
+      (o) => o.type === "JUMP_RAMP"
+    );
+
+    let removedHazardJumps = 0;
+    const keptSafeJumps: typeof existingJumps = [];
+    const occupiedNormTs: number[] = [];
+
+    for (const jump of existingJumps) {
+      const q = splineData.queryClosestTrackPoint(
+        new Vector3(jump.x, 0, jump.z)
+      );
+      const check = evaluateJumpSafetyAtNormT(q.normalizedSplineT);
+      if (check.safe) {
+        // Align kept safe jump to AI consensus line
+        const targetLat = queryConsensusLateralAtNormT(q.normalizedSplineT);
+        const aligned = splineData.getPointAtNormalizedT(
+          q.normalizedSplineT,
+          targetLat
+        );
+        const yaw = Math.atan2(aligned.tangent.x, aligned.tangent.z);
+        keptSafeJumps.push({
+          ...jump,
+          x: Number(aligned.position.x.toFixed(1)),
+          z: Number(aligned.position.z.toFixed(1)),
+          rotationY: Number(yaw.toFixed(2)),
+        });
+        occupiedNormTs.push(q.normalizedSplineT);
+      } else {
+        removedHazardJumps++;
+      }
+    }
+
+    // 2. Scan 160 candidate points around the track for the best safe jump locations
+    const candidates: Array<{ normT: number; score: number }> = [];
+    const steps = 160;
+    for (let i = 0; i < steps; i++) {
+      const normT = i / steps;
+      const res = evaluateJumpSafetyAtNormT(normT);
+      if (res.safe) {
+        candidates.push({ normT, score: res.score });
+      }
+    }
+    candidates.sort((a, b) => b.score - a.score);
+
+    const targetJumpCount = Math.min(3, Math.max(2, Math.round(totalLen / 340)));
+    const minSpacingT = Math.max(0.20, 140 / totalLen);
+    const newJumps: typeof existingJumps = [...keptSafeJumps];
+
+    for (const cand of candidates) {
+      if (newJumps.length >= targetJumpCount) break;
+      const tooClose = occupiedNormTs.some((t) => {
+        let diff = Math.abs(t - cand.normT);
+        if (diff > 0.5) diff = 1.0 - diff;
+        return diff < minSpacingT;
+      });
+      if (tooClose) continue;
+
+      const lat = queryConsensusLateralAtNormT(cand.normT);
+      const sample = splineData.getPointAtNormalizedT(cand.normT, lat);
+      const yaw = Math.atan2(sample.tangent.x, sample.tangent.z);
+
+      newJumps.push({
+        id: `auto_jump_${Date.now()}_${newJumps.length}`,
+        type: "JUMP_RAMP",
+        x: Number(sample.position.x.toFixed(1)),
+        z: Number(sample.position.z.toFixed(1)),
+        rotationY: Number(yaw.toFixed(2)),
+        scale: 1.15,
+      });
+      occupiedNormTs.push(cand.normT);
+    }
+
+    // If strict thresholds found no candidates on a very twisty track, relax slightly to place at least 1 safe straightaway jump
+    if (newJumps.length === 0) {
+      let bestT = 0.25;
+      let bestDot = -1;
+      for (let i = 12; i < steps - 14; i++) {
+        const normT = i / steps;
+        const s0 = splineData.getPointAtNormalizedT(normT, 0);
+        const s28 = splineData.getPointAtNormalizedT(
+          (normT + 28 / totalLen) % 1,
+          0
+        );
+        const dot = Vector3.Dot(s0.tangent, s28.tangent);
+        if (dot > bestDot) {
+          bestDot = dot;
+          bestT = normT;
+        }
+      }
+      const lat = queryConsensusLateralAtNormT(bestT);
+      const sample = splineData.getPointAtNormalizedT(bestT, lat);
+      const yaw = Math.atan2(sample.tangent.x, sample.tangent.z);
+      newJumps.push({
+        id: `auto_jump_${Date.now()}_0`,
+        type: "JUMP_RAMP",
+        x: Number(sample.position.x.toFixed(1)),
+        z: Number(sample.position.z.toFixed(1)),
+        rotationY: Number(yaw.toFixed(2)),
+        scale: 1.1,
+      });
+      occupiedNormTs.push(bestT);
+    }
+
+    // 3. Nudge any Item Box Rows out of mid-air jump trajectories so racers don't fly over item boxes
+    const jumpFlightArcT = 42 / totalLen;
+    const adjustedItemRows = currentDef.itemBoxRows.map((row) => {
+      for (const jT of occupiedNormTs) {
+        const deltaAhead = (row.normT - jT + 1) % 1;
+        if (deltaAhead >= 0 && deltaAhead < jumpFlightArcT) {
+          // Place row safely after the landing zone
+          return {
+            ...row,
+            normT: Number(((jT + jumpFlightArcT + 0.018) % 1).toFixed(4)),
+          };
+        }
+      }
+      return row;
+    });
+
+    commitWorkingEdit(
+      {
+        ...currentDef,
+        obstacles: [...nonJumpObstacles, ...newJumps],
+        itemBoxRows: adjustedItemRows,
+      },
+      true
+    );
+
+    flashIoNotice(
+      removedHazardJumps > 0
+        ? `Relocated ${removedHazardJumps} corner-hazard jump${
+            removedHazardJumps === 1 ? "" : "s"
+          } & placed ${newJumps.length} Safe Stunt Jump${
+            newJumps.length === 1 ? "" : "s"
+          } on straightaways!`
+        : `Placed ${newJumps.length} Safe Stunt Jump${
+            newJumps.length === 1 ? "" : "s"
+          } with clear landing runways on the AI line!`
+    );
+  };
+
+  // Feature 5: Auto-Curate Corner-Exit Boost Pads & Grounded Item Box Rows
+  const handleAutoCurateBoostsAndBoxes = () => {
+    const currentDef = trackDefRef.current;
+    const totalLen = Math.max(200, splineData.totalTrackLength);
+
+    const queryConsensusLateralAtNormT = (targetNormT: number): number => {
+      if (recordedAiTraces.length === 0) return 0;
+      const lats: number[] = [];
+      for (const r of recordedAiTraces) {
+        for (const s of r.pathSamples) {
+          let diffT = Math.abs(s.normT - targetNormT);
+          if (diffT > 0.5) diffT = 1.0 - diffT;
+          if (diffT <= 0.025 && (s.surface !== "OFFROAD" || s.boosting)) {
+            lats.push(s.signedLat);
+          }
+        }
+      }
+      if (lats.length === 0) return 0;
+      lats.sort((a, b) => a - b);
+      const mid = Math.floor(lats.length / 2);
+      const medianLat =
+        lats.length % 2 === 1
+          ? lats[mid]
+          : (lats[mid - 1] + lats[mid]) * 0.5;
+      const maxSafeLat = Math.max(1.5, currentDef.roadHalfWidth - 2.4);
+      return Math.max(-maxSafeLat, Math.min(maxSafeLat, medianLat));
+    };
+
+    // Find normalizedTs of existing Jump Ramps so we don't put boost pads or item boxes inside mid-air jump arcs
+    const jumpNormTs = currentDef.obstacles
+      .filter((o) => o.type === "JUMP_RAMP")
+      .map(
+        (o) =>
+          splineData.queryClosestTrackPoint(new Vector3(o.x, 0, o.z))
+            .normalizedSplineT
+      );
+
+    const isInsideJumpCorridor = (normT: number, bufferMeters = 45): boolean => {
+      const arcT = bufferMeters / totalLen;
+      const beforeT = 12 / totalLen;
+      return jumpNormTs.some((jT) => {
+        const ahead = (normT - jT + 1) % 1;
+        const behind = (jT - normT + 1) % 1;
+        return ahead <= arcT || behind <= beforeT;
+      });
+    };
+
+    // 1. Score Corner Exits around the track (curvature behind transitioning into straightaway ahead)
+    const exitCandidates: Array<{ normT: number; score: number }> = [];
+    const steps = 160;
+    for (let i = 0; i < steps; i++) {
+      const normT = i / steps;
+      if (normT < 0.06 || normT > 0.93) continue;
+      if (isInsideJumpCorridor(normT, 38)) continue;
+
+      const sBack = splineData.getPointAtNormalizedT(
+        (normT - 24 / totalLen + 1) % 1,
+        0
+      );
+      const sHere = splineData.getPointAtNormalizedT(normT, 0);
+      const sAhead = splineData.getPointAtNormalizedT(
+        (normT + 28 / totalLen) % 1,
+        0
+      );
+
+      const turnBefore = 1.0 - Vector3.Dot(sBack.tangent, sHere.tangent);
+      const straightAhead = Vector3.Dot(sHere.tangent, sAhead.tangent);
+
+      if (straightAhead >= 0.91 && turnBefore >= 0.04) {
+        exitCandidates.push({
+          normT,
+          score: turnBefore * 10 + straightAhead * 3,
+        });
+      }
+    }
+    exitCandidates.sort((a, b) => b.score - a.score);
+
+    const chosenBoostTs: number[] = [];
+    const minBoostSpacing = Math.max(0.16, 105 / totalLen);
+    for (const cand of exitCandidates) {
+      if (chosenBoostTs.length >= 4) break;
+      const tooClose = chosenBoostTs.some((t) => {
+        let diff = Math.abs(t - cand.normT);
+        if (diff > 0.5) diff = 1.0 - diff;
+        return diff < minBoostSpacing;
+      });
+      if (tooClose) continue;
+      chosenBoostTs.push(cand.normT);
+    }
+
+    // Fallback if track is mostly gentle curves
+    if (chosenBoostTs.length < 3) {
+      for (const fallbackT of [0.18, 0.46, 0.74]) {
+        if (chosenBoostTs.length >= 3) break;
+        if (!isInsideJumpCorridor(fallbackT, 30)) {
+          chosenBoostTs.push(fallbackT);
+        }
+      }
+    }
+    chosenBoostTs.sort((a, b) => a - b);
+
+    const curatedBoostPads = chosenBoostTs.map((normT, idx) => ({
+      id: `boost_auto_${Date.now()}_${idx}`,
+      normT: Number(normT.toFixed(4)),
+      lateral: Number(queryConsensusLateralAtNormT(normT).toFixed(2)),
+    }));
+
+    // 2. Place 3 evenly spaced Item Box Rows on settled straightaways outside jump arcs
+    const targetRowAnchors = [0.22, 0.52, 0.80];
+    const curatedItemRows = targetRowAnchors.map((anchorT, idx) => {
+      let bestT = anchorT;
+      let bestScore = -999;
+      for (let offset = -12; offset <= 12; offset++) {
+        const candT = (anchorT + offset * 0.006 + 1) % 1;
+        if (candT < 0.07 || candT > 0.92) continue;
+        if (isInsideJumpCorridor(candT, 46)) continue;
+        const s0 = splineData.getPointAtNormalizedT(candT, 0);
+        const sAhead = splineData.getPointAtNormalizedT(
+          (candT + 20 / totalLen) % 1,
+          0
+        );
+        const straightness = Vector3.Dot(s0.tangent, sAhead.tangent);
+        const distPenalty = Math.abs( offset ) * 0.01;
+        const score = straightness - distPenalty;
+        if (score > bestScore) {
+          bestScore = score;
+          bestT = candT;
+        }
+      }
+      return {
+        id: `item_row_auto_${Date.now()}_${idx}`,
+        normT: Number(bestT.toFixed(4)),
+      };
+    });
+
+    commitWorkingEdit(
+      {
+        ...currentDef,
+        boostPads: curatedBoostPads,
+        itemBoxRows: curatedItemRows,
+      },
+      true
+    );
+
+    flashIoNotice(
+      `Auto-curated ${curatedBoostPads.length} Corner-Exit Boost Pads (on AI line) & ${curatedItemRows.length} Grounded Item Box Rows!`
     );
   };
 
@@ -1655,6 +2097,26 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
             </>
           )}
 
+          <button
+            type="button"
+            data-testid="editor-auto-safe-jumps-btn"
+            onClick={handleAutoPlaceSafeJumps}
+            className="rounded-lg border border-emerald-400/50 bg-emerald-500/20 px-2 py-1.5 text-[10px] font-black uppercase text-emerald-200 hover:bg-emerald-500/30 transition cursor-pointer"
+            title="Automatically relocate any hazardous corner jumps and place 2-3 safe stunt jump ramps on straightaways/crests with >= 46m clear landing runways on the AI line (supports Ctrl+Z Undo)"
+          >
+            🚀 AUTO-PLACE SAFE JUMPS
+          </button>
+
+          <button
+            type="button"
+            data-testid="editor-auto-boosts-boxes-btn"
+            onClick={handleAutoCurateBoostsAndBoxes}
+            className="rounded-lg border border-sky-400/50 bg-sky-500/20 px-2 py-1.5 text-[10px] font-black uppercase text-sky-200 hover:bg-sky-500/30 transition cursor-pointer"
+            title="Automatically place Corner-Exit Boost Pads on the AI line and 3 grounded Item Box Rows outside mid-air jump trajectories (supports Ctrl+Z Undo)"
+          >
+            ⚡ AUTO-CURATE BOOSTS &amp; BOXES
+          </button>
+
           {recordedAiTraces.length > 0 && (
             <button
               type="button"
@@ -1741,6 +2203,17 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
 
           <button
             type="button"
+            data-testid="editor-export-all-maps-btn"
+            onClick={handleExportAllMapsCatalogJson}
+            title="Download ALL Cups & ALL Maps at once as a single defaultCups.json file ready to commit as the game defaults!"
+            className="flex items-center gap-1 rounded-xl border border-amber-400/60 bg-amber-500/20 px-2.5 py-2 text-xs font-black uppercase tracking-wider text-amber-100 hover:bg-amber-500/30 transition cursor-pointer"
+          >
+            <Download className="h-3.5 w-3.5 text-amber-300" />
+            EXPORT ALL MAPS
+          </button>
+
+          <button
+            type="button"
             data-testid="editor-export-track-btn"
             onClick={handleExportTrackJson}
             title="Download this map as a portable .gutsytrack.json file"
@@ -1754,7 +2227,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
             type="button"
             data-testid="editor-import-json-btn"
             onClick={() => fileInputRef.current?.click()}
-            title="Import a .gutsytrack.json map or .gutsycup.json Cup series from disk"
+            title="Import a .gutsytrack.json map, .gutsycup.json Cup series, or full defaultCups.json catalog from disk"
             className="flex items-center gap-1 rounded-xl border border-white/15 bg-slate-800 px-2.5 py-2 text-xs font-black uppercase tracking-wider text-slate-200 hover:bg-slate-700 transition cursor-pointer"
           >
             <Upload className="h-3.5 w-3.5 text-cyan-300" />
@@ -1843,27 +2316,49 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                 })}
               </div>
 
-              {/* Active Cup Actions: Export Cup Series & Edit Cup Info */}
+              {/* Active Cup Actions: Export Cup Series, Export All Maps & Edit Cup Info */}
               {activeCup && (
-                <div className="flex items-center justify-between gap-1.5 pt-0.5">
-                  <button
-                    type="button"
-                    data-testid="editor-toggle-cup-settings-btn"
-                    onClick={() => setShowCupSettings((prev) => !prev)}
-                    className="rounded-lg border border-white/15 bg-slate-900 px-2 py-1 text-[10px] font-bold uppercase text-slate-300 hover:text-white cursor-pointer"
-                  >
-                    {showCupSettings ? "HIDE CUP INFO" : "EDIT CUP SERIES INFO"}
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="editor-export-cup-btn"
-                    onClick={handleExportCupJson}
-                    title="Export all maps in this Cup as a single .gutsycup.json file"
-                    className="inline-flex items-center gap-1 rounded-lg border border-cyan-400/40 bg-cyan-500/15 px-2 py-1 text-[10px] font-black uppercase text-cyan-200 hover:bg-cyan-500/25 cursor-pointer"
-                  >
-                    <Download className="h-3 w-3" /> EXPORT CUP (
-                    {activeCup.tracks.length})
-                  </button>
+                <div className="space-y-1.5 pt-0.5">
+                  <div className="flex items-center justify-between gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="editor-toggle-cup-settings-btn"
+                      onClick={() => setShowCupSettings((prev) => !prev)}
+                      className="rounded-lg border border-white/15 bg-slate-900 px-2 py-1 text-[10px] font-bold uppercase text-slate-300 hover:text-white cursor-pointer"
+                    >
+                      {showCupSettings ? "HIDE CUP INFO" : "EDIT CUP INFO"}
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="editor-export-cup-btn"
+                      onClick={handleExportCupJson}
+                      title="Export all maps in this Cup as a single .gutsycup.json file"
+                      className="inline-flex items-center gap-1 rounded-lg border border-cyan-400/40 bg-cyan-500/15 px-2 py-1 text-[10px] font-black uppercase text-cyan-200 hover:bg-cyan-500/25 cursor-pointer"
+                    >
+                      <Download className="h-3 w-3" /> EXPORT CUP (
+                      {activeCup.tracks.length})
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="editor-sidebar-export-all-btn"
+                      onClick={handleExportAllMapsCatalogJson}
+                      title="Download ALL Cups & ALL Maps in the game as a single defaultCups.json file"
+                      className="inline-flex items-center justify-center gap-1 rounded-lg border border-amber-400/50 bg-amber-500/20 px-2 py-1.5 text-[10px] font-black uppercase text-amber-100 hover:bg-amber-500/30 cursor-pointer"
+                    >
+                      <Download className="h-3 w-3 text-amber-300" /> EXPORT ALL MAPS
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="editor-sidebar-copy-all-btn"
+                      onClick={handleCopyAllMapsCatalogJson}
+                      title="Copy the entire defaultCups.json (all Cups & Maps) to your clipboard"
+                      className="inline-flex items-center justify-center gap-1 rounded-lg border border-emerald-400/50 bg-emerald-500/20 px-2 py-1.5 text-[10px] font-black uppercase text-emerald-100 hover:bg-emerald-500/30 cursor-pointer"
+                    >
+                      📋 COPY ALL MAPS JSON
+                    </button>
+                  </div>
                 </div>
               )}
 

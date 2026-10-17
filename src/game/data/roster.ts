@@ -315,6 +315,15 @@ export const POWER_UP_CATALOG: Record<PowerUpType, PowerUpMetadata> = {
     color: "#f97316",
     accentColor: "#22d3ee",
   },
+  TRIPLE_NITRO: {
+    id: "TRIPLE_NITRO",
+    name: "Triple Nitro Cylinders",
+    shortLabel: "3x NITRO",
+    description:
+      "Three high-pressure Nitro charges (+45% speed burst each). Chain off-road grass shortcuts or multi-stage straightaway surges!",
+    color: "#fb923c",
+    accentColor: "#38bdf8",
+  },
   PULSE_SEEKER: {
     id: "PULSE_SEEKER",
     name: "Pulse Seeker",
@@ -333,6 +342,15 @@ export const POWER_UP_CATALOG: Record<PowerUpType, PowerUpMetadata> = {
     color: "#10b981",
     accentColor: "#6ee7b7",
   },
+  ORBITAL_SHIELD: {
+    id: "ORBITAL_SHIELD",
+    name: "Tri-Drone Orbit Shield",
+    shortLabel: "3x DRONES",
+    description:
+      "Spawns 3 orbiting emerald energy drones that block incoming seekers/discs, bump rival karts, or fire forward one by one!",
+    color: "#14b8a6",
+    accentColor: "#67e8f9",
+  },
   CRYO_MINE: {
     id: "CRYO_MINE",
     name: "Cryo Mine",
@@ -341,6 +359,33 @@ export const POWER_UP_CATALOG: Record<PowerUpType, PowerUpMetadata> = {
       "Spiked hazard emitter dropped behind your kart. Triggers a 720° spin-out and 80% speed drop on contact.",
     color: "#eab308",
     accentColor: "#18181b",
+  },
+  GLITCH_PRISM: {
+    id: "GLITCH_PRISM",
+    name: "Prank Glitch Prism",
+    shortLabel: "DECOY BOX",
+    description:
+      "Drops a deceptive counterfeit Item Prism behind your kart that detonates a 720° glitch spin-out when collected!",
+    color: "#f43f5e",
+    accentColor: "#e879f9",
+  },
+  PHASE_CLOAK: {
+    id: "PHASE_CLOAK",
+    name: "Phantom Phase Cloak",
+    shortLabel: "PHASE CLOAK",
+    description:
+      "4.5s of intangible ghost cloaking (immune to projectiles, mines, off-road drag & Juggernaut shoves) + steals a held item ahead!",
+    color: "#818cf8",
+    accentColor: "#e879f9",
+  },
+  EMP_SHOCKWAVE: {
+    id: "EMP_SHOCKWAVE",
+    name: "Ion Storm Shockwave",
+    shortLabel: "ION ZAP",
+    description:
+      "Global electromagnetic storm that zaps all racers ahead, dropping their items and shrinking them to 72% size (-25% speed, 50% mass) for 4.5s!",
+    color: "#38bdf8",
+    accentColor: "#a855f7",
   },
   NOVA_OVERDRIVE: {
     id: "NOVA_OVERDRIVE",
@@ -359,15 +404,6 @@ export const POWER_UP_CATALOG: Record<PowerUpType, PowerUpMetadata> = {
       "Quirky face-on-dome UFO rocket (88 u/s) that locks onto a random racer ahead of you and blasts them into orbit!",
     color: "#c084fc",
     accentColor: "#38bdf8",
-  },
-  GLITCH_PRISM: {
-    id: "GLITCH_PRISM",
-    name: "Prank Glitch Prism",
-    shortLabel: "DECOY BOX",
-    description:
-      "Drops a deceptive counterfeit Item Prism behind your kart that detonates a 720° glitch spin-out when collected!",
-    color: "#f43f5e",
-    accentColor: "#e879f9",
   },
 };
 

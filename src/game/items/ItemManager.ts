@@ -12,6 +12,7 @@ import { PowerUpType } from "@/src/types/game";
 import { BuiltTrack } from "@/src/game/world/TrackBuilder";
 import { KartController } from "@/src/game/physics/KartController";
 import { POWER_UP_CATALOG } from "@/src/game/data/roster";
+import { globalAiBrain } from "@/src/game/ai/AiBrainTrainer";
 
 interface ItemBoxInstance {
   id: string;
@@ -58,6 +59,24 @@ interface DeployedGlitchPrism {
   phaseOffset: number;
 }
 
+interface ActiveEmpWaveRing {
+  mesh: Mesh;
+  lifeTimer: number;
+  maxRadius: number;
+}
+
+interface OrbitalShieldRig {
+  root: TransformNode;
+  droneMeshes: Mesh[];
+  orbitAngle: number;
+}
+
+interface TripleNitroRig {
+  root: TransformNode;
+  canisterMeshes: Mesh[];
+  orbitAngle: number;
+}
+
 export class ItemManager {
   private readonly scene: Scene;
   private readonly track: BuiltTrack;
@@ -67,7 +86,11 @@ export class ItemManager {
   private readonly projectiles: ActiveProjectile[] = [];
   private readonly mines: DeployedCryoMine[] = [];
   private readonly glitchPrisms: DeployedGlitchPrism[] = [];
+  private readonly empWaves: ActiveEmpWaveRing[] = [];
   private readonly novaOverdriveCores = new Map<string, Mesh>();
+  private readonly orbitalShieldRigs = new Map<string, OrbitalShieldRig>();
+  private readonly tripleNitroRigs = new Map<string, TripleNitroRig>();
+  private readonly phaseCloakShells = new Map<string, Mesh>();
 
   private elapsedSec = 0;
   private nextEntityId = 1;
@@ -85,6 +108,10 @@ export class ItemManager {
   private readonly saucerBeamMat: StandardMaterial;
   private readonly glitchPrismMat: StandardMaterial;
   private readonly glitchRingMat: StandardMaterial;
+  private readonly shieldDroneMat: StandardMaterial;
+  private readonly phaseCloakMat: StandardMaterial;
+  private readonly empRingMat: StandardMaterial;
+  private readonly nitroCanisterMat: StandardMaterial;
 
   constructor(scene: Scene, track: BuiltTrack) {
     this.scene = scene;
@@ -143,6 +170,26 @@ export class ItemManager {
     this.glitchRingMat = new StandardMaterial("glitchRingMat", scene);
     this.glitchRingMat.diffuseColor = new Color3(0.95, 0.3, 0.85);
     this.glitchRingMat.emissiveColor = new Color3(0.75, 0.12, 0.65);
+
+    // Tri-Drone Orbit Shield, Phantom Phase Cloak, EMP Shockwave & Triple Nitro materials
+    this.shieldDroneMat = new StandardMaterial("shieldDroneMat", scene);
+    this.shieldDroneMat.diffuseColor = new Color3(0.08, 0.92, 0.78);
+    this.shieldDroneMat.emissiveColor = new Color3(0.06, 0.68, 0.58);
+
+    this.phaseCloakMat = new StandardMaterial("phaseCloakMat", scene);
+    this.phaseCloakMat.diffuseColor = new Color3(0.55, 0.52, 0.98);
+    this.phaseCloakMat.emissiveColor = new Color3(0.38, 0.32, 0.88);
+    this.phaseCloakMat.alpha = 0.34;
+    this.phaseCloakMat.backFaceCulling = false;
+
+    this.empRingMat = new StandardMaterial("empRingMat", scene);
+    this.empRingMat.diffuseColor = new Color3(0.25, 0.88, 1.0);
+    this.empRingMat.emissiveColor = new Color3(0.35, 0.55, 1.0);
+    this.empRingMat.alpha = 0.72;
+
+    this.nitroCanisterMat = new StandardMaterial("nitroCanisterMat", scene);
+    this.nitroCanisterMat.diffuseColor = new Color3(1.0, 0.52, 0.12);
+    this.nitroCanisterMat.emissiveColor = new Color3(0.85, 0.32, 0.05);
 
     this.spawnItemBoxRows();
   }
@@ -324,34 +371,41 @@ export class ItemManager {
         : true);
 
     if (rank === 1) {
-      if (r < 0.30) return "CRYO_MINE";
-      if (r < 0.56) return "GLITCH_PRISM";
-      if (r < 0.80) return "RICOCHET_DISC";
-      if (r < 0.92) return "NITRO_CORE";
+      if (r < 0.26) return "CRYO_MINE";
+      if (r < 0.48) return "GLITCH_PRISM";
+      if (r < 0.70) return "RICOCHET_DISC";
+      if (r < 0.84) return "NITRO_CORE";
+      if (r < 0.94) return "ORBITAL_SHIELD";
       return "PULSE_SEEKER";
     }
     if (rank === 2) {
-      if (canGetSaucer && r < 0.10) return "LIL_SAUCER";
-      if (r < 0.32) return "PULSE_SEEKER";
-      if (r < 0.52) return "NITRO_CORE";
-      if (r < 0.70) return "RICOCHET_DISC";
-      if (r < 0.84) return "GLITCH_PRISM";
-      if (r < 0.94) return "CRYO_MINE";
+      if (canGetSaucer && r < 0.08) return "LIL_SAUCER";
+      if (r < 0.25) return "PULSE_SEEKER";
+      if (r < 0.40) return "NITRO_CORE";
+      if (r < 0.54) return "TRIPLE_NITRO";
+      if (r < 0.68) return "RICOCHET_DISC";
+      if (r < 0.80) return "ORBITAL_SHIELD";
+      if (r < 0.89) return "PHASE_CLOAK";
+      if (r < 0.96) return "GLITCH_PRISM";
       return "NOVA_OVERDRIVE";
     }
     if (rank === 3) {
-      if (canGetSaucer && r < 0.24) return "LIL_SAUCER";
+      if (canGetSaucer && r < 0.18) return "LIL_SAUCER";
+      if (r < 0.36) return "TRIPLE_NITRO";
       if (r < 0.50) return "NITRO_CORE";
-      if (r < 0.72) return "PULSE_SEEKER";
-      if (r < 0.86) return "NOVA_OVERDRIVE";
-      if (r < 0.94) return "GLITCH_PRISM";
-      return "RICOCHET_DISC";
+      if (r < 0.64) return "PULSE_SEEKER";
+      if (r < 0.76) return "ORBITAL_SHIELD";
+      if (r < 0.86) return "PHASE_CLOAK";
+      if (r < 0.94) return "NOVA_OVERDRIVE";
+      return "EMP_SHOCKWAVE";
     }
-    // Rank 4+ (Last place racer is highly likely to roll the UFO rocket!)
-    if (canGetSaucer && r < 0.46) return "LIL_SAUCER";
-    if (r < 0.74) return "NITRO_CORE";
-    if (r < 0.90) return "NOVA_OVERDRIVE";
-    return "PULSE_SEEKER";
+    // Rank 4+ (Underdog comeback arsenal: UFO Saucer, EMP Shockwave, Triple Nitro, Nova Overdrive, Phase Cloak)
+    if (canGetSaucer && r < 0.34) return "LIL_SAUCER";
+    if (r < 0.54) return "TRIPLE_NITRO";
+    if (r < 0.70) return "NOVA_OVERDRIVE";
+    if (r < 0.84) return "EMP_SHOCKWAVE";
+    if (r < 0.94) return "PHASE_CLOAK";
+    return "ORBITAL_SHIELD";
   }
 
   public activatePowerUp(
@@ -361,16 +415,107 @@ export class ItemManager {
     onBannerEvent?: (message: string) => void
   ): void {
     const meta = POWER_UP_CATALOG[item];
+    const isOffRoadOrShortcut =
+      caster.closestTrack.horizontalDistance > this.track.curbWidth - 0.5 ||
+      caster.spinOutTimer > 0;
 
     if (item === "NITRO_CORE") {
       caster.activateNitroCore();
+      globalAiBrain.recordItemUsed(caster.racerId, isOffRoadOrShortcut);
       onBannerEvent?.(`${caster.name} ignited ${meta.name} (+45% Boost)!`);
+      return;
+    }
+
+    if (item === "TRIPLE_NITRO") {
+      caster.activateNitroCore();
+      globalAiBrain.recordItemUsed(caster.racerId, isOffRoadOrShortcut);
+      const rem = caster.heldItemCharges;
+      onBannerEvent?.(
+        rem > 0
+          ? `${caster.name} fired ${meta.name} (${rem}x left)!`
+          : `${caster.name} fired final ${meta.name} cylinder!`
+      );
+      return;
+    }
+
+    if (item === "ORBITAL_SHIELD") {
+      if (caster.orbitalShieldCharges <= 0) {
+        // First activation: deploy 3 orbiting drones around the kart
+        caster.orbitalShieldCharges = 3;
+        caster.heldItem = "ORBITAL_SHIELD";
+        caster.heldItemCharges = 3;
+        this.ensureOrbitalShieldRig(caster);
+        globalAiBrain.recordItemUsed(caster.racerId, false);
+        onBannerEvent?.(
+          `${caster.name} deployed ${meta.name} (3 Orbiting Drones)!`
+        );
+      } else {
+        // Subsequent activation: launch 1 orbiting drone forward as a Ricochet Disc
+        caster.orbitalShieldCharges = Math.max(0, caster.orbitalShieldCharges - 1);
+        this.spawnRicochetDisc(caster, allRacers);
+        if (caster.orbitalShieldCharges > 0) {
+          caster.heldItem = "ORBITAL_SHIELD";
+          caster.heldItemCharges = caster.orbitalShieldCharges;
+        } else {
+          caster.heldItem = null;
+          caster.heldItemCharges = 0;
+        }
+        onBannerEvent?.(
+          `${caster.name} launched an Orbital Shield Drone forward!`
+        );
+      }
+      return;
+    }
+
+    if (item === "PHASE_CLOAK") {
+      caster.activatePhaseCloak();
+      this.ensurePhaseCloakShell(caster);
+      globalAiBrain.recordItemUsed(caster.racerId, isOffRoadOrShortcut);
+      if (caster.incomingThreatCount > 0) {
+        globalAiBrain.recordDefensiveBlock(caster.racerId);
+      }
+
+      // Steal a held item from a rival ahead (or any rival holding an item)
+      const candidates = allRacers.filter(
+        (r) =>
+          r.racerId !== caster.racerId &&
+          r.heldItem !== null &&
+          r.heldItem !== "PHASE_CLOAK"
+      );
+      if (candidates.length > 0) {
+        // Prefer the highest-ranked rival holding an item
+        candidates.sort((a, b) => a.rank - b.rank);
+        const victim = candidates[0];
+        const stolen = victim.heldItem!;
+        victim.heldItem = null;
+        victim.heldItemCharges = 0;
+        victim.orbitalShieldCharges = 0;
+        caster.heldItem = stolen;
+        caster.heldItemCharges = stolen === "TRIPLE_NITRO" ? 3 : 1;
+        onBannerEvent?.(
+          `${caster.name} phased into Cloak & stole ${victim.name}'s ${POWER_UP_CATALOG[stolen].name}!`
+        );
+      } else {
+        // Fallback: synthesize a Nitro Core when no rival holds an item
+        caster.heldItem = "NITRO_CORE";
+        caster.heldItemCharges = 1;
+        onBannerEvent?.(
+          `${caster.name} activated ${meta.name} (Ghost Phase + Syphoned Nitro)!`
+        );
+      }
+      return;
+    }
+
+    if (item === "EMP_SHOCKWAVE") {
+      globalAiBrain.recordItemUsed(caster.racerId, false);
+      this.triggerEmpShockwave(caster, allRacers, onBannerEvent);
       return;
     }
 
     if (item === "NOVA_OVERDRIVE") {
       caster.activateNovaOverdrive();
       this.ensureNovaOverdriveCore(caster);
+      globalAiBrain.recordItemUsed(caster.racerId, isOffRoadOrShortcut);
       onBannerEvent?.(
         `${caster.name} unleashed ${meta.name} (9,999 kg Invincibility)!`
       );
@@ -379,30 +524,41 @@ export class ItemManager {
 
     if (item === "CRYO_MINE") {
       this.deployCryoMine(caster);
+      globalAiBrain.recordItemUsed(caster.racerId, false);
+      if (caster.incomingThreatCount > 0) {
+        globalAiBrain.recordDefensiveBlock(caster.racerId);
+      }
       onBannerEvent?.(`${caster.name} dropped a ${meta.name}!`);
       return;
     }
 
     if (item === "GLITCH_PRISM") {
       this.deployGlitchPrism(caster);
+      globalAiBrain.recordItemUsed(caster.racerId, false);
+      if (caster.incomingThreatCount > 0) {
+        globalAiBrain.recordDefensiveBlock(caster.racerId);
+      }
       onBannerEvent?.(`${caster.name} planted a ${meta.name} decoy!`);
       return;
     }
 
     if (item === "RICOCHET_DISC") {
       this.spawnRicochetDisc(caster, allRacers);
+      globalAiBrain.recordItemUsed(caster.racerId, false);
       onBannerEvent?.(`${caster.name} fired a ${meta.name}!`);
       return;
     }
 
     if (item === "PULSE_SEEKER") {
       this.spawnPulseSeeker(caster, allRacers);
+      globalAiBrain.recordItemUsed(caster.racerId, false);
       onBannerEvent?.(`${caster.name} launched a homing ${meta.name}!`);
       return;
     }
 
     if (item === "LIL_SAUCER") {
       const target = this.spawnLilSaucer(caster, allRacers);
+      globalAiBrain.recordItemUsed(caster.racerId, false);
       if (target) {
         onBannerEvent?.(
           `${caster.name}'s ${meta.name} UFO locked onto ${target.name}!`
@@ -447,10 +603,11 @@ export class ItemManager {
     racer: KartController | undefined,
     awardedItem: PowerUpType | null
   ): void {
-    const box = this.itemBoxes.find((b) => b.id === boxId);
-    if (box) {
-      box.respawnTimer = 6.0;
-      box.mesh.setEnabled(false);
+    const box = this.itemBoxes.find((b) => b.id);
+    const matchingBox = this.itemBoxes.find((b) => b.id === boxId) ?? box;
+    if (matchingBox) {
+      matchingBox.respawnTimer = 6.0;
+      matchingBox.mesh.setEnabled(false);
     }
     if (racer && awardedItem && !racer.heldItem && racer.rouletteTimer <= 0) {
       racer.awardItemWithRoulette(awardedItem);
@@ -480,6 +637,182 @@ export class ItemManager {
     coreMesh.position = new Vector3(0, 2.35, 0);
     coreMesh.isPickable = false;
     this.novaOverdriveCores.set(racer.racerId, coreMesh);
+  }
+
+  private ensureOrbitalShieldRig(racer: KartController): OrbitalShieldRig {
+    const existing = this.orbitalShieldRigs.get(racer.racerId);
+    if (
+      existing &&
+      !existing.root.isDisposed() &&
+      existing.root.parent === racer.assembly.kartRoot
+    ) {
+      return existing;
+    }
+    if (existing && !existing.root.isDisposed()) {
+      existing.root.dispose();
+    }
+    const rigRoot = new TransformNode(`orbitalShield_${racer.racerId}`, this.scene);
+    rigRoot.parent = racer.assembly.kartRoot;
+    rigRoot.position = new Vector3(0, 0.72, 0);
+
+    const droneMeshes: Mesh[] = [];
+    for (let i = 0; i < 3; i++) {
+      const drone = MeshBuilder.CreatePolyhedron(
+        `orbitalDrone_${racer.racerId}_${i}`,
+        { type: 1, size: 0.42 },
+        this.scene
+      );
+      drone.convertToFlatShadedMesh();
+      drone.material = this.shieldDroneMat;
+      drone.parent = rigRoot;
+      drone.isPickable = false;
+
+      const halo = MeshBuilder.CreateTorus(
+        `orbitalDroneHalo_${racer.racerId}_${i}`,
+        { diameter: 0.92, thickness: 0.08, tessellation: 12 },
+        this.scene
+      );
+      halo.material = this.itemRingMat;
+      halo.parent = drone;
+      halo.isPickable = false;
+
+      droneMeshes.push(drone);
+    }
+
+    const rig: OrbitalShieldRig = {
+      root: rigRoot,
+      droneMeshes,
+      orbitAngle: 0,
+    };
+    this.orbitalShieldRigs.set(racer.racerId, rig);
+    return rig;
+  }
+
+  private ensureTripleNitroRig(racer: KartController): TripleNitroRig {
+    const existing = this.tripleNitroRigs.get(racer.racerId);
+    if (
+      existing &&
+      !existing.root.isDisposed() &&
+      existing.root.parent === racer.assembly.visualRoot
+    ) {
+      return existing;
+    }
+    if (existing && !existing.root.isDisposed()) {
+      existing.root.dispose();
+    }
+    const rigRoot = new TransformNode(`tripleNitro_${racer.racerId}`, this.scene);
+    rigRoot.parent = racer.assembly.visualRoot;
+    rigRoot.position = new Vector3(0, 0.95, -1.55);
+
+    const canisterMeshes: Mesh[] = [];
+    for (let i = 0; i < 3; i++) {
+      const canister = MeshBuilder.CreateCylinder(
+        `nitroCan_${racer.racerId}_${i}`,
+        { height: 0.56, diameterTop: 0.24, diameterBottom: 0.28, tessellation: 8 },
+        this.scene
+      );
+      canister.convertToFlatShadedMesh();
+      canister.material = this.nitroCanisterMat;
+      canister.parent = rigRoot;
+      canister.rotation.x = Math.PI * 0.18;
+      canister.isPickable = false;
+      canisterMeshes.push(canister);
+    }
+
+    const rig: TripleNitroRig = {
+      root: rigRoot,
+      canisterMeshes,
+      orbitAngle: 0,
+    };
+    this.tripleNitroRigs.set(racer.racerId, rig);
+    return rig;
+  }
+
+  private ensurePhaseCloakShell(racer: KartController): Mesh {
+    const existing = this.phaseCloakShells.get(racer.racerId);
+    if (
+      existing &&
+      !existing.isDisposed() &&
+      existing.parent === racer.assembly.visualRoot
+    ) {
+      return existing;
+    }
+    if (existing && !existing.isDisposed()) {
+      existing.dispose();
+    }
+    const shell = MeshBuilder.CreatePolyhedron(
+      `phaseCloak_${racer.racerId}`,
+      { type: 2, size: 1.55 },
+      this.scene
+    );
+    shell.convertToFlatShadedMesh();
+    shell.material = this.phaseCloakMat;
+    shell.parent = racer.assembly.visualRoot;
+    shell.position = new Vector3(0, 0.85, 0);
+    shell.scaling = new Vector3(1.1, 0.72, 1.45);
+    shell.isPickable = false;
+    this.phaseCloakShells.set(racer.racerId, shell);
+    return shell;
+  }
+
+  private triggerEmpShockwave(
+    caster: KartController,
+    allRacers: KartController[],
+    onBannerEvent?: (message: string) => void
+  ): void {
+    // Spawn visual expanding EMP torus wave around caster
+    const waveMesh = MeshBuilder.CreateTorus(
+      `empWave_${this.nextEntityId++}`,
+      { diameter: 2.0, thickness: 0.18, tessellation: 24 },
+      this.scene
+    );
+    waveMesh.material = this.empRingMat;
+    waveMesh.position = caster.position.add(new Vector3(0, 0.8, 0));
+    waveMesh.isPickable = false;
+    waveMesh.parent = this.root;
+    this.empWaves.push({
+      mesh: waveMesh,
+      lifeTimer: 0.75,
+      maxRadius: 42.0,
+    });
+
+    // Zap all racers ahead of the caster (or all rival racers if caster is in 1st)
+    let targets = this.getRacersAheadOf(caster, allRacers);
+    if (targets.length === 0) {
+      targets = allRacers.filter((r) => r.racerId !== caster.racerId);
+    }
+
+    let zappedCount = 0;
+    for (const target of targets) {
+      if (target.novaOverdriveTimer > 0 || target.phaseCloakTimer > 0) {
+        continue;
+      }
+      target.applyEmpShockwaveDebuff();
+      // Spawn a localized lightning ring over each zapped target
+      const strikeRing = MeshBuilder.CreateTorus(
+        `empStrike_${this.nextEntityId++}`,
+        { diameter: 1.4, thickness: 0.22, tessellation: 16 },
+        this.scene
+      );
+      strikeRing.material = this.empRingMat;
+      strikeRing.position = target.position.add(new Vector3(0, 1.4, 0));
+      strikeRing.isPickable = false;
+      strikeRing.parent = this.root;
+      this.empWaves.push({
+        mesh: strikeRing,
+        lifeTimer: 0.55,
+        maxRadius: 6.5,
+      });
+
+      zappedCount++;
+      globalAiBrain.recordItemHitLanded(caster.racerId);
+    }
+
+    onBannerEvent?.(
+      zappedCount > 0
+        ? `⚡ ${caster.name}'s Ion Storm Shockwave zapped & shrunk ${zappedCount} rival${zappedCount > 1 ? "s" : ""}!`
+        : `⚡ ${caster.name} discharged an Ion Storm Shockwave!`
+    );
   }
 
   private deployCryoMine(caster: KartController): void {
@@ -894,6 +1227,35 @@ export class ItemManager {
       0.52 + 0.3 * Math.sin(this.elapsedSec * 7.5)
     );
 
+    // 0. Compute Incoming Projectile Threat Count for each racer (used by AI Tactical Item Brain)
+    for (const racer of racers) {
+      let threats = 0;
+      for (const proj of this.projectiles) {
+        if (proj.ownerId === racer.racerId) continue;
+        const dx = proj.position.x - racer.position.x;
+        const dz = proj.position.z - racer.position.z;
+        const distSq = dx * dx + dz * dz;
+        if (proj.targetRacerId === racer.racerId && distSq < 42 * 42) {
+          threats++;
+        } else if (distSq < 26 * 26) {
+          const toRacer = racer.position.subtract(proj.position);
+          toRacer.y = 0;
+          if (toRacer.lengthSquared() > 0.1) {
+            toRacer.normalize();
+            const projDir = proj.velocity.clone();
+            projDir.y = 0;
+            if (projDir.lengthSquared() > 0.1) {
+              projDir.normalize();
+              if (Vector3.Dot(projDir, toRacer) > 0.72) {
+                threats++;
+              }
+            }
+          }
+        }
+      }
+      racer.incomingThreatCount = threats;
+    }
+
     // 1. Update Item Boxes & Check Collection
     for (const box of this.itemBoxes) {
       if (box.respawnTimer > 0) {
@@ -929,8 +1291,9 @@ export class ItemManager {
       }
     }
 
-    // 2. Update Nova Overdrive Orbiting Cores
+    // 2. Update Nova Overdrive Cores, Triple Nitro Rigs, Phase Cloak Shells & Orbital Shield Drones
     for (const racer of racers) {
+      // 2a. Nova Overdrive Core
       const coreMesh = this.novaOverdriveCores.get(racer.racerId);
       if (racer.novaOverdriveTimer > 0) {
         if (
@@ -947,6 +1310,137 @@ export class ItemManager {
       } else if (coreMesh && !coreMesh.isDisposed()) {
         coreMesh.setEnabled(false);
       }
+
+      // 2b. Triple Nitro Orbiting Rear Canisters
+      const nitroRig = this.tripleNitroRigs.get(racer.racerId);
+      if (racer.heldItem === "TRIPLE_NITRO" && racer.heldItemCharges > 0) {
+        const activeRig =
+          !nitroRig ||
+          nitroRig.root.isDisposed() ||
+          nitroRig.root.parent !== racer.assembly.visualRoot
+            ? this.ensureTripleNitroRig(racer)
+            : nitroRig;
+        activeRig.root.setEnabled(true);
+        activeRig.orbitAngle += dt * 3.5;
+        for (let c = 0; c < 3; c++) {
+          const can = activeRig.canisterMeshes[c];
+          if (c < racer.heldItemCharges) {
+            can.setEnabled(true);
+            const spread = (c - (racer.heldItemCharges - 1) * 0.5) * 0.52;
+            can.position.set(
+              spread,
+              Math.sin(activeRig.orbitAngle + c * 1.4) * 0.08,
+              0
+            );
+            can.rotation.y += dt * 4.0;
+          } else {
+            can.setEnabled(false);
+          }
+        }
+      } else if (nitroRig && !nitroRig.root.isDisposed()) {
+        nitroRig.root.setEnabled(false);
+      }
+
+      // 2c. Phase Cloak Hologram Shell
+      const cloakShell = this.phaseCloakShells.get(racer.racerId);
+      if (racer.phaseCloakTimer > 0) {
+        const activeShell =
+          !cloakShell ||
+          cloakShell.isDisposed() ||
+          cloakShell.parent !== racer.assembly.visualRoot
+            ? this.ensurePhaseCloakShell(racer)
+            : cloakShell;
+        activeShell.setEnabled(true);
+        activeShell.rotation.y -= dt * 3.2;
+        this.phaseCloakMat.alpha =
+          0.32 + 0.14 * Math.sin(this.elapsedSec * 12.0);
+      } else if (cloakShell && !cloakShell.isDisposed()) {
+        cloakShell.setEnabled(false);
+      }
+
+      // 2d. Orbital Shield Drones (orbit + rival bump collision)
+      const shieldRig = this.orbitalShieldRigs.get(racer.racerId);
+      if (racer.orbitalShieldCharges > 0) {
+        const activeShield =
+          !shieldRig ||
+          shieldRig.root.isDisposed() ||
+          shieldRig.root.parent !== racer.assembly.kartRoot
+            ? this.ensureOrbitalShieldRig(racer)
+            : shieldRig;
+        activeShield.root.setEnabled(true);
+        activeShield.orbitAngle += dt * 4.8;
+        const radius = 2.15;
+        for (let d = 0; d < 3; d++) {
+          const drone = activeShield.droneMeshes[d];
+          if (d < racer.orbitalShieldCharges) {
+            drone.setEnabled(true);
+            const angle =
+              activeShield.orbitAngle +
+              (d * Math.PI * 2) / Math.max(1, racer.orbitalShieldCharges);
+            drone.position.set(
+              Math.cos(angle) * radius,
+              Math.sin(this.elapsedSec * 5.0 + d * 2.0) * 0.15,
+              Math.sin(angle) * radius
+            );
+            drone.rotation.y += dt * 6.0;
+            drone.rotation.x += dt * 3.5;
+          } else {
+            drone.setEnabled(false);
+          }
+        }
+
+        // Check contact between Orbital Shield and rival karts
+        for (const other of racers) {
+          if (
+            other.racerId === racer.racerId ||
+            other.spinOutTimer > 0 ||
+            other.phaseCloakTimer > 0
+          ) {
+            continue;
+          }
+          const dx = other.position.x - racer.position.x;
+          const dz = other.position.z - racer.position.z;
+          if (dx * dx + dz * dz <= 2.45 * 2.45) {
+            racer.orbitalShieldCharges = Math.max(
+              0,
+              racer.orbitalShieldCharges - 1
+            );
+            if (racer.heldItem === "ORBITAL_SHIELD") {
+              if (racer.orbitalShieldCharges > 0) {
+                racer.heldItemCharges = racer.orbitalShieldCharges;
+              } else {
+                racer.heldItem = null;
+                racer.heldItemCharges = 0;
+              }
+            }
+            if (other.novaOverdriveTimer <= 0) {
+              other.triggerSpinOut(0.95, 3.2);
+              globalAiBrain.recordItemHitLanded(racer.racerId);
+              onBannerEvent?.(
+                `${racer.name}'s Orbital Shield Drone blasted ${other.name}!`
+              );
+            }
+            if (racer.orbitalShieldCharges <= 0) break;
+          }
+        }
+      } else if (shieldRig && !shieldRig.root.isDisposed()) {
+        shieldRig.root.setEnabled(false);
+      }
+    }
+
+    // 2e. Update Expanding EMP Shockwave Rings
+    for (let i = this.empWaves.length - 1; i >= 0; i--) {
+      const wave = this.empWaves[i];
+      wave.lifeTimer -= dt;
+      if (wave.lifeTimer <= 0) {
+        wave.mesh.dispose();
+        this.empWaves.splice(i, 1);
+        continue;
+      }
+      const progress = 1.0 - Math.max(0, wave.lifeTimer / 0.75);
+      const scale = 1.0 + progress * wave.maxRadius;
+      wave.mesh.scaling.set(scale, 1.0, scale);
+      wave.mesh.rotation.y += dt * 8.0;
     }
 
     // 3. Update Deployed Cryo Mines
@@ -966,6 +1460,7 @@ export class ItemManager {
 
       let triggered = false;
       for (const racer of racers) {
+        if (racer.phaseCloakTimer > 0) continue;
         const dx = racer.position.x - mine.position.x;
         const dz = racer.position.z - mine.position.z;
         // 1.8u trigger radius per spec
@@ -974,8 +1469,24 @@ export class ItemManager {
             onBannerEvent?.(
               `${racer.name}'s Nova Overdrive shattered a Cryo Mine!`
             );
+          } else if (racer.orbitalShieldCharges > 0) {
+            racer.orbitalShieldCharges = Math.max(
+              0,
+              racer.orbitalShieldCharges - 1
+            );
+            if (racer.heldItem === "ORBITAL_SHIELD") {
+              racer.heldItemCharges = racer.orbitalShieldCharges;
+              if (racer.orbitalShieldCharges <= 0) racer.heldItem = null;
+            }
+            globalAiBrain.recordDefensiveBlock(racer.racerId);
+            onBannerEvent?.(
+              `${racer.name}'s Orbital Shield neutralized a Cryo Mine!`
+            );
           } else {
             racer.triggerSpinOut(1.1, 2.5);
+            if (mine.ownerId !== racer.racerId) {
+              globalAiBrain.recordItemHitLanded(mine.ownerId);
+            }
             onBannerEvent?.(`${racer.name} hit a Cryo Mine (720° Spin-Out)!`);
           }
           triggered = true;
@@ -1012,6 +1523,7 @@ export class ItemManager {
 
       let triggered = false;
       for (const racer of racers) {
+        if (racer.phaseCloakTimer > 0) continue;
         const dx = racer.position.x - prism.basePosition.x;
         const dz = racer.position.z - prism.basePosition.z;
         if (dx * dx + dz * dz <= 2.0 * 2.0) {
@@ -1019,8 +1531,24 @@ export class ItemManager {
             onBannerEvent?.(
               `${racer.name}'s Nova Overdrive smashed a Prank Glitch Prism!`
             );
+          } else if (racer.orbitalShieldCharges > 0) {
+            racer.orbitalShieldCharges = Math.max(
+              0,
+              racer.orbitalShieldCharges - 1
+            );
+            if (racer.heldItem === "ORBITAL_SHIELD") {
+              racer.heldItemCharges = racer.orbitalShieldCharges;
+              if (racer.orbitalShieldCharges <= 0) racer.heldItem = null;
+            }
+            globalAiBrain.recordDefensiveBlock(racer.racerId);
+            onBannerEvent?.(
+              `${racer.name}'s Orbital Shield zapped a Prank Glitch Prism!`
+            );
           } else {
             racer.triggerSpinOut(1.3, 3.8);
+            if (prism.ownerId !== racer.racerId) {
+              globalAiBrain.recordItemHitLanded(prism.ownerId);
+            }
             onBannerEvent?.(
               `${racer.name} fell for a Prank Glitch Prism (720° Spin-Out)!`
             );
@@ -1173,7 +1701,43 @@ export class ItemManager {
         }
       }
 
-      // Check impact with any kart
+      // 4a. Check if projectile is intercepted by a deployed Cryo Mine or Glitch Prism (Defensive Tail-Block!)
+      if (proj.type !== "LIL_SAUCER") {
+        let blockedByTrap = false;
+        for (let m = this.mines.length - 1; m >= 0; m--) {
+          const mine = this.mines[m];
+          const dx = mine.position.x - proj.position.x;
+          const dz = mine.position.z - proj.position.z;
+          if (dx * dx + dz * dz <= 1.95 * 1.95) {
+            globalAiBrain.recordDefensiveBlock(mine.ownerId);
+            mine.root.dispose();
+            this.mines.splice(m, 1);
+            blockedByTrap = true;
+            break;
+          }
+        }
+        if (!blockedByTrap) {
+          for (let g = this.glitchPrisms.length - 1; g >= 0; g--) {
+            const gp = this.glitchPrisms[g];
+            const dx = gp.basePosition.x - proj.position.x;
+            const dz = gp.basePosition.z - proj.position.z;
+            if (dx * dx + dz * dz <= 2.05 * 2.05) {
+              globalAiBrain.recordDefensiveBlock(gp.ownerId);
+              gp.root.dispose();
+              this.glitchPrisms.splice(g, 1);
+              blockedByTrap = true;
+              break;
+            }
+          }
+        }
+        if (blockedByTrap) {
+          proj.root.dispose();
+          this.projectiles.splice(i, 1);
+          continue;
+        }
+      }
+
+      // 4b. Check impact with any kart
       let hitKart = false;
       const hitRadius = proj.type === "LIL_SAUCER" ? 2.35 : 2.05;
       const graceThreshold = proj.type === "LIL_SAUCER" ? 10.4 : 7.9;
@@ -1181,6 +1745,9 @@ export class ItemManager {
       for (const racer of racers) {
         if (racer.racerId === proj.ownerId && proj.lifeTimer > graceThreshold) {
           continue; // Brief launch grace window for caster
+        }
+        if (racer.phaseCloakTimer > 0) {
+          continue; // Ghost Phase Cloak passes right through projectiles
         }
         const dx = racer.position.x - proj.position.x;
         const dz = racer.position.z - proj.position.z;
@@ -1194,15 +1761,37 @@ export class ItemManager {
 
           if (racer.novaOverdriveTimer > 0) {
             onBannerEvent?.(`${racer.name} deflected ${projLabel}!`);
+          } else if (
+            racer.orbitalShieldCharges > 0 &&
+            proj.type !== "LIL_SAUCER"
+          ) {
+            racer.orbitalShieldCharges = Math.max(
+              0,
+              racer.orbitalShieldCharges - 1
+            );
+            if (racer.heldItem === "ORBITAL_SHIELD") {
+              racer.heldItemCharges = racer.orbitalShieldCharges;
+              if (racer.orbitalShieldCharges <= 0) racer.heldItem = null;
+            }
+            globalAiBrain.recordDefensiveBlock(racer.racerId);
+            onBannerEvent?.(
+              `${racer.name}'s Orbital Shield intercepted ${projLabel}!`
+            );
           } else if (proj.type === "LIL_SAUCER") {
             if (racer.spinOutTimer <= 0) {
               racer.triggerSpinOut(1.45, 5.2);
+              if (proj.ownerId !== racer.racerId) {
+                globalAiBrain.recordItemHitLanded(proj.ownerId);
+              }
               onBannerEvent?.(
                 `${racer.name} was abducted & blasted by ${projLabel}!`
               );
             }
           } else {
             racer.triggerSpinOut(1.2, 4.2);
+            if (proj.ownerId !== racer.racerId) {
+              globalAiBrain.recordItemHitLanded(proj.ownerId);
+            }
             onBannerEvent?.(`${racer.name} was blasted by ${projLabel}!`);
           }
 
@@ -1231,6 +1820,7 @@ export class ItemManager {
     for (const p of this.projectiles) p.root.dispose();
     for (const m of this.mines) m.root.dispose();
     for (const gp of this.glitchPrisms) gp.root.dispose();
+    for (const w of this.empWaves) w.mesh.dispose();
     this.root.dispose();
   }
 }

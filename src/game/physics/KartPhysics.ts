@@ -111,6 +111,7 @@ export interface CollidableKartBody {
   cameraShakeTimer: number;
   spinOutTimer: number;
   novaOverdriveTimer: number;
+  phaseCloakTimer?: number;
 }
 
 export function classifyTerrainSurface(
@@ -339,6 +340,9 @@ export function resolveAsymmetricKartCollision(
   kartA: CollidableKartBody,
   kartB: CollidableKartBody
 ): AsymmetricCollisionReport | null {
+  if ((kartA.phaseCloakTimer ?? 0) > 0 || (kartB.phaseCloakTimer ?? 0) > 0) {
+    return null;
+  }
   const dx = kartA.position.x - kartB.position.x;
   const dz = kartA.position.z - kartB.position.z;
   const horizDist = Math.sqrt(dx * dx + dz * dz);

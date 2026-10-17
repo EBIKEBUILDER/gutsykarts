@@ -601,7 +601,7 @@ export const RaceGame: React.FC = () => {
       const preferredSpeed = getSavedAiSimSpeed();
       setSimSpeedMult(preferredSpeed);
       simSpeedMultRef.current = preferredSpeed;
-      globalAiBrain.setItemsEnabled(false);
+      globalAiBrain.setItemsEnabled(true);
       globalAiBrain.setTrainingTrackMode("ROTATE_CUP");
       handleSelectAiDifficulty("SELF_LEARNING");
       pendingWelcomeSnapshotRef.current = null;
@@ -3098,6 +3098,10 @@ export const RaceGame: React.FC = () => {
           prolongedRocketBoostActive: focusKart.prolongedRocketBoostActive,
           activeBoostLabel: focusKart.activeBoostLabel,
           heldItem: focusKart.heldItem,
+          heldItemCharges: focusKart.heldItemCharges,
+          orbitalShieldCharges: focusKart.orbitalShieldCharges,
+          phaseCloakRemaining: Number(focusKart.phaseCloakTimer.toFixed(1)),
+          empShrinkRemaining: Number(focusKart.empShrinkTimer.toFixed(1)),
           rouletteSpinning: focusKart.rouletteTimer > 0,
           roulettePreviewItem: focusKart.roulettePreviewItem,
           novaOverdriveRemaining: Number(
@@ -4879,6 +4883,9 @@ export const RaceGame: React.FC = () => {
                       <th className="py-1 px-1.5" title="Peak Jump Air Height above road surface (and Jump count)">
                         Max Air
                       </th>
+                      <th className="py-1 px-1.5" title="Items Used / Hits Landed / Defensive Blocks">
+                        Combat (U/H/B)
+                      </th>
                       <th className="py-1 pl-1.5">RMS Off</th>
                     </tr>
                   </thead>
@@ -4913,6 +4920,9 @@ export const RaceGame: React.FC = () => {
                         <td className="py-1 px-1.5 text-sky-300">
                           {r.maxJumpHeightMeters.toFixed(1)}m
                           <span className="text-slate-500"> ({r.jumpsCount}j)</span>
+                        </td>
+                        <td className="py-1 px-1.5 text-indigo-300">
+                          {r.itemsUsed ?? 0}/{r.itemHitsLanded ?? 0}/{r.defensiveBlocks ?? 0}
                         </td>
                         <td className="py-1 pl-1.5 text-slate-300">
                           {r.rmsLateralOffset.toFixed(1)}m
@@ -5322,7 +5332,7 @@ export const RaceGame: React.FC = () => {
       <div className="pointer-events-none fixed top-3 inset-x-0 z-20 flex flex-col items-center gap-2 px-4">
         <div className="pointer-events-auto flex items-center gap-3 rounded-2xl border-2 border-white/25 bg-slate-950/85 px-4 py-2 backdrop-blur-md shadow-2xl">
           <div
-            className={`flex h-12 w-12 items-center justify-center rounded-xl border-2 font-black text-xs ${
+            className={`relative flex h-12 w-12 items-center justify-center rounded-xl border-2 font-black text-xs ${
               telemetry.rouletteSpinning
                 ? "border-cyan-400 bg-cyan-950/70 text-cyan-200 animate-spin"
                 : heldItemMeta
@@ -5337,6 +5347,13 @@ export const RaceGame: React.FC = () => {
             ) : (
               <span>NONE</span>
             )}
+            {!telemetry.rouletteSpinning &&
+              heldItemMeta &&
+              (telemetry.heldItemCharges ?? 1) > 1 && (
+                <span className="absolute -bottom-1.5 -right-1.5 rounded-full border border-white/40 bg-amber-400 px-1.5 py-0.2 text-[10px] font-black text-slate-950 shadow">
+                  x{telemetry.heldItemCharges}
+                </span>
+              )}
           </div>
 
           <div className="min-w-[140px] sm:min-w-[190px]">
@@ -5351,9 +5368,16 @@ export const RaceGame: React.FC = () => {
             </div>
             <div
               data-testid="hud-held-item"
-              className="text-sm sm:text-base font-black text-white uppercase"
+              className="text-sm sm:text-base font-black text-white uppercase flex items-center gap-1.5"
             >
-              {heldItemMeta ? heldItemMeta.name : "Collect Item Prism"}
+              <span>{heldItemMeta ? heldItemMeta.name : "Collect Item Prism"}</span>
+              {!telemetry.rouletteSpinning &&
+                heldItemMeta &&
+                (telemetry.heldItemCharges ?? 1) > 1 && (
+                  <span className="rounded bg-amber-400/25 border border-amber-300/60 px-1.5 py-0.2 text-[10px] font-mono text-amber-200">
+                    {telemetry.heldItemCharges} CHARGES
+                  </span>
+                )}
             </div>
             {heldItemMeta && (
               <div className="hidden sm:block text-[11px] text-slate-300 max-w-xs truncate">
