@@ -6,11 +6,11 @@ import {
   ResolvedRacerStats,
 } from "@/src/types/game";
 
-export const ROSTER_BALANCE_PASS = "Pass #12";
+export const ROSTER_BALANCE_PASS = "Pass #13";
 export const BUILD_INFO_STAMP = `Build ${ROSTER_BALANCE_PASS} (${
-  process.env.NEXT_PUBLIC_BUILD_SHA || "f3beb67"
+  process.env.NEXT_PUBLIC_BUILD_SHA || "2a92fc4"
 }) • Built ${
-  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 17, 2026, 07:22 AM CDT"
+  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 17, 2026, 10:34 AM CDT"
 }`;
 
 export const KART_CHASSIS_CATALOG: Record<string, KartChassisConfig> = {
@@ -151,10 +151,10 @@ export const CHARACTER_ROSTER: CharacterProfile[] = [
     archetypeClass: "SUPER_HEAVY",
     bio: "Neighborhood scrapyard titan. At 220 kg, Rex shrugs off lightweight rammers like mosquitoes and dominates straightaways.",
     mass: 220,
-    topSpeed: 47.3,
+    topSpeed: 47.25,
     offRoadTopSpeed: 26.0,
-    acceleration: 23.5,
-    handling: 1.78,
+    acceleration: 23.35,
+    handling: 1.76,
     driftGrip: 0.76,
     miniTurboDurationBonus: 0.02,
     miniTurboDurationSec: 0.42,
@@ -191,9 +191,9 @@ export const CHARACTER_ROSTER: CharacterProfile[] = [
     archetypeClass: "BALANCED",
     bio: "Gutsy Avenue's reigning soapbox champion. Crisp apex lock, dependable acceleration, and rock-solid balance on any corner.",
     mass: 120,
-    topSpeed: 45.85,
+    topSpeed: 45.88,
     offRoadTopSpeed: 25.2,
-    acceleration: 27.8,
+    acceleration: 27.9,
     handling: 2.0,
     driftGrip: 0.80,
     miniTurboDurationBonus: 0.06,

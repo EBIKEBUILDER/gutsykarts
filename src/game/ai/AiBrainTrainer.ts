@@ -450,8 +450,8 @@ interface PersistedBrainState {
 }
 
 export class AiBrainManager {
-  private generation = 6642;
-  private episodesCompleted = 6641;
+  private generation = 8085;
+  private episodesCompleted = 8084;
   private itemsEnabled = true;
   private autoBalanceRosterEnabled = false;
   private trainingTrackMode: "ROTATE_CUP" | "SINGLE_TRACK" = "ROTATE_CUP";
@@ -486,9 +486,9 @@ export class AiBrainManager {
 
   constructor() {
     this.championGenome = createGenome(
-      "gen6642_champ",
-      "Gen-6642 Seed Ace",
-      6642,
+      "gen8085_champ",
+      "Gen-8085 Seed Ace",
+      8085,
       DEFAULT_POLICY_WEIGHTS.SELF_LEARNING
     );
     this.championGenome.fitness = 100.0;
@@ -496,10 +496,10 @@ export class AiBrainManager {
     this.championGenome.pavementPct = 100.0;
     const seed = DEFAULT_POLICY_WEIGHTS.SELF_LEARNING;
     this.population = [
-      createGenome("g6642_slot0", "Alpha Policy (Apex)", 6642, seed),
-      createGenome("g6642_slot1", "Beta Policy (Smooth)", 6642, seed, "g6642_slot0"),
-      createGenome("g6642_slot2", "Gamma Policy (Charger)", 6642, seed, "g6642_slot0"),
-      createGenome("g6642_slot3", "Delta Policy (Explorer)", 6642, seed, "g6642_slot0"),
+      createGenome("g8085_slot0", "Alpha Policy (Apex)", 8085, seed),
+      createGenome("g8085_slot1", "Beta Policy (Smooth)", 8085, seed, "g8085_slot0"),
+      createGenome("g8085_slot2", "Gamma Policy (Charger)", 8085, seed, "g8085_slot0"),
+      createGenome("g8085_slot3", "Delta Policy (Explorer)", 8085, seed, "g8085_slot0"),
     ];
     this.initDefaultCharacterStats();
   }
@@ -538,27 +538,27 @@ export class AiBrainManager {
   private initDefaultPopulation(): void {
     const seed = DEFAULT_POLICY_WEIGHTS.SELF_LEARNING;
     this.population = [
-      createGenome("g6642_slot0", "Alpha Policy (Apex)", 6642, seed),
+      createGenome("g8085_slot0", "Alpha Policy (Apex)", 8085, seed),
       createGenome(
-        "g6642_slot1",
+        "g8085_slot1",
         "Beta Policy (Smooth)",
-        6642,
+        8085,
         mutatePolicyWeights(seed, 0.45),
-        "g6642_slot0"
+        "g8085_slot0"
       ),
       createGenome(
-        "g6642_slot2",
+        "g8085_slot2",
         "Gamma Policy (Charger)",
-        6642,
+        8085,
         mutatePolicyWeights(seed, 0.55),
-        "g6642_slot0"
+        "g8085_slot0"
       ),
       createGenome(
-        "g6642_slot3",
+        "g8085_slot3",
         "Delta Policy (Explorer)",
-        6642,
+        8085,
         mutatePolicyWeights(seed, 0.7),
-        "g6642_slot0"
+        "g8085_slot0"
       ),
     ];
   }
