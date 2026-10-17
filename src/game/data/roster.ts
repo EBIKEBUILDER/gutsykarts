@@ -6,11 +6,11 @@ import {
   ResolvedRacerStats,
 } from "@/src/types/game";
 
-export const ROSTER_BALANCE_PASS = "Pass #13";
+export const ROSTER_BALANCE_PASS = "Pass #14";
 export const BUILD_INFO_STAMP = `Build ${ROSTER_BALANCE_PASS} (${
-  process.env.NEXT_PUBLIC_BUILD_SHA || "2a92fc4"
+  process.env.NEXT_PUBLIC_BUILD_SHA || "ccb1cdf"
 }) • Built ${
-  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 17, 2026, 10:34 AM CDT"
+  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 17, 2026, 11:44 AM CDT"
 }`;
 
 export const KART_CHASSIS_CATALOG: Record<string, KartChassisConfig> = {
@@ -151,10 +151,10 @@ export const CHARACTER_ROSTER: CharacterProfile[] = [
     archetypeClass: "SUPER_HEAVY",
     bio: "Neighborhood scrapyard titan. At 220 kg, Rex shrugs off lightweight rammers like mosquitoes and dominates straightaways.",
     mass: 220,
-    topSpeed: 47.25,
+    topSpeed: 47.28,
     offRoadTopSpeed: 26.0,
-    acceleration: 23.35,
-    handling: 1.76,
+    acceleration: 23.42,
+    handling: 1.77,
     driftGrip: 0.76,
     miniTurboDurationBonus: 0.02,
     miniTurboDurationSec: 0.42,
@@ -271,9 +271,9 @@ export const CHARACTER_ROSTER: CharacterProfile[] = [
     archetypeClass: "FEATHERWEIGHT",
     bio: "Gadget-obsessed kid who hits top speed in a heartbeat and charges Ultra Mini-Turbos fastest—just don't get body-checked by Rex!",
     mass: 50,
-    topSpeed: 43.75,
-    offRoadTopSpeed: 24.1,
-    acceleration: 35.6,
+    topSpeed: 43.71,
+    offRoadTopSpeed: 24.05,
+    acceleration: 35.45,
     handling: 2.15,
     driftGrip: 0.82,
     miniTurboDurationBonus: 0.08,

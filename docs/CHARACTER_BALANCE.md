@@ -21,14 +21,14 @@ Every character is tuned across five physical axes in [`src/game/data/roster.ts`
 
 ---
 
-## 2. The Four Racer Archetypes (Pass #13 Baseline)
+## 2. The Four Racer Archetypes (Pass #14 Baseline)
 
 | Character | Archetype Class | Mass (`kg`) | Top Speed (`m/s`) | Accel (`m/s²`) | Handling / Grip | Mini-Turbo Bonus | Signature Win Condition |
 | :--- | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
-| **Rex Ironclad** | `SUPER_HEAVY` | **`220`** | **`47.25`** *(1st)* | `23.35` *(4th)* | `1.76` / `0.76` | `+2%` (`0.42s`) | **Straightaway & Pack Bully**: Highest raw top speed and **0 hits taken** (`~15.7` shoves/race). Shrugs off every other kart in traffic and dominates long straights, but launches slowest off the line and requires wider drift arcs. |
-| **Aero Vance** | `BALANCED` | **`120`** | **`45.88`** *(2nd)* | `27.9` *(3rd)* | `2.00` / `0.80` | `+6%` (`0.46s`) | **All-Round Grand Prix Ace**: Second-highest top speed, Juggernaut advantage over **Nyx** and **Pip** (`~11.8` shoves/race), and dependable balance between straightaway pace, cornering grip, and Mini-Turbo punch. |
+| **Rex Ironclad** | `SUPER_HEAVY` | **`220`** | **`47.28`** *(1st)* | `23.42` *(4th)* | `1.77` / `0.76` | `+2%` (`0.42s`) | **Straightaway & Pack Bully**: Highest raw top speed and **0 hits taken** (`~15.4` shoves/race). Shrugs off every other kart in traffic and dominates long straights, but launches slowest off the line and requires wider drift arcs. |
+| **Aero Vance** | `BALANCED` | **`120`** | **`45.88`** *(2nd)* | `27.9` *(3rd)* | `2.00` / `0.80` | `+6%` (`0.46s`) | **All-Round Grand Prix Ace**: Second-highest top speed, Juggernaut advantage over **Nyx** and **Pip** (`~11.5` shoves/race), and dependable balance between straightaway pace, cornering grip, and Mini-Turbo punch. |
 | **Nyx Veloce** | `TECHNICAL` | **`85`** | **`44.25`** *(3rd)* | `31.4` *(2nd)* | `2.10` / **`0.83`** | **`+14%` (`0.51s`)** | **Corner-Exit & Mini-Turbo Specialist**: Highest lateral drift grip (`0.83`) and **longest Mini-Turbo boosts (`+14%` / `0.51s`)**. Slingshots out of hairpins and chains boosts across grass apex shortcuts longer than any other racer. |
-| **Pip Spark** | `FEATHERWEIGHT` | **`50`** | `43.75` *(4th)* | **`35.6`** *(1st)* | **`2.15`** / `0.82` | `+8%` (`0.49s`) | **Holeshot & Hairpin Rocket**: Explosive standing-start and post-bump acceleration (`35.6`, `+52%` faster than Rex) with the sharpest turn-in (`2.15`). Grabs the Lap-1 holeshot into clean air and recovers instantly from mistakes, but must avoid getting body-checked by heavier karts. |
+| **Pip Spark** | `FEATHERWEIGHT` | **`50`** | `43.71` *(4th)* | **`35.45`** *(1st)* | **`2.15`** / `0.82` | `+8%` (`0.49s`) | **Holeshot & Hairpin Rocket**: Explosive standing-start and post-bump acceleration (`35.45`, `+51%` faster than Rex) with the sharpest turn-in (`2.15`). Grabs the Lap-1 holeshot into clean air and recovers instantly from mistakes, but must avoid getting body-checked by heavier karts. |
 
 ---
 
@@ -37,11 +37,11 @@ Every character is tuned across five physical axes in [`src/game/data/roster.ts`
 Over a 3-lap race, the four archetypes trade advantages across three distinct phases:
 
 1. **Phase 1 — Standing Start & Lap-1 Holeshot**:
-   - **Pip Spark** (`35.6` Accel) and **Nyx Veloce** (`31.4` Accel) accelerate off the grid fastest, reaching Turn 1 in clean air (`~120ms` ahead of Rex on Lap 1).
+   - **Pip Spark** (`35.45` Accel) and **Nyx Veloce** (`31.4` Accel) accelerate off the grid fastest, reaching Turn 1 in clean air (`~150ms` ahead of Rex on Lap 1).
 2. **Phase 2 — Hairpins, Chicanes & Boost Cuts**:
    - **Nyx** (`+14%` MT duration, `0.83` drift grip) and **Pip** (`+8%` MT duration, `2.15` handling) carve tighter inside lines and stay in Mini-Turbo / Off-Road Immunity state longer coming out of technical corners.
 3. **Phase 3 — Straightaways & Pack Traffic**:
-   - **Rex Ironclad** (`47.25 m/s`, `220 kg`) and **Aero Vance** (`45.88 m/s`, `120 kg`) reel the lighter karts back in on straightaways and sweeping curves. When side-by-side in pack traffic, cubic mass dominance lets Rex and Aero hold the inside line and shove lighter karts wide.
+   - **Rex Ironclad** (`47.28 m/s`, `220 kg`) and **Aero Vance** (`45.88 m/s`, `120 kg`) reel the lighter karts back in on straightaways and sweeping curves. When side-by-side in pack traffic, cubic mass dominance lets Rex and Aero hold the inside line and shove lighter karts wide.
 
 ---
 
