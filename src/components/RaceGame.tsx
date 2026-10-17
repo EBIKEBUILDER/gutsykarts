@@ -4716,15 +4716,32 @@ export const RaceGame: React.FC = () => {
                   const bottleneckZones: { x: number; z: number; hits: number }[] = [];
                   for (const r of telemetry.aiLab.racers) {
                     const samples = r.pathSamples;
+                    let combatCooldown = 0;
                     for (let sIdx = 12; sIdx < samples.length; sIdx++) {
                       const s = samples[sIdx];
                       const prev = samples[sIdx - 1];
+                      const speedDrop = prev.speedRatio - s.speedRatio;
+                      if (
+                        s.combatDisrupted ||
+                        prev.combatDisrupted ||
+                        speedDrop > 0.24
+                      ) {
+                        combatCooldown = Math.max(
+                          combatCooldown,
+                          s.combatDisrupted ? 2 : 14
+                        );
+                      }
+                      if (combatCooldown > 0) {
+                        combatCooldown--;
+                        continue;
+                      }
                       const isUnboostedOffRoad =
                         s.surface === "OFFROAD" && !s.boosting;
                       const isCornerSpeedScrub =
                         s.speedRatio > 0.12 &&
                         s.speedRatio < 0.58 &&
-                        s.speedRatio < prev.speedRatio - 0.03;
+                        speedDrop > 0.03 &&
+                        speedDrop <= 0.22;
                       if (!isUnboostedOffRoad && !isCornerSpeedScrub) continue;
                       const existing = bottleneckZones.find(
                         (bz) => Math.hypot(bz.x - s.x, bz.z - s.z) < 22

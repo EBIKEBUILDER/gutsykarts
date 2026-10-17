@@ -83,6 +83,10 @@ function getAiTraceSampleColors(
   s: AiPathSample,
   mode: AiTraceColorMode
 ): { hex: string; color4: Color4 } {
+  if (s.combatDisrupted) {
+    // Distinct translucent violet for item/combat recovery so it is never mistaken for a red track bottleneck
+    return { hex: "#a78bfa", color4: new Color4(0.65, 0.55, 0.98, 0.7) };
+  }
   if (mode === "SPEED") {
     if (s.speedRatio < 0.65) {
       return { hex: "#f43f5e", color4: new Color4(0.96, 0.25, 0.37, 1.0) }; // Red = Slow hairpin / scrub
@@ -286,14 +290,25 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
 
     for (const r of recordedAiTraces) {
       const samples = r.pathSamples;
+      let combatCooldown = 0;
       for (let sIdx = 12; sIdx < samples.length; sIdx++) {
         const s = samples[sIdx];
         const prev = samples[sIdx - 1];
+        const speedDrop = prev.speedRatio - s.speedRatio;
+        // Ignore item spin-outs, EMP hits, and Juggernaut knockbacks (both explicit combatDisrupted flag and sudden >24% single-step speed drops)
+        if (s.combatDisrupted || prev.combatDisrupted || speedDrop > 0.24) {
+          combatCooldown = Math.max(combatCooldown, s.combatDisrupted ? 2 : 14);
+        }
+        if (combatCooldown > 0) {
+          combatCooldown--;
+          continue;
+        }
         const isUnboostedOffRoad = s.surface === "OFFROAD" && !s.boosting;
         const isCornerSpeedScrub =
           s.speedRatio > 0.12 &&
           s.speedRatio < 0.58 &&
-          s.speedRatio < prev.speedRatio - 0.03;
+          speedDrop > 0.03 &&
+          speedDrop <= 0.22;
         if (!isUnboostedOffRoad && !isCornerSpeedScrub) continue;
 
         let bestIdx = -1;
@@ -1702,7 +1717,12 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
           const sampleColor = getAiTraceSampleColors(s, traceColorMode);
           cols.push(sampleColor.color4);
 
-          if (s.surface === "OFFROAD" && !s.boosting && sIdx % 2 === 0) {
+          if (
+            s.surface === "OFFROAD" &&
+            !s.boosting &&
+            !s.combatDisrupted &&
+            sIdx % 2 === 0
+          ) {
             const dot = MeshBuilder.CreateSphere(
               `aiOvershoot_${rIdx}_${sIdx}`,
               { diameter: 1.5, segments: 8 },
@@ -3341,7 +3361,9 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                           (s.z - prev.z) * (s.z - prev.z);
                         if (distSq > 1600) return null;
                         const isUnboostedOffRoad =
-                          s.surface === "OFFROAD" && !s.boosting;
+                          s.surface === "OFFROAD" &&
+                          !s.boosting &&
+                          !s.combatDisrupted;
                         const strokeColor = getAiTraceSampleColors(
                           s,
                           traceColorMode

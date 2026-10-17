@@ -215,6 +215,7 @@ export interface AiPathSample {
   driftState: DriftState;
   miniTurboTier: MiniTurboTier;
   boosting: boolean;
+  combatDisrupted?: boolean;
 }
 
 export interface AiRacerTelemetrySummary {

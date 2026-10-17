@@ -949,15 +949,21 @@ export class AiBrainManager {
     grounded?: boolean;
     heightAboveRoad?: number;
     lapTimesMs: number[];
+    combatDisrupted?: boolean;
   }): void {
     const acc = this.getOrCreateAccumulator(params);
     const dt = Math.max(0.001, params.dt);
+    const isCombatDisrupted = Boolean(params.combatDisrupted);
 
     acc.totalTimeSec += dt;
     if (params.surface === "PAVEMENT") {
       acc.pavementSec += dt;
     } else if (params.surface === "CURB") {
       acc.curbSec += dt;
+    } else if (isCombatDisrupted) {
+      // Involuntary off-road excursion caused by an item hit / spin-out / Juggernaut shove:
+      // do not penalize driving line telemetry or unboosted off-road drag!
+      acc.pavementSec += dt;
     } else {
       acc.offRoadSec += dt;
       if (params.hasOffRoadImmunity) {
@@ -992,9 +998,9 @@ export class AiBrainManager {
 
     // Cross-track ping-pong detector:
     // Detects when a kart swings past ±68% of roadHalfWidth on one side and then overshoots
-    // to ∓68% on the opposite side within 3.8 seconds.
+    // to ∓68% on the opposite side within 3.8 seconds (ignored while combat-disrupted).
     const extremeThreshold = params.roadHalfWidth * 0.68;
-    if (Math.abs(params.signedLat) >= extremeThreshold) {
+    if (!isCombatDisrupted && Math.abs(params.signedLat) >= extremeThreshold) {
       const currentSide: -1 | 1 = params.signedLat > 0 ? 1 : -1;
       if (
         acc.lastExtremeSide !== 0 &&
@@ -1012,6 +1018,7 @@ export class AiBrainManager {
       acc.wallHitCooldownSec = Math.max(0, acc.wallHitCooldownSec - dt);
     }
     if (
+      !isCombatDisrupted &&
       Math.abs(params.signedLat) >= params.wallHalfWidth - 0.95 &&
       acc.wallHitCooldownSec <= 0
     ) {
@@ -1040,6 +1047,7 @@ export class AiBrainManager {
         driftState: params.driftState,
         miniTurboTier: params.miniTurboTier,
         boosting: params.hasOffRoadImmunity,
+        combatDisrupted: isCombatDisrupted || undefined,
       });
       if (acc.pathSamples.length > 220) {
         acc.pathSamples.shift();

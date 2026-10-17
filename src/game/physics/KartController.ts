@@ -97,6 +97,7 @@ export class KartController implements CollidableKartBody {
   public spinOutTimer = 0;
   public spinOutAngle = 0;
   public wobbleTimer = 0;
+  public combatRecoveryTimer = 0;
   public collisionCooldown = 0;
   public cameraShakeTimer = 0;
   private padBoostCooldown = 0;
@@ -238,6 +239,10 @@ export class KartController implements CollidableKartBody {
   public triggerSpinOut(durationSec = 1.15, upwardKnock = 3.2): void {
     if (this.novaOverdriveTimer > 0 || this.phaseCloakTimer > 0) return; // Immune during Nova Overdrive or Phantom Phase Cloak
     this.spinOutTimer = Math.max(this.spinOutTimer, durationSec);
+    this.combatRecoveryTimer = Math.max(
+      this.combatRecoveryTimer,
+      durationSec + 2.5
+    );
     this.nitroBoostTimer = 0;
     this.boostTimer = 0;
     this.boostMultiplier = 1.0;
@@ -306,6 +311,7 @@ export class KartController implements CollidableKartBody {
     globalAiBrain.recordItemUsed(this.racerId, this.surface === "OFFROAD");
     this.novaOverdriveTimer = 7.5;
     this.empShrinkTimer = 0;
+    this.combatRecoveryTimer = 0;
     this.prolongedRocketBoostActive = true;
     this.activeBoostLabel = "NOVA OVERDRIVE (9999 KG)";
     this.spinOutTimer = 0;
@@ -320,6 +326,7 @@ export class KartController implements CollidableKartBody {
     globalAiBrain.recordItemUsed(this.racerId, this.surface === "OFFROAD");
     this.phaseCloakTimer = 4.5;
     this.empShrinkTimer = 0;
+    this.combatRecoveryTimer = 0;
     this.wobbleTimer = 0;
     this.prolongedRocketBoostActive = true;
     this.activeBoostLabel = "PHANTOM PHASE CLOAK (INTANGIBLE)";
@@ -337,6 +344,7 @@ export class KartController implements CollidableKartBody {
     this.rouletteTimer = 0;
     this.roulettePreviewItem = null;
     this.empShrinkTimer = 4.5;
+    this.combatRecoveryTimer = Math.max(this.combatRecoveryTimer, 5.0);
     this.triggerSpinOut(0.65, 2.2);
     this.activeBoostLabel = "ION ZAP! MICRO-CHASSIS (-25% SPD)";
     return true;
@@ -1425,6 +1433,12 @@ export class KartController implements CollidableKartBody {
     // Update timers & Prolonged Rocket Boost (PRB) state
     if (this.collisionCooldown > 0) this.collisionCooldown = Math.max(0, this.collisionCooldown - dt);
     if (this.cameraShakeTimer > 0) this.cameraShakeTimer = Math.max(0, this.cameraShakeTimer - dt);
+    if (this.wobbleTimer > 0 || this.knockVelocity.lengthSquared() > 3.5) {
+      this.combatRecoveryTimer = Math.max(this.combatRecoveryTimer, 1.8);
+    }
+    if (this.combatRecoveryTimer > 0) {
+      this.combatRecoveryTimer = Math.max(0, this.combatRecoveryTimer - dt);
+    }
     if (this.wobbleTimer > 0) this.wobbleTimer = Math.max(0, this.wobbleTimer - dt);
     if (this.padBoostCooldown > 0) this.padBoostCooldown = Math.max(0, this.padBoostCooldown - dt);
     if (this.phaseCloakTimer > 0) {
@@ -2792,6 +2806,11 @@ export class KartController implements CollidableKartBody {
         grounded: this.grounded,
         heightAboveRoad,
         lapTimesMs: this.lapTimesMs,
+        combatDisrupted:
+          this.combatRecoveryTimer > 0 ||
+          this.spinOutTimer > 0 ||
+          this.wobbleTimer > 0 ||
+          this.empShrinkTimer > 0,
       });
     }
   }
