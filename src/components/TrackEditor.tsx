@@ -239,6 +239,495 @@ const SCENERY_LIBRARY: Array<{
   },
 ];
 
+type ProceduralTrackArchetype =
+  | "RANDOM"
+  | "SWEEPER"
+  | "SWITCHBACK"
+  | "KIDNEY"
+  | "CANYON"
+  | "STADIUM";
+
+const PROCEDURAL_ARCHETYPE_OPTIONS: Array<{
+  id: ProceduralTrackArchetype;
+  label: string;
+}> = [
+  { id: "RANDOM", label: "🎲 Surprise Me (Random)" },
+  { id: "SWEEPER", label: "🏎️ High-Speed Sweeper" },
+  { id: "SWITCHBACK", label: "🐍 Technical Switchback" },
+  { id: "KIDNEY", label: "🥨 Kidney / Twin-Lobe" },
+  { id: "CANYON", label: "⛰️ Canyon Hairpin Run" },
+  { id: "STADIUM", label: "🏟️ Stadium Grand Oval" },
+];
+
+/**
+ * Detects control nodes where the road/curb ribbon pinches or buckles at the inner seam
+ * (either because the Catmull-Rom inner curb edge moves backward/stalls or a single control node makes an acute bend).
+ */
+function detectBuckledControlNodes(
+  pts: Array<{ x: number; y: number; z: number }>,
+  roadHalfWidth: number,
+  splineSamples: Array<{
+    position: Vector3;
+    tangent: Vector3;
+    binormal: Vector3;
+  }>
+): Set<number> {
+  const buckled = new Set<number>();
+  const n = pts.length;
+  if (n < 4) return buckled;
+
+  const minSafeChord = Math.max(36, roadHalfWidth * 2.5);
+  for (let i = 1; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n];
+    const curr = pts[i];
+    const next = pts[(i + 1) % n];
+    const ux1 = curr.x - prev.x;
+    const uz1 = curr.z - prev.z;
+    const ux2 = next.x - curr.x;
+    const uz2 = next.z - curr.z;
+    const len1 = Math.hypot(ux1, uz1);
+    const len2 = Math.hypot(ux2, uz2);
+    if (len1 < 1 || len2 < 1) {
+      buckled.add(i);
+      continue;
+    }
+    const cosTurn = (ux1 * ux2 + uz1 * uz2) / (len1 * len2);
+    // Single-node turn > ~76 deg or tight chord with turn > ~48 deg causes Catmull-Rom inner curb pinching
+    if (
+      cosTurn < 0.24 ||
+      (Math.min(len1, len2) < minSafeChord && cosTurn < 0.66)
+    ) {
+      buckled.add(i);
+    }
+  }
+
+  // Exact differential-geometry inner-curb ribbon check along sampled spline
+  const curbOffset = roadHalfWidth + 2.2;
+  const sCount = splineSamples.length;
+  for (let k = 0; k < sCount; k++) {
+    const s0 = splineSamples[k];
+    const s1 = splineSamples[(k + 1) % sCount];
+    const ds = Math.hypot(
+      s1.position.x - s0.position.x,
+      s1.position.z - s0.position.z
+    );
+    if (ds < 0.05) continue;
+
+    const l0x = s0.position.x - s0.binormal.x * curbOffset;
+    const l0z = s0.position.z - s0.binormal.z * curbOffset;
+    const l1x = s1.position.x - s1.binormal.x * curbOffset;
+    const l1z = s1.position.z - s1.binormal.z * curbOffset;
+
+    const r0x = s0.position.x + s0.binormal.x * curbOffset;
+    const r0z = s0.position.z + s0.binormal.z * curbOffset;
+    const r1x = s1.position.x + s1.binormal.x * curbOffset;
+    const r1z = s1.position.z + s1.binormal.z * curbOffset;
+
+    const ratioL =
+      ((l1x - l0x) * s0.tangent.x + (l1z - l0z) * s0.tangent.z) / ds;
+    const ratioR =
+      ((r1x - r0x) * s0.tangent.x + (r1z - r0z) * s0.tangent.z) / ds;
+
+    if (Math.min(ratioL, ratioR) < 0.24) {
+      // Map pinched ribbon sample to nearest movable control node (idx >= 1)
+      let bestIdx = -1;
+      let bestDist = 64;
+      for (let i = 1; i < n; i++) {
+        const d = Math.hypot(
+          pts[i].x - s0.position.x,
+          pts[i].z - s0.position.z
+        );
+        if (d < bestDist) {
+          bestDist = d;
+          bestIdx = i;
+        }
+      }
+      if (bestIdx >= 1) {
+        buckled.add(bestIdx);
+      }
+    }
+  }
+
+  return buckled;
+}
+
+/**
+ * Automatically subdivides/bevels harsh corners, enforces minimum chord spacing,
+ * separates close non-adjacent corridors, and relaxes curvature until the inner curb seam never buckles.
+ */
+function unbuckleAndRefineControlPoints(
+  rawPts: Array<{ x: number; y: number; z: number }>,
+  roadHalfWidth: number
+): {
+  pts: Array<{ x: number; y: number; z: number }>;
+  subdividedCount: number;
+  relaxedCount: number;
+} {
+  let pts = rawPts.map((p) => ({ ...p }));
+  let subdividedCount = 0;
+  let relaxedCount = 0;
+
+  if (pts.length < 4) {
+    return { pts, subdividedCount, relaxedCount };
+  }
+
+  const minSpacing = Math.max(42, roadHalfWidth * 2.95);
+  const minCorridorDist = Math.max(54, roadHalfWidth * 3.8);
+
+  for (let pass = 0; pass < 8; pass++) {
+    // Keep P0 anchored at (0,0,0) and P1 aligned along the +Z start/finish straight
+    pts[0] = { x: 0, y: 0, z: 0 };
+    if (pts.length > 1) {
+      pts[1] = {
+        x: 0,
+        y: Number(Math.max(0, Math.min(2.0, pts[1].y)).toFixed(1)),
+        z: Number(Math.max(84, Math.min(116, pts[1].z)).toFixed(1)),
+      };
+    }
+
+    // 1. Merge overly bunched non-start control points that cause micro-kinks
+    if (pts.length > 10) {
+      const merged: typeof pts = [pts[0], pts[1]];
+      let i = 2;
+      while (i < pts.length) {
+        if (i < pts.length - 1) {
+          const d = Math.hypot(pts[i + 1].x - pts[i].x, pts[i + 1].z - pts[i].z);
+          if (d < roadHalfWidth * 2.15 && merged.length + (pts.length - i) > 9) {
+            merged.push({
+              x: Number(((pts[i].x + pts[i + 1].x) * 0.5).toFixed(1)),
+              y: Number(((pts[i].y + pts[i + 1].y) * 0.5).toFixed(1)),
+              z: Number(((pts[i].z + pts[i + 1].z) * 0.5).toFixed(1)),
+            });
+            relaxedCount++;
+            i += 2;
+            continue;
+          }
+        }
+        merged.push(pts[i]);
+        i++;
+      }
+      pts = merged;
+    }
+
+    // 2. Bevel / Subdivide any acute single-point corner into two rounded shoulder nodes
+    if (pts.length < 22) {
+      const nextPts: typeof pts = [pts[0], pts[1]];
+      const n = pts.length;
+      for (let i = 2; i < n; i++) {
+        const prev = nextPts[nextPts.length - 1];
+        const curr = pts[i];
+        const next = pts[(i + 1) % n];
+        const ux1 = curr.x - prev.x;
+        const uz1 = curr.z - prev.z;
+        const ux2 = next.x - curr.x;
+        const uz2 = next.z - curr.z;
+        const len1 = Math.hypot(ux1, uz1);
+        const len2 = Math.hypot(ux2, uz2);
+        const cosTurn =
+          len1 > 1 && len2 > 1 ? (ux1 * ux2 + uz1 * uz2) / (len1 * len2) : 1;
+
+        if (
+          i < n - 1 &&
+          cosTurn < 0.28 &&
+          len1 > 48 &&
+          len2 > 48 &&
+          nextPts.length + (n - i) < 23
+        ) {
+          // Split sharp apex into two smooth entry/exit shoulder points
+          const shoulderIn = {
+            x: Number((curr.x - ux1 * 0.28 + ux2 * 0.04).toFixed(1)),
+            y: Number((prev.y * 0.28 + curr.y * 0.72).toFixed(1)),
+            z: Number((curr.z - uz1 * 0.28 + uz2 * 0.04).toFixed(1)),
+          };
+          const shoulderOut = {
+            x: Number((curr.x + ux2 * 0.28 - ux1 * 0.04).toFixed(1)),
+            y: Number((curr.y * 0.72 + next.y * 0.28).toFixed(1)),
+            z: Number((curr.z + uz2 * 0.28 - uz1 * 0.04).toFixed(1)),
+          };
+          nextPts.push(shoulderIn, shoulderOut);
+          subdividedCount++;
+        } else {
+          nextPts.push(curr);
+        }
+      }
+      pts = nextPts;
+    }
+
+    // 3. Detect buckled / high-curvature nodes on the live Catmull-Rom spline and relax them
+    const sampled = computeTrackSplineSamples(pts, 18, []);
+    const buckledSet = detectBuckledControlNodes(
+      pts,
+      roadHalfWidth,
+      sampled.samples
+    );
+
+    const n = pts.length;
+    const relaxedPts = pts.map((p) => ({ ...p }));
+    for (let i = 2; i < n; i++) {
+      const prev = pts[(i - 1 + n) % n];
+      const curr = pts[i];
+      const next = pts[(i + 1) % n];
+      const ux1 = curr.x - prev.x;
+      const uz1 = curr.z - prev.z;
+      const ux2 = next.x - curr.x;
+      const uz2 = next.z - curr.z;
+      const len1 = Math.hypot(ux1, uz1);
+      const len2 = Math.hypot(ux2, uz2);
+      const cosTurn =
+        len1 > 1 && len2 > 1 ? (ux1 * ux2 + uz1 * uz2) / (len1 * len2) : 1;
+
+      if (buckledSet.has(i) || cosTurn < 0.36) {
+        const blend = buckledSet.has(i) ? 0.36 : 0.24;
+        const midX = (prev.x + next.x) * 0.5;
+        const midZ = (prev.z + next.z) * 0.5;
+        relaxedPts[i].x = Number(
+          (curr.x * (1 - blend) + midX * blend).toFixed(1)
+        );
+        relaxedPts[i].z = Number(
+          (curr.z * (1 - blend) + midZ * blend).toFixed(1)
+        );
+        relaxedCount++;
+      }
+    }
+    pts = relaxedPts;
+
+    // 4. Enforce minimum spacing between adjacent nodes & minimum corridor separation between non-adjacent nodes
+    for (let i = 2; i < n; i++) {
+      const prev = pts[i - 1];
+      const curr = pts[i];
+      const dx = curr.x - prev.x;
+      const dz = curr.z - prev.z;
+      const d = Math.hypot(dx, dz);
+      if (d > 0.1 && d < minSpacing) {
+        const push = (minSpacing - d) * 0.55;
+        curr.x = Number((curr.x + (dx / d) * push).toFixed(1));
+        curr.z = Number((curr.z + (dz / d) * push).toFixed(1));
+      }
+    }
+
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 2; j < n; j++) {
+        if (i === 0 && j === n - 1) continue;
+        if (i === 1 && j === n - 1) continue;
+        const dx = pts[j].x - pts[i].x;
+        const dz = pts[j].z - pts[i].z;
+        const d = Math.hypot(dx, dz);
+        if (d > 0.1 && d < minCorridorDist) {
+          const push = (minCorridorDist - d) * 0.5;
+          const nx = dx / d;
+          const nz = dz / d;
+          if (i >= 2) {
+            pts[i].x = Number((pts[i].x - nx * push).toFixed(1));
+            pts[i].z = Number((pts[i].z - nz * push).toFixed(1));
+          }
+          if (j >= 2) {
+            pts[j].x = Number((pts[j].x + nx * push).toFixed(1));
+            pts[j].z = Number((pts[j].z + nz * push).toFixed(1));
+          }
+        }
+      }
+    }
+
+    // 5. Keep final control point aligned for a straight, buckle-free entry into P0(0,0,0) -> P1(0,y,z)
+    const lastIdx = pts.length - 1;
+    if (lastIdx >= 3) {
+      pts[lastIdx].x = Number(
+        Math.max(-18, Math.min(-3, pts[lastIdx].x)).toFixed(1)
+      );
+      pts[lastIdx].z = Number(
+        Math.max(-84, Math.min(-54, pts[lastIdx].z)).toFixed(1)
+      );
+      pts[lastIdx].y = 0;
+    }
+  }
+
+  // Final smooth elevation pass (preserving flat start/finish zone at P0, P1, and P_last)
+  const n = pts.length;
+  for (let i = 2; i < n - 1; i++) {
+    const prevY = pts[i - 1].y;
+    const nextY = pts[(i + 1) % n].y;
+    const smoothedY = pts[i].y * 0.65 + (prevY + nextY) * 0.175;
+    pts[i].y = Number(Math.max(0, Math.min(15, smoothedY)).toFixed(1));
+  }
+
+  return { pts, subdividedCount, relaxedCount };
+}
+
+/**
+ * Generates a complete, buckle-free closed-loop circuit spline for a chosen archetype & seed.
+ */
+function generateProceduralCircuitControlPoints(
+  requestedArchetype: ProceduralTrackArchetype,
+  seed: number,
+  currentRoadHalfWidth: number
+): {
+  resolvedArchetype: Exclude<ProceduralTrackArchetype, "RANDOM">;
+  archetypeTitle: string;
+  controlPoints: Array<{ x: number; y: number; z: number }>;
+  roadHalfWidth: number;
+  terrainHillScale: number;
+} {
+  let s = (seed ^ 0x9e3779b9) >>> 0;
+  const rand = () => {
+    s = (Math.imul(1664525, s) + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+  const randRange = (min: number, max: number) => min + rand() * (max - min);
+
+  const concreteArchetypes: Array<Exclude<ProceduralTrackArchetype, "RANDOM">> =
+    ["SWEEPER", "SWITCHBACK", "KIDNEY", "CANYON", "STADIUM"];
+  const resolvedArchetype: Exclude<ProceduralTrackArchetype, "RANDOM"> =
+    requestedArchetype === "RANDOM"
+      ? concreteArchetypes[Math.floor(rand() * concreteArchetypes.length)]
+      : requestedArchetype;
+
+  const archetypeTitleMap: Record<
+    Exclude<ProceduralTrackArchetype, "RANDOM">,
+    string
+  > = {
+    SWEEPER: "High-Speed Sweeper",
+    SWITCHBACK: "Technical Switchback",
+    KIDNEY: "Kidney Twin-Lobe",
+    CANYON: "Canyon Hairpin Run",
+    STADIUM: "Stadium Grand Oval",
+  };
+
+  const roadHalfWidth =
+    requestedArchetype === "RANDOM"
+      ? Number(randRange(13.0, 15.0).toFixed(1))
+      : currentRoadHalfWidth;
+
+  const rawPts: Array<{ x: number; y: number; z: number }> = [];
+  // P0 and P1 anchor the start/finish straight at (0,0,0) -> (0, y1, z1)
+  const startStraightZ = Math.round(randRange(86, 102));
+  rawPts.push({ x: 0, y: 0, z: 0 });
+  rawPts.push({ x: 0, y: 0.8, z: startStraightZ });
+
+  // Center of the clockwise loop sits to the east (+X) so P0->P1 (+Z) is the westmost tangent straight
+  const centerX =
+    resolvedArchetype === "CANYON"
+      ? randRange(165, 195)
+      : resolvedArchetype === "STADIUM"
+      ? randRange(155, 175)
+      : randRange(130, 158);
+  const centerZ = randRange(-25, 15);
+  const baseRx =
+    resolvedArchetype === "CANYON"
+      ? randRange(155, 185)
+      : resolvedArchetype === "STADIUM"
+      ? randRange(148, 172)
+      : randRange(125, 148);
+  const baseRz =
+    resolvedArchetype === "CANYON"
+      ? randRange(215, 250)
+      : resolvedArchetype === "STADIUM"
+      ? randRange(195, 225)
+      : randRange(185, 220);
+
+  const interiorCount =
+    resolvedArchetype === "SWITCHBACK" || resolvedArchetype === "CANYON"
+      ? 12
+      : resolvedArchetype === "KIDNEY"
+      ? 11
+      : 10;
+
+  const phase2 = randRange(-0.35, 0.35);
+  const phase3 = randRange(-0.4, 0.4);
+  const hillPhase = randRange(0, Math.PI * 1.5);
+  const maxElevation =
+    resolvedArchetype === "CANYON"
+      ? randRange(11.5, 14.5)
+      : resolvedArchetype === "STADIUM"
+      ? randRange(4.5, 7.0)
+      : randRange(7.5, 11.5);
+
+  // Sweep clockwise from top-west (angle ~ +0.72*PI) through north (+PI/2), east (0), south (-PI/2), to bottom-west (-0.76*PI)
+  const startAngle = Math.PI * 0.72;
+  const endAngle = -Math.PI * 0.76;
+
+  for (let i = 0; i < interiorCount; i++) {
+    const u = i / (interiorCount - 1);
+    const theta = startAngle + u * (endAngle - startAngle);
+
+    let radiusMod = 1.0;
+    if (resolvedArchetype === "SWEEPER") {
+      radiusMod =
+        1.0 +
+        0.16 * Math.sin(2 * theta + phase2) +
+        0.08 * Math.cos(3 * theta + phase3);
+    } else if (resolvedArchetype === "SWITCHBACK") {
+      // Rhythmic S-chicanes along the eastern and southern sectors
+      radiusMod =
+        1.0 +
+        0.24 * Math.sin(3 * theta + phase3) +
+        0.12 * Math.cos(2 * theta + phase2);
+    } else if (resolvedArchetype === "KIDNEY") {
+      // Classic kidney bean indentation on the eastern backstretch (theta near 0)
+      const eastIndent = Math.exp(-Math.pow(theta - 0.05, 2) / 0.28);
+      radiusMod =
+        1.08 - 0.38 * eastIndent + 0.12 * Math.sin(2 * theta + phase2);
+    } else if (resolvedArchetype === "CANYON") {
+      // Wide northern ridge + deep southern canyon switchback
+      radiusMod =
+        1.04 +
+        0.22 * Math.cos(2 * theta + phase2) +
+        0.16 * Math.sin(3 * theta + phase3);
+    } else if (resolvedArchetype === "STADIUM") {
+      // Broad stadium oval with a subtle bus-stop chicane on the backstretch
+      const chicane = Math.sin(4 * theta + phase2) * 0.09;
+      radiusMod = 1.02 + 0.1 * Math.cos(2 * theta) + chicane;
+    }
+
+    const rX = baseRx * Math.max(0.58, radiusMod);
+    const rZ = baseRz * Math.max(0.62, radiusMod);
+
+    const x = Math.max(22, centerX + Math.cos(theta) * rX);
+    const z = centerZ + Math.sin(theta) * rZ;
+
+    // Smooth hill profile that tapers to 0 near the start and finish ends
+    const envelope = Math.sin(Math.PI * u);
+    const rawHill =
+      (0.55 +
+        0.45 * Math.sin(u * Math.PI * 2.0 + hillPhase) +
+        0.2 * Math.cos(u * Math.PI * 3.0)) *
+      envelope;
+    const y = Math.max(0.2, Math.min(14.5, rawHill * maxElevation));
+
+    rawPts.push({
+      x: Number(x.toFixed(1)),
+      y: Number(y.toFixed(1)),
+      z: Number(z.toFixed(1)),
+    });
+  }
+
+  // Final point approaches P0(0,0,0) smoothly from -Z
+  rawPts.push({
+    x: Number(randRange(-10, -4).toFixed(1)),
+    y: 0,
+    z: Number(randRange(-72, -58).toFixed(1)),
+  });
+
+  const { pts: refinedPts } = unbuckleAndRefineControlPoints(
+    rawPts,
+    roadHalfWidth
+  );
+
+  const terrainHillScale =
+    resolvedArchetype === "CANYON"
+      ? 1.3
+      : resolvedArchetype === "STADIUM"
+      ? 0.85
+      : 1.05;
+
+  return {
+    resolvedArchetype,
+    archetypeTitle: archetypeTitleMap[resolvedArchetype],
+    controlPoints: refinedPts,
+    roadHalfWidth,
+    terrainHillScale,
+  };
+}
+
 export const TrackEditor: React.FC<TrackEditorProps> = ({
   trackDef: initialTrackDef,
   onChangeTrackDef,
@@ -269,6 +758,9 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
   const [traceColorMode, setTraceColorMode] =
     useState<AiTraceColorMode>("SURFACE");
   const [traceTick, setTraceTick] = useState<number>(0);
+  const [proceduralArchetype, setProceduralArchetype] =
+    useState<ProceduralTrackArchetype>("RANDOM");
+  const proceduralGenCountRef = useRef<number>(1);
 
   // Explicit Local Working State, Dirty Flag, Undo/Redo Stacks & Manual Save
   const [trackDef, setTrackDef] =
@@ -622,11 +1114,24 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     try {
       const { payload, cupCount, totalTracks } =
         buildFullCatalogExportPayload();
+      // Keep only manual sceneryProps in clipboard copy so the JSON is ~12KB (never truncated in chat pastes); auto scenery regenerates from scenerySeed
+      const compactPayload = {
+        ...payload,
+        cups: payload.cups.map((cup) => ({
+          ...cup,
+          tracks: cup.tracks.map((t) => ({
+            ...t,
+            sceneryProps: (t.sceneryProps ?? []).filter(
+              (p) => p.isManual !== false
+            ),
+          })),
+        })),
+      };
       await navigator.clipboard.writeText(
-        `${JSON.stringify(payload, null, 2)}\n`
+        `${JSON.stringify(compactPayload, null, 2)}\n`
       );
       flashIoNotice(
-        `Copied ALL ${totalTracks} maps (${cupCount} Cups) JSON to clipboard!`
+        `Copied ALL ${totalTracks} maps (${cupCount} Cups) compact JSON to clipboard!`
       );
     } catch {
       flashIoNotice("Clipboard copy failed — use EXPORT ALL MAPS instead.");
@@ -1232,6 +1737,279 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     );
   };
 
+  // Feature 6: 1-Click Unbuckle & Subdivide Sharp Corners (eliminates inner-seam curb/road ribbon folding)
+  const handleUnbuckleCorners = () => {
+    const currentDef = trackDefRef.current;
+    const { pts: nextPts, subdividedCount, relaxedCount } =
+      unbuckleAndRefineControlPoints(
+        currentDef.controlPoints,
+        currentDef.roadHalfWidth
+      );
+
+    commitWorkingEdit(
+      syncTracksideSceneryAndClearRoad({
+        ...currentDef,
+        controlPoints: nextPts,
+      }),
+      true
+    );
+
+    if (subdividedCount > 0 || relaxedCount > 0) {
+      flashIoNotice(
+        `Unbuckled & refined spline (${subdividedCount} sharp corner${
+          subdividedCount === 1 ? "" : "s"
+        } subdivided, ${relaxedCount} inner seam${
+          relaxedCount === 1 ? "" : "s"
+        } relaxed → ${nextPts.length} nodes)!`
+      );
+    } else {
+      flashIoNotice(
+        "All corners already have clean inner-seam radii — applied gentle elevation & spacing polish!"
+      );
+    }
+  };
+
+  // Feature 7: 1-Click Procedural Track Generator (archetype spline + anti-buckle + safe jumps + boosts + item boxes + scenery)
+  const handleGenerateProceduralTrack = () => {
+    const currentDef = trackDefRef.current;
+    proceduralGenCountRef.current += 1;
+    const seed =
+      ((Date.now() & 0xfffffff) ^
+        Math.imul(proceduralGenCountRef.current, 2654435761)) >>>
+      0;
+
+    const generated = generateProceduralCircuitControlPoints(
+      proceduralArchetype,
+      seed,
+      currentDef.roadHalfWidth
+    );
+
+    const newSpline = computeTrackSplineSamples(
+      generated.controlPoints,
+      28,
+      []
+    );
+    const totalLen = Math.max(200, newSpline.totalTrackLength);
+
+    // 1. Auto-place 2-3 Safe Stunt Jumps on straightaways/crests with >= 46m clear landing runways
+    const jumpCandidates: Array<{ normT: number; score: number }> = [];
+    const steps = 160;
+    for (let i = 0; i < steps; i++) {
+      const normT = i / steps;
+      if (normT < 0.07 || normT > 0.91) continue;
+      const s0 = newSpline.getPointAtNormalizedT(normT, 0);
+      const sBehind = newSpline.getPointAtNormalizedT(
+        (normT - 18 / totalLen + 1) % 1,
+        0
+      );
+      const s15 = newSpline.getPointAtNormalizedT(
+        (normT + 15 / totalLen) % 1,
+        0
+      );
+      const s30 = newSpline.getPointAtNormalizedT(
+        (normT + 30 / totalLen) % 1,
+        0
+      );
+      const s46 = newSpline.getPointAtNormalizedT(
+        (normT + 46 / totalLen) % 1,
+        0
+      );
+
+      const tan0 = new Vector3(s0.tangent.x, 0, s0.tangent.z).normalize();
+      const tanBehind = new Vector3(
+        sBehind.tangent.x,
+        0,
+        sBehind.tangent.z
+      ).normalize();
+      const tan15 = new Vector3(s15.tangent.x, 0, s15.tangent.z).normalize();
+      const tan30 = new Vector3(s30.tangent.x, 0, s30.tangent.z).normalize();
+      const tan46 = new Vector3(s46.tangent.x, 0, s46.tangent.z).normalize();
+
+      const dotBehind = Vector3.Dot(tan0, tanBehind);
+      const dot15 = Vector3.Dot(tan0, tan15);
+      const dot30 = Vector3.Dot(tan0, tan30);
+      const dot46 = Vector3.Dot(tan0, tan46);
+
+      const s42 = newSpline.getPointAtNormalizedT(
+        (normT + 42 / totalLen) % 1,
+        0
+      );
+      const toLanding = s42.position.subtract(s0.position);
+      toLanding.y = 0;
+      const binorm0 = new Vector3(s0.binormal.x, 0, s0.binormal.z).normalize();
+      const crossTrackOffset = Math.abs(Vector3.Dot(toLanding, binorm0));
+
+      if (
+        dotBehind >= 0.9 &&
+        dot15 >= 0.95 &&
+        dot30 >= 0.92 &&
+        dot46 >= 0.88 &&
+        crossTrackOffset <= generated.roadHalfWidth * 0.62
+      ) {
+        const crestBonus = Math.max(0, (s0.position.y - s30.position.y) * 0.12);
+        const score =
+          (dotBehind + dot15 * 1.5 + dot30 * 1.5 + dot46 * 1.2) * 20 -
+          crossTrackOffset * 1.8 +
+          crestBonus;
+        jumpCandidates.push({ normT, score });
+      }
+    }
+    jumpCandidates.sort((a, b) => b.score - a.score);
+
+    const targetJumps = Math.min(3, Math.max(2, Math.round(totalLen / 340)));
+    const minJumpSpace = Math.max(0.2, 140 / totalLen);
+    const jumpNormTs: number[] = [];
+    const safeJumps: CustomTrackDefinition["obstacles"] = [];
+
+    for (const cand of jumpCandidates) {
+      if (safeJumps.length >= targetJumps) break;
+      const tooClose = jumpNormTs.some((t) => {
+        let diff = Math.abs(t - cand.normT);
+        if (diff > 0.5) diff = 1.0 - diff;
+        return diff < minJumpSpace;
+      });
+      if (tooClose) continue;
+      const sample = newSpline.getPointAtNormalizedT(cand.normT, 0);
+      const yaw = Math.atan2(sample.tangent.x, sample.tangent.z);
+      safeJumps.push({
+        id: `proc_jump_${seed}_${safeJumps.length}`,
+        type: "JUMP_RAMP",
+        x: Number(sample.position.x.toFixed(1)),
+        z: Number(sample.position.z.toFixed(1)),
+        rotationY: Number(yaw.toFixed(2)),
+        scale: 1.15,
+      });
+      jumpNormTs.push(cand.normT);
+    }
+
+    const isInsideJumpCorridor = (normT: number, bufferMeters = 45): boolean => {
+      const arcT = bufferMeters / totalLen;
+      const beforeT = 12 / totalLen;
+      return jumpNormTs.some((jT) => {
+        const ahead = (normT - jT + 1) % 1;
+        const behind = (jT - normT + 1) % 1;
+        return ahead <= arcT || behind <= beforeT;
+      });
+    };
+
+    // 2. Auto-place 4 Corner-Exit Boost Pads outside jump flight arcs
+    const boostCandidates: Array<{ normT: number; score: number; lat: number }> =
+      [];
+    for (let i = 0; i < steps; i++) {
+      const normT = i / steps;
+      if (normT < 0.06 || normT > 0.93) continue;
+      if (isInsideJumpCorridor(normT, 38)) continue;
+      const sBack = newSpline.getPointAtNormalizedT(
+        (normT - 24 / totalLen + 1) % 1,
+        0
+      );
+      const sHere = newSpline.getPointAtNormalizedT(normT, 0);
+      const sAhead = newSpline.getPointAtNormalizedT(
+        (normT + 28 / totalLen) % 1,
+        0
+      );
+      const turnBefore = 1.0 - Vector3.Dot(sBack.tangent, sHere.tangent);
+      const straightAhead = Vector3.Dot(sHere.tangent, sAhead.tangent);
+      if (straightAhead >= 0.91 && turnBefore >= 0.04) {
+        // Nudge slightly toward the apex-exit side
+        const turnCross =
+          sBack.tangent.x * sHere.tangent.z - sBack.tangent.z * sHere.tangent.x;
+        const lat = Number(
+          (Math.sign(turnCross) * Math.min(2.4, generated.roadHalfWidth * 0.16)).toFixed(2)
+        );
+        boostCandidates.push({
+          normT,
+          score: turnBefore * 10 + straightAhead * 3,
+          lat,
+        });
+      }
+    }
+    boostCandidates.sort((a, b) => b.score - a.score);
+
+    const chosenBoosts: Array<{ normT: number; lat: number }> = [];
+    const minBoostSpace = Math.max(0.16, 105 / totalLen);
+    for (const cand of boostCandidates) {
+      if (chosenBoosts.length >= 4) break;
+      const tooClose = chosenBoosts.some((b) => {
+        let diff = Math.abs(b.normT - cand.normT);
+        if (diff > 0.5) diff = 1.0 - diff;
+        return diff < minBoostSpace;
+      });
+      if (tooClose) continue;
+      chosenBoosts.push({ normT: cand.normT, lat: cand.lat });
+    }
+    if (chosenBoosts.length < 3) {
+      for (const fallbackT of [0.18, 0.46, 0.74]) {
+        if (chosenBoosts.length >= 3) break;
+        if (!isInsideJumpCorridor(fallbackT, 30)) {
+          chosenBoosts.push({ normT: fallbackT, lat: 0 });
+        }
+      }
+    }
+    chosenBoosts.sort((a, b) => a.normT - b.normT);
+
+    const procBoostPads = chosenBoosts.map((b, idx) => ({
+      id: `proc_boost_${seed}_${idx}`,
+      normT: Number(b.normT.toFixed(4)),
+      lateral: b.lat,
+    }));
+
+    // 3. Auto-place 3 Grounded Item Box Rows outside mid-air jump trajectories
+    const procItemRows = [0.22, 0.52, 0.8].map((anchorT, idx) => {
+      let bestT = anchorT;
+      let bestScore = -999;
+      for (let offset = -12; offset <= 12; offset++) {
+        const candT = (anchorT + offset * 0.006 + 1) % 1;
+        if (candT < 0.07 || candT > 0.92) continue;
+        if (isInsideJumpCorridor(candT, 46)) continue;
+        const s0 = newSpline.getPointAtNormalizedT(candT, 0);
+        const sAhead = newSpline.getPointAtNormalizedT(
+          (candT + 20 / totalLen) % 1,
+          0
+        );
+        const straightness = Vector3.Dot(s0.tangent, sAhead.tangent);
+        const score = straightness - Math.abs(offset) * 0.01;
+        if (score > bestScore) {
+          bestScore = score;
+          bestT = candT;
+        }
+      }
+      return {
+        id: `proc_item_row_${seed}_${idx}`,
+        normT: Number(bestT.toFixed(4)),
+      };
+    });
+
+    const nextScenerySeed = (currentDef.scenerySeed ?? 0) + 1;
+    const populatedTrack = syncTracksideSceneryAndClearRoad({
+      ...currentDef,
+      roadHalfWidth: generated.roadHalfWidth,
+      controlPoints: generated.controlPoints,
+      boostPads: procBoostPads,
+      itemBoxRows: procItemRows,
+      obstacles: safeJumps,
+      sceneryProps: [],
+      autoTracksideScenery: true,
+      scenerySeed: nextScenerySeed,
+      terrainHillScale: generated.terrainHillScale,
+      terrainMods: [],
+    });
+
+    // Clear stale AI traces for this map slot since the track layout changed completely
+    globalAiBrain.clearTrackAiTraces(currentDef.id || currentDef.name);
+    setTraceTick((t) => t + 1);
+    setSelectedControlIdx(0);
+    commitWorkingEdit(populatedTrack, true);
+
+    flashIoNotice(
+      `Generated "${generated.archetypeTitle}" (${Math.round(
+        totalLen
+      )}m, ${generated.controlPoints.length} buckle-free nodes, ${
+        safeJumps.length
+      } jumps, ${procBoostPads.length} boosts)!`
+    );
+  };
+
   // Keyboard shortcuts for Undo (Ctrl+Z), Redo (Ctrl+Y / Ctrl+Shift+Z), and Save (Ctrl+S)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1269,6 +2047,17 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
         trackDef.terrainMods ?? []
       ),
     [trackDef.controlPoints, trackDef.terrainMods]
+  );
+
+  // Detect any control nodes where the inner curb/road ribbon is pinching or buckling
+  const buckledNodeSet = useMemo(
+    () =>
+      detectBuckledControlNodes(
+        trackDef.controlPoints,
+        trackDef.roadHalfWidth,
+        splineData.samples
+      ),
+    [trackDef.controlPoints, trackDef.roadHalfWidth, splineData.samples]
   );
 
   const svgPathString = useMemo(() => {
@@ -1643,9 +2432,14 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     bottleneckRingMat.diffuseColor = new Color3(0.96, 0.25, 0.37);
     bottleneckRingMat.emissiveColor = new Color3(0.85, 0.15, 0.28);
 
+    const buckledRingMat = new StandardMaterial("ctrlBuckledRingMat", scene);
+    buckledRingMat.diffuseColor = new Color3(0.98, 0.52, 0.08);
+    buckledRingMat.emissiveColor = new Color3(0.9, 0.42, 0.05);
+
     trackDef.controlPoints.forEach((pt, idx) => {
       const isSelected = idx === selectedControlIdx;
       const isBottleneckNode = showAiTraces && bottleneckNodeMap.has(idx);
+      const isBuckledNode = buckledNodeSet.has(idx);
       const nodeRoadY = Math.max(
         pt.y,
         splineData.queryClosestTrackPoint(new Vector3(pt.x, 0, pt.z)).roadY
@@ -1664,10 +2458,12 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
           ? nodeSelectedMat
           : isBottleneckNode
           ? bottleneckRingMat
+          : isBuckledNode
+          ? buckledRingMat
           : nodeDefaultMat;
       sphere.isPickable = true;
 
-      if (isBottleneckNode) {
+      if (isBottleneckNode || isBuckledNode) {
         const warnRing = MeshBuilder.CreateTorus(
           `ctrlBottleneckRing_${idx}`,
           { diameter: 13.5, thickness: 0.75, tessellation: 24 },
@@ -1675,7 +2471,9 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
         );
         warnRing.parent = gizmoRoot;
         warnRing.position = new Vector3(pt.x, nodeRoadY + 3.2, pt.z);
-        warnRing.material = bottleneckRingMat;
+        warnRing.material = isBottleneckNode
+          ? bottleneckRingMat
+          : buckledRingMat;
         warnRing.isPickable = false;
       }
 
@@ -1755,6 +2553,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     traceColorMode,
     recordedAiTraces,
     bottleneckNodeMap,
+    buckledNodeSet,
   ]);
 
   // Convert client mouse coordinates to World (X, Z) on the 2D SVG blueprint
@@ -2119,6 +2918,22 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
 
           <button
             type="button"
+            data-testid="editor-unbuckle-corners-btn"
+            onClick={handleUnbuckleCorners}
+            className={`rounded-lg border px-2 py-1.5 text-[10px] font-black uppercase transition cursor-pointer ${
+              buckledNodeSet.size > 0
+                ? "border-orange-400 bg-orange-500/30 text-orange-100 hover:bg-orange-500/40 animate-pulse"
+                : "border-violet-400/50 bg-violet-500/20 text-violet-200 hover:bg-violet-500/30"
+            }`}
+            title="Automatically subdivide acute bends and relax tight corners so the inner curb/road ribbon seam never buckles over itself (supports Ctrl+Z Undo)"
+          >
+            {buckledNodeSet.size > 0
+              ? `🔧 UNBUCKLE CORNERS (${buckledNodeSet.size})`
+              : "🔧 UNBUCKLE / SMOOTH"}
+          </button>
+
+          <button
+            type="button"
             data-testid="editor-auto-safe-jumps-btn"
             onClick={handleAutoPlaceSafeJumps}
             className="rounded-lg border border-emerald-400/50 bg-emerald-500/20 px-2 py-1.5 text-[10px] font-black uppercase text-emerald-200 hover:bg-emerald-500/30 transition cursor-pointer"
@@ -2136,6 +2951,37 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
           >
             ⚡ AUTO-CURATE BOOSTS &amp; BOXES
           </button>
+
+          {/* 1-Click Procedural Circuit Generator (Archetype Selector + Generate Button) */}
+          <div className="flex items-center gap-1 rounded-lg border border-amber-400/50 bg-amber-950/40 p-0.5">
+            <select
+              data-testid="editor-procedural-archetype-select"
+              value={proceduralArchetype}
+              onChange={(e) =>
+                setProceduralArchetype(
+                  e.target.value as ProceduralTrackArchetype
+                )
+              }
+              className="rounded bg-slate-900 px-1.5 py-1 text-[10px] font-black uppercase text-amber-200 border border-amber-400/30 focus:outline-none cursor-pointer"
+              title="Select procedural track shape archetype"
+            >
+              {PROCEDURAL_ARCHETYPE_OPTIONS.map((opt) => (
+                <option key={opt.id} value={opt.id}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              data-testid="editor-generate-track-btn"
+              onClick={handleGenerateProceduralTrack}
+              className="inline-flex items-center gap-1 rounded bg-amber-400 px-2 py-1 text-[10px] font-black uppercase text-slate-950 hover:bg-amber-300 transition cursor-pointer"
+              title="Procedurally generate a brand-new, buckle-free circuit spline with elevation hills, safe stunt jumps, corner-exit boost pads, item boxes, and scenery (supports Ctrl+Z Undo)"
+            >
+              <Sparkles className="h-3 w-3" />
+              GENERATE TRACK
+            </button>
+          </div>
 
           {recordedAiTraces.length > 0 && (
             <button
@@ -3574,6 +4420,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                   const isSelected = idx === selectedControlIdx;
                   const isBottleneckNode =
                     showAiTraces && bottleneckNodeMap.has(idx);
+                  const isBuckledNode = buckledNodeSet.has(idx);
                   return (
                     <g
                       key={idx}
@@ -3591,13 +4438,17 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                       }}
                       className="cursor-grab active:cursor-grabbing"
                     >
-                      {isBottleneckNode && (
+                      {(isBottleneckNode || isBuckledNode) && (
                         <circle
                           cx={0}
                           cy={0}
                           r={12.5}
-                          fill="rgba(244, 63, 94, 0.22)"
-                          stroke="#fb7185"
+                          fill={
+                            isBottleneckNode
+                              ? "rgba(244, 63, 94, 0.22)"
+                              : "rgba(249, 115, 22, 0.22)"
+                          }
+                          stroke={isBottleneckNode ? "#fb7185" : "#fb923c"}
                           strokeWidth={1.8}
                           strokeDasharray="3 2"
                         />
@@ -3613,6 +4464,8 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                             ? "#38bdf8"
                             : isBottleneckNode
                             ? "#f43f5e"
+                            : isBuckledNode
+                            ? "#f97316"
                             : "#f8fafc"
                         }
                         stroke="#0f172a"
@@ -3622,12 +4475,18 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                         x={0}
                         y={-10}
                         textAnchor="middle"
-                        fill={isBottleneckNode ? "#fda4af" : "#f8fafc"}
+                        fill={
+                          isBottleneckNode
+                            ? "#fda4af"
+                            : isBuckledNode
+                            ? "#fdba74"
+                            : "#f8fafc"
+                        }
                         fontSize="8.5"
                         fontWeight="bold"
                       >
                         P{idx} ({pt.y.toFixed(0)}m)
-                        {isBottleneckNode ? " ⚠️" : ""}
+                        {isBottleneckNode ? " ⚠️" : isBuckledNode ? " 🔧" : ""}
                       </text>
                     </g>
                   );
