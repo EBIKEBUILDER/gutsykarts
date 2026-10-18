@@ -2294,8 +2294,7 @@ export const RaceGame: React.FC = () => {
           );
           return;
         }
-        refKart.rouletteTimer = 0;
-        refKart.heldItem = item;
+        refKart.equipPowerUpImmediate(item);
       },
       triggerPlayerPowerUp: () => {
         pendingEdgesRef.current.useItemJustPressed = true;
@@ -2483,6 +2482,29 @@ export const RaceGame: React.FC = () => {
         }
       }
 
+      // Step Item Boxes, Orbiting Drones (Shield & Tri-Seeker), Homing Pulse Seekers, Ricochet Discs, and Cryo Mines
+      // (Runs BEFORE resolveAsymmetricKartCollision so orbiting drones intercept & wipe out rival karts on contact!)
+      if (itemsActiveForRace) {
+        itemManager.update(
+          dt,
+          racers,
+          pushItemBanner,
+          (boxId, collector, awardedItem) => {
+            if (
+              isOnlineSession &&
+              (collector.isPlayer ||
+                (isLocalHost && collector.controlMode === "AI"))
+            ) {
+              mp?.broadcastItemBoxPickup({
+                boxId,
+                slotIndex: collector.slotIndex,
+                awardedItem,
+              });
+            }
+          }
+        );
+      }
+
       // Step Asymmetric Mass Collision Resolver between all pairs of karts
       if (raceActive) {
         for (let i = 0; i < racers.length; i++) {
@@ -2538,28 +2560,6 @@ export const RaceGame: React.FC = () => {
             }
           }
         }
-      }
-
-      // Step Item Boxes, Homing Pulse Seekers, Ricochet Discs, and Cryo Mines
-      if (itemsActiveForRace) {
-        itemManager.update(
-          dt,
-          racers,
-          pushItemBanner,
-          (boxId, collector, awardedItem) => {
-            if (
-              isOnlineSession &&
-              (collector.isPlayer ||
-                (isLocalHost && collector.controlMode === "AI"))
-            ) {
-              mp?.broadcastItemBoxPickup({
-                boxId,
-                slotIndex: collector.slotIndex,
-                awardedItem,
-              });
-            }
-          }
-        );
       }
 
       // Compute Live Race Standings (1st - 4th)
@@ -3100,6 +3100,7 @@ export const RaceGame: React.FC = () => {
           heldItem: focusKart.heldItem,
           heldItemCharges: focusKart.heldItemCharges,
           orbitalShieldCharges: focusKart.orbitalShieldCharges,
+          tripleSeekerCharges: focusKart.tripleSeekerCharges,
           phaseCloakRemaining: Number(focusKart.phaseCloakTimer.toFixed(1)),
           empShrinkRemaining: Number(focusKart.empShrinkTimer.toFixed(1)),
           rouletteSpinning: focusKart.rouletteTimer > 0,

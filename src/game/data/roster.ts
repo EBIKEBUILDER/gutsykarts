@@ -333,6 +333,15 @@ export const POWER_UP_CATALOG: Record<PowerUpType, PowerUpMetadata> = {
     color: "#ef4444",
     accentColor: "#fca5a5",
   },
+  TRIPLE_SEEKER: {
+    id: "TRIPLE_SEEKER",
+    name: "Tri-Seeker Swarm",
+    shortLabel: "3x SEEKERS",
+    description:
+      "3 orbiting crimson homing drones that wipe out rivals on contact, block incoming fire, or launch one-by-one to hunt racers ahead!",
+    color: "#dc2626",
+    accentColor: "#fbbf24",
+  },
   RICOCHET_DISC: {
     id: "RICOCHET_DISC",
     name: "Ricochet Disc",
@@ -347,7 +356,7 @@ export const POWER_UP_CATALOG: Record<PowerUpType, PowerUpMetadata> = {
     name: "Tri-Drone Orbit Shield",
     shortLabel: "3x DRONES",
     description:
-      "Spawns 3 orbiting emerald energy drones that block incoming seekers/discs, bump rival karts, or fire forward one by one!",
+      "3 orbiting emerald energy orbs that immediately spin out rivals on contact, block incoming attacks, or fire forward as Ricochet Discs!",
     color: "#14b8a6",
     accentColor: "#67e8f9",
   },

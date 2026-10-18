@@ -89,6 +89,7 @@ export class ItemManager {
   private readonly empWaves: ActiveEmpWaveRing[] = [];
   private readonly novaOverdriveCores = new Map<string, Mesh>();
   private readonly orbitalShieldRigs = new Map<string, OrbitalShieldRig>();
+  private readonly tripleSeekerRigs = new Map<string, OrbitalShieldRig>();
   private readonly tripleNitroRigs = new Map<string, TripleNitroRig>();
   private readonly phaseCloakShells = new Map<string, Mesh>();
 
@@ -380,31 +381,34 @@ export class ItemManager {
     }
     if (rank === 2) {
       if (canGetSaucer && r < 0.08) return "LIL_SAUCER";
-      if (r < 0.25) return "PULSE_SEEKER";
-      if (r < 0.40) return "NITRO_CORE";
-      if (r < 0.54) return "TRIPLE_NITRO";
-      if (r < 0.68) return "RICOCHET_DISC";
-      if (r < 0.80) return "ORBITAL_SHIELD";
-      if (r < 0.89) return "PHASE_CLOAK";
+      if (r < 0.22) return "PULSE_SEEKER";
+      if (r < 0.34) return "TRIPLE_SEEKER";
+      if (r < 0.48) return "NITRO_CORE";
+      if (r < 0.60) return "TRIPLE_NITRO";
+      if (r < 0.72) return "RICOCHET_DISC";
+      if (r < 0.83) return "ORBITAL_SHIELD";
+      if (r < 0.91) return "PHASE_CLOAK";
       if (r < 0.96) return "GLITCH_PRISM";
       return "NOVA_OVERDRIVE";
     }
     if (rank === 3) {
-      if (canGetSaucer && r < 0.18) return "LIL_SAUCER";
-      if (r < 0.36) return "TRIPLE_NITRO";
-      if (r < 0.50) return "NITRO_CORE";
-      if (r < 0.64) return "PULSE_SEEKER";
-      if (r < 0.76) return "ORBITAL_SHIELD";
-      if (r < 0.86) return "PHASE_CLOAK";
-      if (r < 0.94) return "NOVA_OVERDRIVE";
+      if (canGetSaucer && r < 0.16) return "LIL_SAUCER";
+      if (r < 0.32) return "TRIPLE_SEEKER";
+      if (r < 0.48) return "TRIPLE_NITRO";
+      if (r < 0.60) return "NITRO_CORE";
+      if (r < 0.72) return "PULSE_SEEKER";
+      if (r < 0.82) return "ORBITAL_SHIELD";
+      if (r < 0.90) return "PHASE_CLOAK";
+      if (r < 0.96) return "NOVA_OVERDRIVE";
       return "EMP_SHOCKWAVE";
     }
-    // Rank 4+ (Underdog comeback arsenal: UFO Saucer, EMP Shockwave, Triple Nitro, Nova Overdrive, Phase Cloak)
-    if (canGetSaucer && r < 0.34) return "LIL_SAUCER";
-    if (r < 0.54) return "TRIPLE_NITRO";
-    if (r < 0.70) return "NOVA_OVERDRIVE";
-    if (r < 0.84) return "EMP_SHOCKWAVE";
-    if (r < 0.94) return "PHASE_CLOAK";
+    // Rank 4+ (Underdog comeback arsenal: UFO Saucer, Triple Seeker, Triple Nitro, Nova Overdrive, EMP Shockwave, Phase Cloak)
+    if (canGetSaucer && r < 0.30) return "LIL_SAUCER";
+    if (r < 0.46) return "TRIPLE_SEEKER";
+    if (r < 0.62) return "TRIPLE_NITRO";
+    if (r < 0.76) return "NOVA_OVERDRIVE";
+    if (r < 0.88) return "EMP_SHOCKWAVE";
+    if (r < 0.95) return "PHASE_CLOAK";
     return "ORBITAL_SHIELD";
   }
 
@@ -439,29 +443,52 @@ export class ItemManager {
     }
 
     if (item === "ORBITAL_SHIELD") {
-      if (caster.orbitalShieldCharges <= 0) {
-        // First activation: deploy 3 orbiting drones around the kart
-        caster.orbitalShieldCharges = 3;
+      // Orbiting shield drones auto-deploy on roulette completion; each press of Use Item fires 1 Ricochet Disc forward
+      const currentCharges =
+        caster.orbitalShieldCharges > 0
+          ? caster.orbitalShieldCharges
+          : Math.max(1, caster.heldItemCharges || 3);
+      const nextCharges = Math.max(0, currentCharges - 1);
+      caster.orbitalShieldCharges = nextCharges;
+      this.spawnRicochetDisc(caster, allRacers);
+      globalAiBrain.recordItemUsed(caster.racerId, false);
+      if (nextCharges > 0) {
         caster.heldItem = "ORBITAL_SHIELD";
-        caster.heldItemCharges = 3;
-        this.ensureOrbitalShieldRig(caster);
-        globalAiBrain.recordItemUsed(caster.racerId, false);
+        caster.heldItemCharges = nextCharges;
         onBannerEvent?.(
-          `${caster.name} deployed ${meta.name} (3 Orbiting Drones)!`
+          `${caster.name} launched an Orbiting Shield Drone (${nextCharges}x left)!`
         );
       } else {
-        // Subsequent activation: launch 1 orbiting drone forward as a Ricochet Disc
-        caster.orbitalShieldCharges = Math.max(0, caster.orbitalShieldCharges - 1);
-        this.spawnRicochetDisc(caster, allRacers);
-        if (caster.orbitalShieldCharges > 0) {
-          caster.heldItem = "ORBITAL_SHIELD";
-          caster.heldItemCharges = caster.orbitalShieldCharges;
-        } else {
-          caster.heldItem = null;
-          caster.heldItemCharges = 0;
-        }
+        caster.heldItem = null;
+        caster.heldItemCharges = 0;
         onBannerEvent?.(
-          `${caster.name} launched an Orbital Shield Drone forward!`
+          `${caster.name} launched final Orbiting Shield Drone!`
+        );
+      }
+      return;
+    }
+
+    if (item === "TRIPLE_SEEKER") {
+      // Orbiting homing seekers auto-deploy on roulette completion; each press of Use Item launches 1 homing Pulse Seeker
+      const currentCharges =
+        caster.tripleSeekerCharges > 0
+          ? caster.tripleSeekerCharges
+          : Math.max(1, caster.heldItemCharges || 3);
+      const nextCharges = Math.max(0, currentCharges - 1);
+      caster.tripleSeekerCharges = nextCharges;
+      this.spawnPulseSeeker(caster, allRacers);
+      globalAiBrain.recordItemUsed(caster.racerId, false);
+      if (nextCharges > 0) {
+        caster.heldItem = "TRIPLE_SEEKER";
+        caster.heldItemCharges = nextCharges;
+        onBannerEvent?.(
+          `${caster.name} launched a Homing Seeker Drone (${nextCharges}x left)!`
+        );
+      } else {
+        caster.heldItem = null;
+        caster.heldItemCharges = 0;
+        onBannerEvent?.(
+          `${caster.name} launched final Homing Seeker Drone!`
         );
       }
       return;
@@ -487,18 +514,15 @@ export class ItemManager {
         candidates.sort((a, b) => a.rank - b.rank);
         const victim = candidates[0];
         const stolen = victim.heldItem!;
-        victim.heldItem = null;
-        victim.heldItemCharges = 0;
-        victim.orbitalShieldCharges = 0;
-        caster.heldItem = stolen;
-        caster.heldItemCharges = stolen === "TRIPLE_NITRO" ? 3 : 1;
+        const stolenCharges = Math.max(1, victim.heldItemCharges || 1);
+        victim.equipPowerUpImmediate(null);
+        caster.equipPowerUpImmediate(stolen, stolenCharges);
         onBannerEvent?.(
           `${caster.name} phased into Cloak & stole ${victim.name}'s ${POWER_UP_CATALOG[stolen].name}!`
         );
       } else {
         // Fallback: synthesize a Nitro Core when no rival holds an item
-        caster.heldItem = "NITRO_CORE";
-        caster.heldItemCharges = 1;
+        caster.equipPowerUpImmediate("NITRO_CORE", 1);
         onBannerEvent?.(
           `${caster.name} activated ${meta.name} (Ghost Phase + Syphoned Nitro)!`
         );
@@ -686,6 +710,80 @@ export class ItemManager {
     };
     this.orbitalShieldRigs.set(racer.racerId, rig);
     return rig;
+  }
+
+  private ensureTripleSeekerRig(racer: KartController): OrbitalShieldRig {
+    const existing = this.tripleSeekerRigs.get(racer.racerId);
+    if (
+      existing &&
+      !existing.root.isDisposed() &&
+      existing.root.parent === racer.assembly.kartRoot
+    ) {
+      return existing;
+    }
+    if (existing && !existing.root.isDisposed()) {
+      existing.root.dispose();
+    }
+    const rigRoot = new TransformNode(`tripleSeeker_${racer.racerId}`, this.scene);
+    rigRoot.parent = racer.assembly.kartRoot;
+    rigRoot.position = new Vector3(0, 0.76, 0);
+
+    const droneMeshes: Mesh[] = [];
+    for (let i = 0; i < 3; i++) {
+      const drone = MeshBuilder.CreatePolyhedron(
+        `tripleSeekerDrone_${racer.racerId}_${i}`,
+        { type: 1, size: 0.44 },
+        this.scene
+      );
+      drone.convertToFlatShadedMesh();
+      drone.material = this.seekerMat;
+      drone.parent = rigRoot;
+      drone.isPickable = false;
+
+      const halo = MeshBuilder.CreateTorus(
+        `tripleSeekerHalo_${racer.racerId}_${i}`,
+        { diameter: 0.96, thickness: 0.09, tessellation: 14 },
+        this.scene
+      );
+      halo.material = this.novaGoldMat;
+      halo.parent = drone;
+      halo.rotation.x = Math.PI / 4;
+      halo.isPickable = false;
+
+      droneMeshes.push(drone);
+    }
+
+    const rig: OrbitalShieldRig = {
+      root: rigRoot,
+      droneMeshes,
+      orbitAngle: 0,
+    };
+    this.tripleSeekerRigs.set(racer.racerId, rig);
+    return rig;
+  }
+
+  private tryConsumeOrbitingDroneBlock(
+    racer: KartController
+  ): "ORBITAL_SHIELD" | "TRIPLE_SEEKER" | null {
+    if (racer.orbitalShieldCharges > 0) {
+      racer.orbitalShieldCharges = Math.max(0, racer.orbitalShieldCharges - 1);
+      if (racer.heldItem === "ORBITAL_SHIELD") {
+        racer.heldItemCharges = racer.orbitalShieldCharges;
+        if (racer.orbitalShieldCharges <= 0) racer.heldItem = null;
+      }
+      globalAiBrain.recordDefensiveBlock(racer.racerId);
+      return "ORBITAL_SHIELD";
+    }
+    if (racer.tripleSeekerCharges > 0) {
+      racer.tripleSeekerCharges = Math.max(0, racer.tripleSeekerCharges - 1);
+      if (racer.heldItem === "TRIPLE_SEEKER") {
+        racer.heldItemCharges = racer.tripleSeekerCharges;
+        if (racer.tripleSeekerCharges <= 0) racer.heldItem = null;
+      }
+      globalAiBrain.recordDefensiveBlock(racer.racerId);
+      return "TRIPLE_SEEKER";
+    }
+    return null;
   }
 
   private ensureTripleNitroRig(racer: KartController): TripleNitroRig {
@@ -1358,7 +1456,85 @@ export class ItemManager {
         cloakShell.setEnabled(false);
       }
 
-      // 2d. Orbital Shield Drones (orbit + rival bump collision)
+      // Helper to check if any active orbiting drone (or the 2.25m orbital ring perimeter) contacts a rival kart
+      const checkOrbitingRigContact = (
+        rig: OrbitalShieldRig,
+        activeCharges: number,
+        radius: number,
+        consumeCharge: () => void,
+        droneLabel: string
+      ) => {
+        if (activeCharges <= 0) return;
+        for (const other of racers) {
+          if (
+            other.racerId === racer.racerId ||
+            other.spinOutTimer > 0 ||
+            other.phaseCloakTimer > 0
+          ) {
+            continue;
+          }
+          const dx = other.position.x - racer.position.x;
+          const dz = other.position.z - racer.position.z;
+          const centerDistSq = dx * dx + dz * dz;
+
+          // Check 1: Direct contact with the spinning orbital ring perimeter (2.25m orbit + 1.30m kart hull = 3.55m)
+          let hit = centerDistSq <= 3.55 * 3.55;
+
+          // Check 2: Exact 3D world-space contact with any individual orbiting drone mesh (<= 2.15m)
+          if (!hit) {
+            for (let d = 0; d < Math.min(3, activeCharges); d++) {
+              const drone = rig.droneMeshes[d];
+              if (!drone || !drone.isEnabled()) continue;
+              const angle =
+                rig.orbitAngle +
+                (d * Math.PI * 2) / Math.max(1, activeCharges) +
+                racer.headingYaw;
+              const orbX = racer.position.x + Math.cos(angle) * radius;
+              const orbZ = racer.position.z + Math.sin(angle) * radius;
+              const odx = other.position.x - orbX;
+              const odz = other.position.z - orbZ;
+              if (odx * odx + odz * odz <= 2.15 * 2.15) {
+                hit = true;
+                break;
+              }
+            }
+          }
+
+          if (hit) {
+            consumeCharge();
+
+            // Separate karts & apply outward knockback so the orb carrier is never Juggernaut-bounced
+            const centerDist = Math.sqrt(centerDistSq);
+            const nx = centerDist > 1e-4 ? dx / centerDist : Math.sin(racer.headingYaw);
+            const nz = centerDist > 1e-4 ? dz / centerDist : Math.cos(racer.headingYaw);
+
+            racer.collisionCooldown = Math.max(racer.collisionCooldown, 0.45);
+            other.collisionCooldown = Math.max(other.collisionCooldown, 0.45);
+
+            if (other.novaOverdriveTimer > 0) {
+              onBannerEvent?.(
+                `${other.name}'s Nova Overdrive shattered ${racer.name}'s ${droneLabel}!`
+              );
+            } else {
+              if (centerDist < 3.25) {
+                const pushDist = 3.25 - centerDist;
+                other.position.x += nx * pushDist;
+                other.position.z += nz * pushDist;
+                other.assembly.kartRoot.position.copyFrom(other.position);
+              }
+              other.knockVelocity.set(nx * 22.0, 0, nz * 22.0);
+              other.triggerSpinOut(1.15, 3.8);
+              globalAiBrain.recordItemHitLanded(racer.racerId);
+              onBannerEvent?.(
+                `💥 ${racer.name}'s orbiting ${droneLabel} wiped out ${other.name}!`
+              );
+            }
+            break;
+          }
+        }
+      };
+
+      // 2d. Orbital Shield Drones (3x orbiting defense/ricochet drones: auto-orbit + rival contact wipeout)
       const shieldRig = this.orbitalShieldRigs.get(racer.racerId);
       if (racer.orbitalShieldCharges > 0) {
         const activeShield =
@@ -1369,7 +1545,7 @@ export class ItemManager {
             : shieldRig;
         activeShield.root.setEnabled(true);
         activeShield.orbitAngle += dt * 4.8;
-        const radius = 2.15;
+        const radius = 2.25;
         for (let d = 0; d < 3; d++) {
           const drone = activeShield.droneMeshes[d];
           if (d < racer.orbitalShieldCharges) {
@@ -1389,18 +1565,11 @@ export class ItemManager {
           }
         }
 
-        // Check contact between Orbital Shield and rival karts
-        for (const other of racers) {
-          if (
-            other.racerId === racer.racerId ||
-            other.spinOutTimer > 0 ||
-            other.phaseCloakTimer > 0
-          ) {
-            continue;
-          }
-          const dx = other.position.x - racer.position.x;
-          const dz = other.position.z - racer.position.z;
-          if (dx * dx + dz * dz <= 2.45 * 2.45) {
+        checkOrbitingRigContact(
+          activeShield,
+          racer.orbitalShieldCharges,
+          radius,
+          () => {
             racer.orbitalShieldCharges = Math.max(
               0,
               racer.orbitalShieldCharges - 1
@@ -1413,22 +1582,70 @@ export class ItemManager {
                 racer.heldItemCharges = 0;
               }
             }
-            if (other.novaOverdriveTimer <= 0) {
-              other.triggerSpinOut(0.95, 3.2);
-              globalAiBrain.recordItemHitLanded(racer.racerId);
-              onBannerEvent?.(
-                `${racer.name}'s Orbital Shield Drone blasted ${other.name}!`
-              );
-            }
-            if (racer.orbitalShieldCharges <= 0) break;
-          }
-        }
+          },
+          "Orbital Shield Drone"
+        );
       } else if (shieldRig && !shieldRig.root.isDisposed()) {
         shieldRig.root.setEnabled(false);
       }
+
+      // 2e. Triple Seeker Swarm (3x orbiting homing seeker drones: auto-orbit + rival contact wipeout + homing fire)
+      const seekerRig = this.tripleSeekerRigs.get(racer.racerId);
+      if (racer.tripleSeekerCharges > 0) {
+        const activeSeekers =
+          !seekerRig ||
+          seekerRig.root.isDisposed() ||
+          seekerRig.root.parent !== racer.assembly.kartRoot
+            ? this.ensureTripleSeekerRig(racer)
+            : seekerRig;
+        activeSeekers.root.setEnabled(true);
+        activeSeekers.orbitAngle += dt * 5.2;
+        const radius = 2.25;
+        for (let d = 0; d < 3; d++) {
+          const drone = activeSeekers.droneMeshes[d];
+          if (d < racer.tripleSeekerCharges) {
+            drone.setEnabled(true);
+            const angle =
+              activeSeekers.orbitAngle +
+              (d * Math.PI * 2) / Math.max(1, racer.tripleSeekerCharges);
+            drone.position.set(
+              Math.cos(angle) * radius,
+              Math.sin(this.elapsedSec * 5.6 + d * 2.1) * 0.16,
+              Math.sin(angle) * radius
+            );
+            drone.rotation.y += dt * 7.0;
+            drone.rotation.z += dt * 4.0;
+          } else {
+            drone.setEnabled(false);
+          }
+        }
+
+        checkOrbitingRigContact(
+          activeSeekers,
+          racer.tripleSeekerCharges,
+          radius,
+          () => {
+            racer.tripleSeekerCharges = Math.max(
+              0,
+              racer.tripleSeekerCharges - 1
+            );
+            if (racer.heldItem === "TRIPLE_SEEKER") {
+              if (racer.tripleSeekerCharges > 0) {
+                racer.heldItemCharges = racer.tripleSeekerCharges;
+              } else {
+                racer.heldItem = null;
+                racer.heldItemCharges = 0;
+              }
+            }
+          },
+          "Tri-Seeker Drone"
+        );
+      } else if (seekerRig && !seekerRig.root.isDisposed()) {
+        seekerRig.root.setEnabled(false);
+      }
     }
 
-    // 2e. Update Expanding EMP Shockwave Rings
+    // 2f. Update Expanding EMP Shockwave Rings
     for (let i = this.empWaves.length - 1; i >= 0; i--) {
       const wave = this.empWaves[i];
       wave.lifeTimer -= dt;
@@ -1469,25 +1686,23 @@ export class ItemManager {
             onBannerEvent?.(
               `${racer.name}'s Nova Overdrive shattered a Cryo Mine!`
             );
-          } else if (racer.orbitalShieldCharges > 0) {
-            racer.orbitalShieldCharges = Math.max(
-              0,
-              racer.orbitalShieldCharges - 1
-            );
-            if (racer.heldItem === "ORBITAL_SHIELD") {
-              racer.heldItemCharges = racer.orbitalShieldCharges;
-              if (racer.orbitalShieldCharges <= 0) racer.heldItem = null;
-            }
-            globalAiBrain.recordDefensiveBlock(racer.racerId);
-            onBannerEvent?.(
-              `${racer.name}'s Orbital Shield neutralized a Cryo Mine!`
-            );
           } else {
-            racer.triggerSpinOut(1.1, 2.5);
-            if (mine.ownerId !== racer.racerId) {
-              globalAiBrain.recordItemHitLanded(mine.ownerId);
+            const blockedBy = this.tryConsumeOrbitingDroneBlock(racer);
+            if (blockedBy) {
+              const label =
+                blockedBy === "TRIPLE_SEEKER"
+                  ? "Tri-Seeker Swarm"
+                  : "Orbital Shield";
+              onBannerEvent?.(
+                `${racer.name}'s ${label} neutralized a Cryo Mine!`
+              );
+            } else {
+              racer.triggerSpinOut(1.1, 2.5);
+              if (mine.ownerId !== racer.racerId) {
+                globalAiBrain.recordItemHitLanded(mine.ownerId);
+              }
+              onBannerEvent?.(`${racer.name} hit a Cryo Mine (720° Spin-Out)!`);
             }
-            onBannerEvent?.(`${racer.name} hit a Cryo Mine (720° Spin-Out)!`);
           }
           triggered = true;
           break;
@@ -1531,27 +1746,25 @@ export class ItemManager {
             onBannerEvent?.(
               `${racer.name}'s Nova Overdrive smashed a Prank Glitch Prism!`
             );
-          } else if (racer.orbitalShieldCharges > 0) {
-            racer.orbitalShieldCharges = Math.max(
-              0,
-              racer.orbitalShieldCharges - 1
-            );
-            if (racer.heldItem === "ORBITAL_SHIELD") {
-              racer.heldItemCharges = racer.orbitalShieldCharges;
-              if (racer.orbitalShieldCharges <= 0) racer.heldItem = null;
-            }
-            globalAiBrain.recordDefensiveBlock(racer.racerId);
-            onBannerEvent?.(
-              `${racer.name}'s Orbital Shield zapped a Prank Glitch Prism!`
-            );
           } else {
-            racer.triggerSpinOut(1.3, 3.8);
-            if (prism.ownerId !== racer.racerId) {
-              globalAiBrain.recordItemHitLanded(prism.ownerId);
+            const blockedBy = this.tryConsumeOrbitingDroneBlock(racer);
+            if (blockedBy) {
+              const label =
+                blockedBy === "TRIPLE_SEEKER"
+                  ? "Tri-Seeker Swarm"
+                  : "Orbital Shield";
+              onBannerEvent?.(
+                `${racer.name}'s ${label} zapped a Prank Glitch Prism!`
+              );
+            } else {
+              racer.triggerSpinOut(1.3, 3.8);
+              if (prism.ownerId !== racer.racerId) {
+                globalAiBrain.recordItemHitLanded(prism.ownerId);
+              }
+              onBannerEvent?.(
+                `${racer.name} fell for a Prank Glitch Prism (720° Spin-Out)!`
+              );
             }
-            onBannerEvent?.(
-              `${racer.name} fell for a Prank Glitch Prism (720° Spin-Out)!`
-            );
           }
           triggered = true;
           break;
@@ -1565,6 +1778,10 @@ export class ItemManager {
     }
 
     // 4. Update Active Projectiles (Pulse Seeker, Ricochet Disc & Lil' Saucer UFO Rocket)
+    const totalTrackLen = Math.max(200, this.track.totalTrackLength);
+    const saucerLookAheadDeltaT = Math.min(0.035, Math.max(0.006, 26 / totalTrackLen));
+    const seekerLookAheadDeltaT = Math.min(0.03, Math.max(0.005, 22 / totalTrackLen));
+
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const proj = this.projectiles[i];
       proj.lifeTimer -= dt;
@@ -1584,7 +1801,7 @@ export class ItemManager {
         );
         const query = this.track.queryClosestTrackPoint(proj.position);
         const splineAhead = this.track.getPointAtNormalizedT(
-          (query.normalizedSplineT + 0.032) % 1.0,
+          (query.normalizedSplineT + saucerLookAheadDeltaT) % 1.0,
           0
         );
 
@@ -1630,7 +1847,7 @@ export class ItemManager {
         );
         const query = this.track.queryClosestTrackPoint(proj.position);
         const splineAhead = this.track.getPointAtNormalizedT(
-          (query.normalizedSplineT + 0.025) % 1.0,
+          (query.normalizedSplineT + seekerLookAheadDeltaT) % 1.0,
           0
         );
 
@@ -1762,20 +1979,16 @@ export class ItemManager {
           if (racer.novaOverdriveTimer > 0) {
             onBannerEvent?.(`${racer.name} deflected ${projLabel}!`);
           } else if (
-            racer.orbitalShieldCharges > 0 &&
+            (racer.orbitalShieldCharges > 0 || racer.tripleSeekerCharges > 0) &&
             proj.type !== "LIL_SAUCER"
           ) {
-            racer.orbitalShieldCharges = Math.max(
-              0,
-              racer.orbitalShieldCharges - 1
-            );
-            if (racer.heldItem === "ORBITAL_SHIELD") {
-              racer.heldItemCharges = racer.orbitalShieldCharges;
-              if (racer.orbitalShieldCharges <= 0) racer.heldItem = null;
-            }
-            globalAiBrain.recordDefensiveBlock(racer.racerId);
+            const blockedBy = this.tryConsumeOrbitingDroneBlock(racer);
+            const shieldLabel =
+              blockedBy === "TRIPLE_SEEKER"
+                ? "Tri-Seeker Swarm"
+                : "Orbital Shield";
             onBannerEvent?.(
-              `${racer.name}'s Orbital Shield intercepted ${projLabel}!`
+              `${racer.name}'s ${shieldLabel} intercepted ${projLabel}!`
             );
           } else if (proj.type === "LIL_SAUCER") {
             if (racer.spinOutTimer <= 0) {

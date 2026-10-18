@@ -97,6 +97,7 @@ export type PowerUpType =
   | "NITRO_CORE"
   | "TRIPLE_NITRO"
   | "PULSE_SEEKER"
+  | "TRIPLE_SEEKER"
   | "RICOCHET_DISC"
   | "ORBITAL_SHIELD"
   | "CRYO_MINE"
@@ -367,6 +368,7 @@ export interface HudTelemetry {
   heldItem: PowerUpType | null;
   heldItemCharges?: number;
   orbitalShieldCharges?: number;
+  tripleSeekerCharges?: number;
   phaseCloakRemaining?: number;
   empShrinkRemaining?: number;
   rouletteSpinning: boolean;
@@ -599,6 +601,9 @@ export interface KartNetState {
   spinOutTimer: number;
   wobbleTimer: number;
   heldItem: PowerUpType | null;
+  heldItemCharges?: number;
+  orbitalShieldCharges?: number;
+  tripleSeekerCharges?: number;
   rouletteTimer: number;
   lap: number;
   maxLapReached: number;

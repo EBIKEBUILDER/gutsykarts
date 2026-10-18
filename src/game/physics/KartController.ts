@@ -110,6 +110,7 @@ export class KartController implements CollidableKartBody {
   public heldItem: PowerUpType | null = null;
   public heldItemCharges = 0;
   public orbitalShieldCharges = 0;
+  public tripleSeekerCharges = 0;
   public incomingThreatCount = 0;
   public rouletteTimer = 0;
   public roulettePreviewItem: PowerUpType | null = null;
@@ -213,6 +214,32 @@ export class KartController implements CollidableKartBody {
 
   public get rightVector(): Vector3 {
     return new Vector3(Math.cos(this.headingYaw), 0, -Math.sin(this.headingYaw));
+  }
+
+  public equipPowerUpImmediate(
+    item: PowerUpType | null,
+    chargesOverride?: number
+  ): void {
+    this.rouletteTimer = 0;
+    this.roulettePreviewItem = null;
+    this.pendingAwardedItem = null;
+    this.heldItem = item;
+    if (!item) {
+      this.heldItemCharges = 0;
+      this.orbitalShieldCharges = 0;
+      this.tripleSeekerCharges = 0;
+      return;
+    }
+    const defaultCharges =
+      item === "TRIPLE_NITRO" ||
+      item === "ORBITAL_SHIELD" ||
+      item === "TRIPLE_SEEKER"
+        ? 3
+        : 1;
+    const charges = Math.max(1, chargesOverride ?? defaultCharges);
+    this.heldItemCharges = charges;
+    this.orbitalShieldCharges = item === "ORBITAL_SHIELD" ? charges : 0;
+    this.tripleSeekerCharges = item === "TRIPLE_SEEKER" ? charges : 0;
   }
 
   public awardItemWithRoulette(item: PowerUpType): void {
@@ -337,12 +364,7 @@ export class KartController implements CollidableKartBody {
       globalAiBrain.recordDefensiveBlock(this.racerId);
       return false;
     }
-    this.heldItem = null;
-    this.heldItemCharges = 0;
-    this.orbitalShieldCharges = 0;
-    this.pendingAwardedItem = null;
-    this.rouletteTimer = 0;
-    this.roulettePreviewItem = null;
+    this.equipPowerUpImmediate(null);
     this.empShrinkTimer = 4.5;
     this.combatRecoveryTimer = Math.max(this.combatRecoveryTimer, 5.0);
     this.triggerSpinOut(0.65, 2.2);
@@ -1253,40 +1275,51 @@ export class KartController implements CollidableKartBody {
             nearUpcomingItemBox ||
             patienceExpired;
         } else if (item === "ORBITAL_SHIELD") {
-          if (this.orbitalShieldCharges <= 0) {
-            // Deploy the 3 orbiting drones into orbit immediately for protection!
-            useItemJustPressed = true;
-          } else {
-            // Drones are already orbiting: keep at least 1 drone for defense when in 1st place or under threat,
-            // or fire a drone forward like a Ricochet Disc when a rival is in our forward cone!
-            const canSpareOffensiveDrone =
-              nearUpcomingItemBox ||
-              (this.orbitalShieldCharges >= 2 && !urgentThreat) ||
-              (this.rank > 1 &&
-                !urgentThreat &&
-                this.aiItemUseDelay < -1.4 * patienceScale);
+          // 3 emerald drones orbit immediately upon roulette completion:
+          // Keep at least 1 drone for defense when in 1st place or under threat (unless near an item box),
+          // or fire a drone forward like a Ricochet Disc when a rival is in our forward cone!
+          const canSpareOffensiveDrone =
+            nearUpcomingItemBox ||
+            (this.orbitalShieldCharges >= 2 && !urgentThreat) ||
+            (this.rank > 1 &&
+              !urgentThreat &&
+              this.aiItemUseDelay < -1.4 * patienceScale);
 
-            if (canSpareOffensiveDrone && allRacers && allRacers.length > 1) {
-              let hasTargetInCone = nearUpcomingItemBox;
-              if (!hasTargetInCone) {
-                for (const other of allRacers) {
-                  if (other.racerId === this.racerId) continue;
-                  const toOther = other.position.subtract(this.position);
-                  toOther.y = 0;
-                  const d = toOther.length();
-                  if (
-                    d > 3 &&
-                    d < 88 &&
-                    Vector3.Dot(fwd, toOther.scale(1 / d)) > 0.74
-                  ) {
-                    hasTargetInCone = true;
-                    break;
-                  }
+          if (canSpareOffensiveDrone && allRacers && allRacers.length > 1) {
+            let hasTargetInCone = nearUpcomingItemBox;
+            if (!hasTargetInCone) {
+              for (const other of allRacers) {
+                if (other.racerId === this.racerId) continue;
+                const toOther = other.position.subtract(this.position);
+                toOther.y = 0;
+                const d = toOther.length();
+                if (
+                  d > 3 &&
+                  d < 88 &&
+                  Vector3.Dot(fwd, toOther.scale(1 / d)) > 0.74
+                ) {
+                  hasTargetInCone = true;
+                  break;
                 }
               }
-              useItemJustPressed = hasTargetInCone;
             }
+            useItemJustPressed = hasTargetInCone;
           }
+        } else if (item === "TRIPLE_SEEKER") {
+          // 3 crimson homing seekers orbit immediately upon roulette completion:
+          // Keep 1 seeker in orbit if in 1st place or under threat (unless near an item box),
+          // and launch homing seekers when the road ahead is reasonably open!
+          const canFireHomingSeeker =
+            nearUpcomingItemBox ||
+            (this.tripleSeekerCharges >= 2 && !urgentThreat) ||
+            (this.rank > 1 &&
+              !urgentThreat &&
+              this.aiItemUseDelay < -1.1 * patienceScale);
+          useItemJustPressed =
+            canFireHomingSeeker &&
+            (curveDot > 0.7 ||
+              nearUpcomingItemBox ||
+              this.aiItemUseDelay < -1.6 * patienceScale);
         } else if (item === "RICOCHET_DISC") {
           const maxHoldWait =
             (isProOrLearning ? -2.0 : -1.3) * patienceScale;
@@ -1516,6 +1549,7 @@ export class KartController implements CollidableKartBody {
               "NITRO_CORE",
               "TRIPLE_NITRO",
               "PULSE_SEEKER",
+              "TRIPLE_SEEKER",
               "RICOCHET_DISC",
               "ORBITAL_SHIELD",
               "CRYO_MINE",
@@ -1536,16 +1570,7 @@ export class KartController implements CollidableKartBody {
       const cycleIdx = Math.floor(this.rouletteTimer * 14) % allItems.length;
       this.roulettePreviewItem = allItems[cycleIdx];
       if (this.rouletteTimer <= 0) {
-        this.rouletteTimer = 0;
-        this.heldItem = this.pendingAwardedItem;
-        this.heldItemCharges =
-          this.heldItem === "TRIPLE_NITRO" || this.heldItem === "ORBITAL_SHIELD"
-            ? 3
-            : this.heldItem
-            ? 1
-            : 0;
-        this.roulettePreviewItem = null;
-        this.pendingAwardedItem = null;
+        this.equipPowerUpImmediate(this.pendingAwardedItem);
       }
     }
 
@@ -1566,15 +1591,21 @@ export class KartController implements CollidableKartBody {
           this.aiItemUseDelay = 0.65;
         }
         onUseItem?.(this, itemToFire);
-      } else if (itemToFire === "ORBITAL_SHIELD") {
-        // ItemManager handles deploying the 3 drones on first press and firing 1 drone per subsequent press
+      } else if (
+        itemToFire === "ORBITAL_SHIELD" ||
+        itemToFire === "TRIPLE_SEEKER"
+      ) {
+        // ItemManager fires 1 orbiting orb/seeker per press and decrements remaining charges
         onUseItem?.(this, itemToFire);
-        if (!this.isPlayer && this.heldItem === "ORBITAL_SHIELD") {
-          this.aiItemUseDelay = 0.75;
+        if (
+          !this.isPlayer &&
+          (this.heldItem === "ORBITAL_SHIELD" ||
+            this.heldItem === "TRIPLE_SEEKER")
+        ) {
+          this.aiItemUseDelay = 0.72;
         }
       } else {
-        this.heldItem = null;
-        this.heldItemCharges = 0;
+        this.equipPowerUpImmediate(null);
         onUseItem?.(this, itemToFire);
       }
     }
@@ -3017,6 +3048,9 @@ export class KartController implements CollidableKartBody {
       spinOutTimer: Number(this.spinOutTimer.toFixed(2)),
       wobbleTimer: Number(this.wobbleTimer.toFixed(2)),
       heldItem: this.heldItem,
+      heldItemCharges: this.heldItemCharges,
+      orbitalShieldCharges: this.orbitalShieldCharges,
+      tripleSeekerCharges: this.tripleSeekerCharges,
       rouletteTimer: Number(this.rouletteTimer.toFixed(2)),
       lap: this.lap,
       maxLapReached: this.maxLapReached,
@@ -3081,6 +3115,21 @@ export class KartController implements CollidableKartBody {
     this.spinOutTimer = state.spinOutTimer;
     this.wobbleTimer = state.wobbleTimer;
     this.heldItem = state.heldItem;
+    this.heldItemCharges =
+      state.heldItemCharges ??
+      (state.heldItem === "TRIPLE_NITRO" ||
+      state.heldItem === "ORBITAL_SHIELD" ||
+      state.heldItem === "TRIPLE_SEEKER"
+        ? 3
+        : state.heldItem
+        ? 1
+        : 0);
+    this.orbitalShieldCharges =
+      state.orbitalShieldCharges ??
+      (state.heldItem === "ORBITAL_SHIELD" ? this.heldItemCharges : 0);
+    this.tripleSeekerCharges =
+      state.tripleSeekerCharges ??
+      (state.heldItem === "TRIPLE_SEEKER" ? this.heldItemCharges : 0);
     this.rouletteTimer = state.rouletteTimer;
     this.lap = state.lap;
     this.maxLapReached = state.maxLapReached;
