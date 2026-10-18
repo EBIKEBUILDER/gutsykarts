@@ -33,6 +33,7 @@ interface ActiveProjectile {
   ringMesh: Mesh;
   position: Vector3;
   velocity: Vector3;
+  speed: number;
   splineT: number;
   bouncesRemaining: number;
   lifeTimer: number;
@@ -45,6 +46,10 @@ interface DeployedCryoMine {
   position: Vector3;
   armTimer: number;
   lifeTimer: number;
+  lobTimer?: number;
+  lobDuration?: number;
+  lobStartPos?: Vector3;
+  lobTargetPos?: Vector3;
 }
 
 interface DeployedGlitchPrism {
@@ -57,6 +62,10 @@ interface DeployedGlitchPrism {
   armTimer: number;
   lifeTimer: number;
   phaseOffset: number;
+  lobTimer?: number;
+  lobDuration?: number;
+  lobStartPos?: Vector3;
+  lobTargetPos?: Vector3;
 }
 
 interface ActiveEmpWaveRing {
@@ -561,21 +570,25 @@ export class ItemManager {
           : Math.max(1, caster.heldItemCharges || 3);
       const nextCharges = Math.max(0, currentCharges - 1);
       caster.tripleCryoMineCharges = nextCharges;
-      this.deployCryoMine(caster);
+      const throwForward =
+        caster.lastItemAimDir === 1 &&
+        (caster.isPlayer || caster.incomingThreatCount <= 0);
+      this.deployCryoMine(caster, throwForward, allRacers);
       globalAiBrain.recordItemUsed(caster.racerId, false);
-      if (caster.incomingThreatCount > 0) {
+      if (!throwForward && caster.incomingThreatCount > 0) {
         globalAiBrain.recordDefensiveBlock(caster.racerId);
       }
+      const actionVerb = throwForward ? "lobbed" : "dropped";
       if (nextCharges > 0) {
         caster.heldItem = "TRIPLE_CRYO_MINE";
         caster.heldItemCharges = nextCharges;
         onBannerEvent?.(
-          `${caster.name} dropped a Cryo Mine (${nextCharges}x left)!`
+          `${caster.name} ${actionVerb} a Cryo Mine (${nextCharges}x left)!`
         );
       } else {
         caster.heldItem = null;
         caster.heldItemCharges = 0;
-        onBannerEvent?.(`${caster.name} dropped final Cryo Mine!`);
+        onBannerEvent?.(`${caster.name} ${actionVerb} final Cryo Mine!`);
       }
       return;
     }
@@ -587,26 +600,28 @@ export class ItemManager {
     }
 
     if (item === "ORBITAL_SHIELD") {
-      // Orbiting shield drones auto-deploy on roulette completion; each press of Use Item fires 1 Ricochet Disc forward
+      // Orbiting shield drones auto-deploy on roulette completion; each press of Use Item fires 1 Ricochet Disc forward or backward
       const currentCharges =
         caster.orbitalShieldCharges > 0
           ? caster.orbitalShieldCharges
           : Math.max(1, caster.heldItemCharges || 3);
       const nextCharges = Math.max(0, currentCharges - 1);
       caster.orbitalShieldCharges = nextCharges;
+      const fireBackward = caster.lastItemAimDir === -1;
       this.spawnRicochetDisc(caster, allRacers);
       globalAiBrain.recordItemUsed(caster.racerId, false);
+      const dirSuffix = fireBackward ? " backward" : "";
       if (nextCharges > 0) {
         caster.heldItem = "ORBITAL_SHIELD";
         caster.heldItemCharges = nextCharges;
         onBannerEvent?.(
-          `${caster.name} launched an Orbiting Shield Drone (${nextCharges}x left)!`
+          `${caster.name} launched an Orbiting Shield Drone${dirSuffix} (${nextCharges}x left)!`
         );
       } else {
         caster.heldItem = null;
         caster.heldItemCharges = 0;
         onBannerEvent?.(
-          `${caster.name} launched final Orbiting Shield Drone!`
+          `${caster.name} launched final Orbiting Shield Drone${dirSuffix}!`
         );
       }
       return;
@@ -691,29 +706,48 @@ export class ItemManager {
     }
 
     if (item === "CRYO_MINE") {
-      this.deployCryoMine(caster);
+      const throwForward =
+        caster.lastItemAimDir === 1 &&
+        (caster.isPlayer || caster.incomingThreatCount <= 0);
+      this.deployCryoMine(caster, throwForward, allRacers);
       globalAiBrain.recordItemUsed(caster.racerId, false);
-      if (caster.incomingThreatCount > 0) {
+      if (!throwForward && caster.incomingThreatCount > 0) {
         globalAiBrain.recordDefensiveBlock(caster.racerId);
       }
-      onBannerEvent?.(`${caster.name} dropped a ${meta.name}!`);
+      onBannerEvent?.(
+        throwForward
+          ? `${caster.name} lobbed a ${meta.name} ahead!`
+          : `${caster.name} dropped a ${meta.name}!`
+      );
       return;
     }
 
     if (item === "GLITCH_PRISM") {
-      this.deployGlitchPrism(caster);
+      const throwForward =
+        caster.lastItemAimDir === 1 &&
+        (caster.isPlayer || caster.incomingThreatCount <= 0);
+      this.deployGlitchPrism(caster, throwForward, allRacers);
       globalAiBrain.recordItemUsed(caster.racerId, false);
-      if (caster.incomingThreatCount > 0) {
+      if (!throwForward && caster.incomingThreatCount > 0) {
         globalAiBrain.recordDefensiveBlock(caster.racerId);
       }
-      onBannerEvent?.(`${caster.name} planted a ${meta.name} decoy!`);
+      onBannerEvent?.(
+        throwForward
+          ? `${caster.name} lobbed a ${meta.name} decoy ahead!`
+          : `${caster.name} planted a ${meta.name} decoy!`
+      );
       return;
     }
 
     if (item === "RICOCHET_DISC") {
+      const fireBackward = caster.lastItemAimDir === -1;
       this.spawnRicochetDisc(caster, allRacers);
       globalAiBrain.recordItemUsed(caster.racerId, false);
-      onBannerEvent?.(`${caster.name} fired a ${meta.name}!`);
+      onBannerEvent?.(
+        fireBackward
+          ? `${caster.name} fired a ${meta.name} backward!`
+          : `${caster.name} fired a ${meta.name}!`
+      );
       return;
     }
 
@@ -1227,15 +1261,94 @@ export class ItemManager {
     );
   }
 
-  private deployCryoMine(caster: KartController): void {
+  private computeForwardLobTarget(
+    caster: KartController,
+    baseDist: number,
+    maxRoadPad: number,
+    allRacers: KartController[]
+  ): { landingPos: Vector3; roadY: number } {
+    const throwDistance = baseDist + Math.max(0, caster.forwardSpeed) * 0.22;
+    let rawTarget = caster.position.add(
+      caster.forwardVector.scale(throwDistance)
+    );
+
+    // On HARD & SELF_LEARNING, lead the forward lob toward where a rival ahead will be in 0.52s
+    const isProOrLearning =
+      !caster.isPlayer &&
+      (caster.aiDifficulty === "HARD" || caster.aiDifficulty === "SELF_LEARNING");
+    if (isProOrLearning && allRacers.length > 1) {
+      let bestRival: KartController | null = null;
+      let bestDist = 42.0;
+      for (const r of allRacers) {
+        if (r.racerId === caster.racerId) continue;
+        const toR = r.position.subtract(caster.position);
+        toR.y = 0;
+        const d = toR.length();
+        if (d < 8 || d > bestDist) continue;
+        if (Vector3.Dot(caster.forwardVector, toR.scale(1 / d)) > 0.72) {
+          bestDist = d;
+          bestRival = r;
+        }
+      }
+      if (bestRival) {
+        const predicted = bestRival.position.add(
+          bestRival.velocity.scale(0.52 * 0.85)
+        );
+        const toPred = predicted.subtract(caster.position);
+        toPred.y = 0;
+        const predDist = Math.max(
+          16.0,
+          Math.min(throwDistance + 10.0, toPred.length())
+        );
+        if (toPred.lengthSquared() > 1e-4) {
+          toPred.normalize();
+          rawTarget = caster.position.add(toPred.scale(predDist));
+        }
+      }
+    }
+
+    const targetQuery = this.track.queryClosestTrackPoint(rawTarget);
+    const maxLat =
+      (targetQuery.localRoadHalfWidth || this.track.roadHalfWidth) + maxRoadPad;
+    let landingPos: Vector3;
+    if (targetQuery.horizontalDistance > maxLat) {
+      const sign = targetQuery.signedLateralOffset >= 0 ? 1 : -1;
+      landingPos = targetQuery.closestPoint.add(
+        targetQuery.binormal.scale(sign * maxLat)
+      );
+    } else {
+      landingPos = rawTarget.clone();
+    }
+    return { landingPos, roadY: targetQuery.roadY };
+  }
+
+  private deployCryoMine(
+    caster: KartController,
+    throwForward = false,
+    allRacers: KartController[] = []
+  ): void {
     const id = `mine_${this.nextEntityId++}`;
-    const dropPos = caster.position
-      .subtract(caster.forwardVector.scale(3.1))
-      .add(new Vector3(0, 0.45, 0));
+    let startPos: Vector3;
+    let landingPos: Vector3;
+
+    if (throwForward) {
+      startPos = caster.position
+        .add(caster.forwardVector.scale(2.2))
+        .add(new Vector3(0, 1.05, 0));
+      const lob = this.computeForwardLobTarget(caster, 24.0, 1.4, allRacers);
+      landingPos = lob.landingPos;
+      landingPos.y = lob.roadY + 0.45;
+    } else {
+      const rearPos = caster.position.subtract(caster.forwardVector.scale(3.1));
+      const groundQuery = this.track.queryClosestTrackPoint(rearPos);
+      landingPos = rearPos.clone();
+      landingPos.y = groundQuery.roadY + 0.45;
+      startPos = landingPos.clone();
+    }
 
     const node = new TransformNode(id, this.scene);
     node.parent = this.root;
-    node.position.copyFrom(dropPos);
+    node.position.copyFrom(startPos);
 
     const tetra = MeshBuilder.CreatePolyhedron(
       `${id}_tetra`,
@@ -1261,25 +1374,43 @@ export class ItemManager {
       id,
       ownerId: caster.racerId,
       root: node,
-      position: dropPos,
-      armTimer: 0.25,
+      position: landingPos.clone(),
+      armTimer: throwForward ? 0.52 : 0.22,
       lifeTimer: 28.0,
+      lobTimer: throwForward ? 0 : undefined,
+      lobDuration: throwForward ? 0.52 : undefined,
+      lobStartPos: throwForward ? startPos : undefined,
+      lobTargetPos: throwForward ? landingPos : undefined,
     });
   }
 
-  private deployGlitchPrism(caster: KartController): void {
+  private deployGlitchPrism(
+    caster: KartController,
+    throwForward = false,
+    allRacers: KartController[] = []
+  ): void {
     const id = `glitchPrism_${this.nextEntityId++}`;
-    const groundQuery = this.track.queryClosestTrackPoint(
-      caster.position.subtract(caster.forwardVector.scale(3.2))
-    );
-    const basePos = caster.position
-      .subtract(caster.forwardVector.scale(3.2))
-      .clone();
-    basePos.y = groundQuery.roadY + 1.45;
+    let startPos: Vector3;
+    let basePos: Vector3;
+
+    if (throwForward) {
+      startPos = caster.position
+        .add(caster.forwardVector.scale(2.2))
+        .add(new Vector3(0, 1.35, 0));
+      const lob = this.computeForwardLobTarget(caster, 25.0, 1.2, allRacers);
+      basePos = lob.landingPos;
+      basePos.y = lob.roadY + 1.45;
+    } else {
+      const rearPos = caster.position.subtract(caster.forwardVector.scale(3.2));
+      const groundQuery = this.track.queryClosestTrackPoint(rearPos);
+      basePos = rearPos.clone();
+      basePos.y = groundQuery.roadY + 1.45;
+      startPos = basePos.clone();
+    }
 
     const node = new TransformNode(id, this.scene);
     node.parent = this.root;
-    node.position.copyFrom(basePos);
+    node.position.copyFrom(startPos);
 
     const prism = MeshBuilder.CreatePolyhedron(
       `${id}_prism`,
@@ -1317,10 +1448,14 @@ export class ItemManager {
       root: node,
       prismMesh: prism,
       ringMesh: ring,
-      basePosition: basePos,
-      armTimer: 0.35,
+      basePosition: basePos.clone(),
+      armTimer: throwForward ? 0.54 : 0.3,
       lifeTimer: 32.0,
       phaseOffset: this.nextEntityId * 0.9,
+      lobTimer: throwForward ? 0 : undefined,
+      lobDuration: throwForward ? 0.52 : undefined,
+      lobStartPos: throwForward ? startPos : undefined,
+      lobTargetPos: throwForward ? basePos : undefined,
     });
   }
 
@@ -1329,8 +1464,13 @@ export class ItemManager {
     allRacers: KartController[]
   ): void {
     const id = `disc_${this.nextEntityId++}`;
+    const fireBackward = caster.lastItemAimDir === -1;
+    const baseAimDir = fireBackward
+      ? caster.forwardVector.scale(-1)
+      : caster.forwardVector.clone();
+    const spawnOffset = fireBackward ? -3.0 : 2.8;
     const spawnPos = caster.position
-      .add(caster.forwardVector.scale(2.8))
+      .add(caster.forwardVector.scale(spawnOffset))
       .add(new Vector3(0, 0.65, 0));
 
     const node = new TransformNode(id, this.scene);
@@ -1356,19 +1496,23 @@ export class ItemManager {
     rim.parent = node;
     rim.isPickable = false;
 
-    const discSpeed = 72.0;
-    let fireDir = caster.forwardVector.clone();
+    const discSpeed = Math.max(84.0, caster.forwardSpeed + 22.0);
+    let fireDir = baseAimDir.clone();
 
-    // AI Aiming Intelligence: Easy shoots loosely, Medium aims directly, Hard uses ballistic target-lead prediction
+    // AI Aiming Intelligence: Easy shoots loosely, Medium aims directly, Hard/Self-Learning uses ballistic target-lead prediction
     if (!caster.isPlayer) {
       const diff = caster.aiDifficulty;
+      const isProOrLearning = diff === "HARD" || diff === "SELF_LEARNING";
+      const baseYaw = fireBackward
+        ? caster.headingYaw + Math.PI
+        : caster.headingYaw;
       if (diff === "EASY") {
         const scatterYaw = (Math.random() - 0.5) * 0.34;
-        const yaw = caster.headingYaw + scatterYaw;
+        const yaw = baseYaw + scatterYaw;
         fireDir = new Vector3(Math.sin(yaw), 0, Math.cos(yaw));
       } else {
-        const maxRange = diff === "HARD" ? 95 : 75;
-        const minDotCone = diff === "HARD" ? 0.65 : 0.72;
+        const maxRange = isProOrLearning ? 95 : 75;
+        const minDotCone = isProOrLearning ? 0.65 : 0.72;
         let bestTarget: KartController | null = null;
         let bestDist = maxRange;
 
@@ -1379,15 +1523,15 @@ export class ItemManager {
           const dist = toR.length();
           if (dist < 2 || dist > bestDist) continue;
           const dirToR = toR.scale(1 / dist);
-          if (Vector3.Dot(caster.forwardVector, dirToR) >= minDotCone) {
+          if (Vector3.Dot(baseAimDir, dirToR) >= minDotCone) {
             bestDist = dist;
             bestTarget = r;
           }
         }
 
         if (bestTarget) {
-          // Predictive lead time on HARD (0.85x flight time), moderate lead on MEDIUM (0.58x)
-          const leadFactor = diff === "HARD" ? 0.85 : 0.58;
+          // Predictive lead time on HARD/SELF_LEARNING (0.85x flight time), moderate lead on MEDIUM (0.58x)
+          const leadFactor = isProOrLearning ? 0.85 : 0.58;
           const flightTime = (bestDist / discSpeed) * leadFactor;
           const predictedPos = bestTarget.position.add(
             bestTarget.velocity.scale(flightTime)
@@ -1396,10 +1540,9 @@ export class ItemManager {
           aimVec.y = 0;
           if (aimVec.lengthSquared() > 1e-4) {
             aimVec.normalize();
-            const scatter =
-              diff === "HARD"
-                ? (Math.random() - 0.5) * 0.03
-                : (Math.random() - 0.5) * 0.065;
+            const scatter = isProOrLearning
+              ? (Math.random() - 0.5) * 0.03
+              : (Math.random() - 0.5) * 0.065;
             const aimYaw = Math.atan2(aimVec.x, aimVec.z) + scatter;
             fireDir = new Vector3(Math.sin(aimYaw), 0, Math.cos(aimYaw));
           }
@@ -1419,6 +1562,7 @@ export class ItemManager {
       ringMesh: rim,
       position: spawnPos,
       velocity,
+      speed: discSpeed,
       splineT: caster.closestTrack.normalizedSplineT,
       bouncesRemaining: 4,
       lifeTimer: 9.0,
@@ -1431,7 +1575,7 @@ export class ItemManager {
   ): void {
     const id = `seeker_${this.nextEntityId++}`;
     const spawnPos = caster.position
-      .add(caster.forwardVector.scale(2.8))
+      .add(caster.forwardVector.scale(3.1))
       .add(new Vector3(0, 0.75, 0));
 
     // Lock onto the next racer ahead in standings (or closest ahead on track)
@@ -1473,6 +1617,9 @@ export class ItemManager {
     torus.rotation.x = Math.PI / 4;
     torus.isPickable = false;
 
+    // High-speed homing Pulse Seeker: always launches faster than any boosting kart (>= 92 u/s or caster speed + 28 u/s)
+    const seekerSpeed = Math.max(92.0, caster.forwardSpeed + 28.0);
+
     this.projectiles.push({
       id,
       type: "PULSE_SEEKER",
@@ -1482,16 +1629,17 @@ export class ItemManager {
       coreMesh: core,
       ringMesh: torus,
       position: spawnPos,
-      velocity: caster.forwardVector.scale(65.0),
+      velocity: caster.forwardVector.scale(seekerSpeed),
+      speed: seekerSpeed,
       splineT: (caster.closestTrack.normalizedSplineT + 0.01) % 1.0,
       bouncesRemaining: 0,
-      lifeTimer: 8.5,
+      lifeTimer: 9.0,
     });
   }
 
   /**
    * Spawns the quirky "Lil' Saucer" UFO rocket projectile.
-   * Randomly locks onto one of the racers ahead of the caster and rockets down the spline at 88 u/s.
+   * Randomly locks onto one of the racers ahead of the caster and rockets down the spline at 102+ u/s.
    */
   private spawnLilSaucer(
     caster: KartController,
@@ -1593,6 +1741,8 @@ export class ItemManager {
     beamRing.parent = node;
     beamRing.isPickable = false;
 
+    const saucerSpeed = Math.max(102.0, caster.forwardSpeed + 32.0);
+
     this.projectiles.push({
       id,
       type: "LIL_SAUCER",
@@ -1602,7 +1752,8 @@ export class ItemManager {
       coreMesh: saucerRim,
       ringMesh: beamRing,
       position: spawnPos,
-      velocity: caster.forwardVector.scale(88.0),
+      velocity: caster.forwardVector.scale(saucerSpeed),
+      speed: saucerSpeed,
       splineT: (caster.closestTrack.normalizedSplineT + 0.015) % 1.0,
       bouncesRemaining: 0,
       lifeTimer: 11.0,
@@ -2135,6 +2286,28 @@ export class ItemManager {
         continue;
       }
 
+      if (
+        mine.lobTimer !== undefined &&
+        mine.lobDuration !== undefined &&
+        mine.lobStartPos &&
+        mine.lobTargetPos
+      ) {
+        mine.lobTimer += dt;
+        const t = Math.min(1, mine.lobTimer / mine.lobDuration);
+        const curPos = Vector3.Lerp(mine.lobStartPos, mine.lobTargetPos, t);
+        curPos.y += Math.sin(t * Math.PI) * 4.2;
+        mine.root.position.copyFrom(curPos);
+        mine.root.rotation.x += dt * 9.0;
+        if (t >= 1) {
+          mine.root.position.copyFrom(mine.lobTargetPos);
+          mine.root.rotation.x = 0;
+          mine.position.copyFrom(mine.lobTargetPos);
+          mine.lobTimer = undefined;
+        } else {
+          continue;
+        }
+      }
+
       if (mine.armTimer > 0) continue;
 
       let triggered = false;
@@ -2203,9 +2376,30 @@ export class ItemManager {
       // Mimic Item Box rotation & bobbing with a subtle counter-spin
       prism.prismMesh.rotation.y -= dt * 2.4;
       prism.prismMesh.rotation.x += dt * 1.35;
-      prism.root.position.y =
-        prism.basePosition.y +
-        Math.sin(this.elapsedSec * 3.8 + prism.phaseOffset) * 0.25;
+
+      if (
+        prism.lobTimer !== undefined &&
+        prism.lobDuration !== undefined &&
+        prism.lobStartPos &&
+        prism.lobTargetPos
+      ) {
+        prism.lobTimer += dt;
+        const t = Math.min(1, prism.lobTimer / prism.lobDuration);
+        const curPos = Vector3.Lerp(prism.lobStartPos, prism.lobTargetPos, t);
+        curPos.y += Math.sin(t * Math.PI) * 4.4;
+        prism.root.position.copyFrom(curPos);
+        if (t >= 1) {
+          prism.basePosition.copyFrom(prism.lobTargetPos);
+          prism.root.position.copyFrom(prism.lobTargetPos);
+          prism.lobTimer = undefined;
+        } else {
+          continue;
+        }
+      } else {
+        prism.root.position.y =
+          prism.basePosition.y +
+          Math.sin(this.elapsedSec * 3.8 + prism.phaseOffset) * 0.25;
+      }
 
       if (prism.armTimer > 0) continue;
 
@@ -2264,7 +2458,7 @@ export class ItemManager {
     // 4. Update Active Projectiles (Pulse Seeker, Ricochet Disc & Lil' Saucer UFO Rocket)
     const totalTrackLen = Math.max(200, this.track.totalTrackLength);
     const saucerLookAheadDeltaT = Math.min(0.035, Math.max(0.006, 26 / totalTrackLen));
-    const seekerLookAheadDeltaT = Math.min(0.03, Math.max(0.005, 22 / totalTrackLen));
+    const seekerLookAheadDeltaT = Math.min(0.032, Math.max(0.006, 24 / totalTrackLen));
 
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const proj = this.projectiles[i];
@@ -2279,7 +2473,7 @@ export class ItemManager {
       }
 
       if (proj.type === "LIL_SAUCER") {
-        // High-speed Lil' Saucer UFO rocket: follows spline at 88 u/s and dives onto its randomly chosen target ahead
+        // High-speed Lil' Saucer UFO rocket: follows spline at 102+ u/s and dives onto its randomly chosen target ahead
         const targetRacer = racers.find(
           (r) => r.racerId === proj.targetRacerId
         );
@@ -2297,7 +2491,7 @@ export class ItemManager {
           const toTarget = targetRacer.position.subtract(proj.position);
           toTarget.y = 0;
           const distToTarget = toTarget.length();
-          if (distToTarget < 46.0 && distToTarget > 0.01) {
+          if (distToTarget < 52.0 && distToTarget > 0.01) {
             desiredDir = toTarget.scale(1 / distToTarget);
           }
         }
@@ -2307,13 +2501,14 @@ export class ItemManager {
           desiredDir.normalize();
         }
 
+        const saucerSpeed = proj.speed || 102.0;
         const currentDir = proj.velocity.clone().normalize();
         const steeredDir = Vector3.Lerp(
           currentDir,
           desiredDir,
-          Math.min(1, dt * 13.5)
+          Math.min(1, dt * 15.5)
         ).normalize();
-        proj.velocity = steeredDir.scale(88.0);
+        proj.velocity = steeredDir.scale(saucerSpeed);
         proj.position.addInPlace(proj.velocity.scale(dt));
 
         const groundQuery = this.track.queryClosestTrackPoint(proj.position);
@@ -2325,8 +2520,8 @@ export class ItemManager {
         proj.root.rotation.y = Math.atan2(proj.velocity.x, proj.velocity.z);
         proj.root.rotation.z = Math.sin(this.elapsedSec * 15.0) * 0.2;
       } else if (proj.type === "PULSE_SEEKER") {
-        // Follow Path3D spline ahead and steer toward locked target racer
-        const targetRacer = racers.find(
+        // Follow Path3D spline ahead at 92+ u/s and aggressively home onto the locked target racer ahead
+        let targetRacer = racers.find(
           (r) => r.racerId === proj.targetRacerId
         );
         const query = this.track.queryClosestTrackPoint(proj.position);
@@ -2334,6 +2529,21 @@ export class ItemManager {
           (query.normalizedSplineT + seekerLookAheadDeltaT) % 1.0,
           0
         );
+
+        // Opportunistic proximity acquisition if any rival is within 48m ahead of the seeker
+        if (!targetRacer) {
+          let bestAheadDist = 48.0;
+          for (const r of racers) {
+            if (r.racerId === proj.ownerId) continue;
+            const toR = r.position.subtract(proj.position);
+            toR.y = 0;
+            const d = toR.length();
+            if (d < bestAheadDist && d > 0.1) {
+              bestAheadDist = d;
+              targetRacer = r;
+            }
+          }
+        }
 
         let desiredDir = splineAhead.position
           .subtract(proj.position)
@@ -2343,7 +2553,7 @@ export class ItemManager {
           const toTarget = targetRacer.position.subtract(proj.position);
           toTarget.y = 0;
           const distToTarget = toTarget.length();
-          if (distToTarget < 36.0 && distToTarget > 0.01) {
+          if (distToTarget < 52.0 && distToTarget > 0.01) {
             desiredDir = toTarget.scale(1 / distToTarget);
           }
         }
@@ -2353,20 +2563,22 @@ export class ItemManager {
           desiredDir.normalize();
         }
 
+        const seekerSpeed = proj.speed || 92.0;
         const currentDir = proj.velocity.clone().normalize();
         const steeredDir = Vector3.Lerp(
           currentDir,
           desiredDir,
-          Math.min(1, dt * 9.5)
+          Math.min(1, dt * 14.5)
         ).normalize();
-        proj.velocity = steeredDir.scale(65.0);
+        proj.velocity = steeredDir.scale(seekerSpeed);
         proj.position.addInPlace(proj.velocity.scale(dt));
 
         const groundQuery = this.track.queryClosestTrackPoint(proj.position);
         proj.position.y = groundQuery.roadY + 0.72;
         proj.root.position.copyFrom(proj.position);
       } else {
-        // RICOCHET_DISC: travels straight at 70 u/s and reflects elastically off track boundary walls up to 4 times
+        // RICOCHET_DISC: travels straight at 84+ u/s and reflects elastically off track boundary walls up to 4 times
+        const discSpeed = proj.speed || 84.0;
         proj.position.addInPlace(proj.velocity.scale(dt));
         const query = this.track.queryClosestTrackPoint(proj.position);
         proj.position.y = query.roadY + 0.62;
@@ -2384,7 +2596,7 @@ export class ItemManager {
               proj.velocity.z
             )
               .normalize()
-              .scale(70.0);
+              .scale(discSpeed);
             proj.bouncesRemaining -= 1;
           }
           const clampedPos = query.closestPoint.add(

@@ -127,6 +127,7 @@ export interface ControlInputState {
   driftHeld: boolean; // Jump/Hop/Drift button held
   hopJustPressed: boolean; // Rising edge of Jump/Hop/Drift button
   useItemJustPressed: boolean; // Rising edge of Power-Up button
+  itemAimDirection?: -1 | 0 | 1; // +1 = forward lob/fire, -1 = backward fire/rear drop, 0 = default
 }
 
 export type RacerControlMode = "LOCAL_HUMAN" | "REMOTE_HUMAN" | "AI";
@@ -195,6 +196,9 @@ export interface AiPolicyWeights {
   itemSeekWeight?: number;
   juggernautAvoidanceWeight?: number;
   itemHoldPatience?: number;
+  preemptiveDriftLeadMeters?: number;
+  chainDriftWeight?: number;
+  offRoadDriftRecoveryWeight?: number;
   neuralBias: number[];
 }
 

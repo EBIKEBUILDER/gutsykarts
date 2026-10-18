@@ -74,6 +74,7 @@ export class KartController implements CollidableKartBody {
   public miniTurboTier: MiniTurboTier = 0;
   private hopTimer = 0;
   private hopDirectionLocked = false;
+  private driftExitRecoveryTimer = 0;
   private pumpPhaseHoldSec = 0;
   private pumpOutsideHoldSec = 0;
   private smoothedSteer = 0;
@@ -118,6 +119,7 @@ export class KartController implements CollidableKartBody {
   public tripleSeekerCharges = 0;
   public tripleCryoMineCharges = 0;
   public incomingThreatCount = 0;
+  public lastItemAimDir: -1 | 0 | 1 = 0;
   public rouletteTimer = 0;
   public roulettePreviewItem: PowerUpType | null = null;
   private pendingAwardedItem: PowerUpType | null = null;
@@ -143,6 +145,7 @@ export class KartController implements CollidableKartBody {
   private aiSteerNoisePhase = 0;
   private aiOffTrackTimer = 0;
   private aiDriftCooldown = 0;
+  private aiLastDriftDir: -1 | 0 | 1 = 0;
 
   private readonly scene: Scene;
   private readonly track: BuiltTrack;
@@ -491,15 +494,21 @@ export class KartController implements CollidableKartBody {
       this.aiDriftCooldown = Math.max(this.aiDriftCooldown, 0.45);
     }
 
-    // 1. Sample upcoming track curvature in physical meters (+10m immediate, +20m near, +32m mid, +46m far)
+    // 1. Sample upcoming track curvature in physical meters (+10m immediate, +20m near, +32m mid, +46m far, +preemptiveLeadDist)
+    const preemptiveLeadDist = Math.max(
+      18,
+      Math.min(58, policy.preemptiveDriftLeadMeters ?? 38.0)
+    );
     const immProbeT = (baseT + 10 / totalLen) % 1.0;
     const nearProbeT = (baseT + 20 / totalLen) % 1.0;
     const midProbeT = (baseT + 32 / totalLen) % 1.0;
     const farProbeT = (baseT + 46 / totalLen) % 1.0;
+    const leadProbeT = (baseT + preemptiveLeadDist / totalLen) % 1.0;
     const immProbe = this.track.getPointAtNormalizedT(immProbeT, 0);
     const nearProbe = this.track.getPointAtNormalizedT(nearProbeT, 0);
     const midProbe = this.track.getPointAtNormalizedT(midProbeT, 0);
     const farProbe = this.track.getPointAtNormalizedT(farProbeT, 0);
+    const leadProbe = this.track.getPointAtNormalizedT(leadProbeT, 0);
 
     const curveDot = Math.min(
       Vector3.Dot(this.closestTrack.tangent, immProbe.tangent),
@@ -524,13 +533,21 @@ export class KartController implements CollidableKartBody {
       farProbe.tangent,
       this.closestTrack.binormal
     );
+    const leadTurnRight = Vector3.Dot(
+      leadProbe.tangent,
+      this.closestTrack.binormal
+    );
 
     const localBlendedTurn =
-      immTurnRight * 0.45 + nearTurnRight * 0.4 + midTurnRight * 0.15;
+      immTurnRight * 0.35 +
+      nearTurnRight * 0.3 +
+      midTurnRight * 0.22 +
+      leadTurnRight * 0.13;
     const turnStrength = Math.max(
       Math.abs(immTurnRight * 0.9),
       Math.abs(nearTurnRight),
-      Math.abs(midTurnRight * 0.92)
+      Math.abs(midTurnRight * 0.94),
+      Math.abs(leadTurnRight * 0.85)
     );
     const cornerTurnDir: -1 | 0 | 1 =
       Math.abs(localBlendedTurn) > 0.045
@@ -539,6 +556,10 @@ export class KartController implements CollidableKartBody {
           : -1
         : Math.abs(nearTurnRight) > 0.06
         ? nearTurnRight > 0
+          ? 1
+          : -1
+        : Math.abs(leadTurnRight) > 0.08
+        ? leadTurnRight > 0
           ? 1
           : -1
         : 0;
@@ -744,8 +765,10 @@ export class KartController implements CollidableKartBody {
         : hasReadyBoostItem
         ? 1.15
         : 1.0;
+      const preemptiveApexSignal =
+        nearTurnRight * 0.65 + leadTurnRight * 0.35;
       const apexLateralBias =
-        Math.max(-1, Math.min(1, nearTurnRight * 2.2)) *
+        Math.max(-1, Math.min(1, preemptiveApexSignal * 2.35)) *
         (roadHalf * policy.apexCutRatio * handlingCutMod * boostCutBonus);
 
       const noiseAmp =
@@ -1214,48 +1237,99 @@ export class KartController implements CollidableKartBody {
       } else if (
         this.driftState === "NONE" &&
         this.grounded &&
-        cornerTurnDir !== 0 &&
         this.aiDriftCooldown <= 0
       ) {
-        // Initiate a new hop-drift only when the kart is settled on a forward racing line
-        // (NOT while shooting diagonally across the road from a recovery or previous boost!)
+        // Initiate a new hop-drift via three learned pathways:
+        // (A) Preemptive Corner Drift (35m-50m before corners to charge Mini-Turbo early and carve the inside apex)
+        // (B) Off-Road Grass Drift-Boost Escape (hop-drift on grass to charge a 1.0s Blue Spark and boost back onto the road)
+        // (C) Chained Opposite-Direction Powerslide ("Snaking" experimentation on wide sections when chainDriftWeight > 0; locked off on EASY)
         const entryTurnThreshold = policy.driftEntryThreshold;
         const localCurbW =
           this.closestTrack.localCurbWidth || this.track.curbWidth;
-        const maxEntryDist = hasActiveOffRoadImmunity
+        const offRoadRecoveryWeight =
+          diff === "EASY" ? 0 : policy.offRoadDriftRecoveryWeight ?? 0.78;
+        const canOffRoadDriftEscape =
+          this.surface === "OFFROAD" &&
+          !hasActiveOffRoadImmunity &&
+          offRoadRecoveryWeight > 0.25 &&
+          this.distToCenter < this.track.wallHalfWidth - 2.4 &&
+          this.forwardSpeed > this.stats.topSpeed * 0.38;
+
+        const maxEntryDist = canOffRoadDriftEscape
+          ? this.track.wallHalfWidth - 2.4
+          : hasActiveOffRoadImmunity
           ? localCurbW + 4.5
-          : localCurbW + 2.2;
+          : localCurbW + 2.4;
         const easySectorAllowed =
           diff !== "EASY" ||
           (Math.floor(baseT * 12) + this.aiSlotIndex) % 2 === 0;
 
+        // Preemptive corner detection: looks at near (+20m), mid (+32m), AND preemptive lead probe (+38m..+55m)
         const insideEntryOffset = cornerTurnDir * signedLat;
         const cornerReady =
+          cornerTurnDir !== 0 &&
           turnStrength >= entryTurnThreshold &&
-          cornerTurnDir * immTurnRight > -0.04 &&
-          (cornerTurnDir * nearTurnRight >= entryTurnThreshold * 0.72 ||
-            cornerTurnDir * midTurnRight >= entryTurnThreshold * 0.78);
+          cornerTurnDir * immTurnRight > -0.05 &&
+          (cornerTurnDir * nearTurnRight >= entryTurnThreshold * 0.68 ||
+            cornerTurnDir * midTurnRight >= entryTurnThreshold * 0.72 ||
+            cornerTurnDir * leadTurnRight >= entryTurnThreshold * 0.72);
+
+        // Chained opposite-direction drift ("snaking") experimentation on wide sections (disabled on EASY)
+        const chainWeight =
+          diff === "EASY" ? 0 : policy.chainDriftWeight ?? 0.42;
+        const canChainStraightDrift =
+          diff !== "EASY" &&
+          chainWeight > 0.28 &&
+          !isNearEdge &&
+          this.distToCenter < roadHalf * (0.32 + chainWeight * 0.22) &&
+          Math.abs(immTurnRight) < 0.24 &&
+          this.forwardSpeed > this.stats.topSpeed * 0.82 &&
+          (this.boostTimer > 0.08 ||
+            chainWeight > 0.52 ||
+            Math.abs(leadTurnRight) > entryTurnThreshold * 0.55);
 
         // Anti-Ping-Pong Gate: prevent starting a drift if the kart is currently crossing the track laterally
         // at high sideways speed or if its heading is badly misaligned with the track tangent.
         const tangentAlignDot = Vector3.Dot(fwd, this.closestTrack.tangent);
         const notCrossingTrackWildly =
-          Math.abs(latVelRatio) < 0.28 &&
-          Math.abs(angleError) < 0.48 &&
-          tangentAlignDot > 0.78;
+          Math.abs(latVelRatio) < (canOffRoadDriftEscape ? 0.36 : 0.28) &&
+          Math.abs(angleError) < (canOffRoadDriftEscape ? 0.58 : 0.48) &&
+          tangentAlignDot > (canOffRoadDriftEscape ? 0.68 : 0.78);
 
-        wantDrift =
+        const minEntrySpeed = canOffRoadDriftEscape
+          ? this.stats.topSpeed * 0.38
+          : this.stats.topSpeed * 0.52;
+
+        if (
           easySectorAllowed &&
-          cornerReady &&
           notCrossingTrackWildly &&
           this.distToCenter < maxEntryDist &&
-          insideEntryOffset < roadHalf * 0.68 &&
-          predTrack.horizontalDistance < this.track.wallHalfWidth - 4.0 &&
-          forwardDot > 0.65 &&
-          this.forwardSpeed > this.stats.topSpeed * 0.55;
-
-        if (wantDrift) {
-          steer = cornerTurnDir * Math.max(0.75, Math.abs(steer));
+          predTrack.horizontalDistance < this.track.wallHalfWidth - 3.6 &&
+          forwardDot > 0.62 &&
+          this.forwardSpeed > minEntrySpeed
+        ) {
+          if (canOffRoadDriftEscape) {
+            // Drift inward toward the asphalt centerline (or into the upcoming corner) to charge a 1.0s Blue Spark and boost back onto the road!
+            const toCenterSign: -1 | 1 = signedLat >= 0 ? -1 : 1;
+            const escapeDir: -1 | 1 =
+              cornerTurnDir !== 0 ? cornerTurnDir : toCenterSign;
+            wantDrift = true;
+            steer = escapeDir * Math.max(0.8, Math.abs(steer));
+          } else if (cornerReady && insideEntryOffset < roadHalf * 0.7) {
+            wantDrift = true;
+            steer = cornerTurnDir * Math.max(0.76, Math.abs(steer));
+          } else if (canChainStraightDrift) {
+            const chainDir: -1 | 1 =
+              cornerTurnDir !== 0
+                ? cornerTurnDir
+                : this.aiLastDriftDir !== 0
+                ? (-this.aiLastDriftDir as -1 | 1)
+                : signedLat > 0
+                ? -1
+                : 1;
+            wantDrift = true;
+            steer = chainDir * Math.max(0.75, Math.abs(steer));
+          }
         }
       }
     }
@@ -1338,8 +1412,9 @@ export class KartController implements CollidableKartBody {
       }
     }
 
-    // 9. Tactical AI Power-Up Brain (Context-Aware Utility across all 16 Power-Ups)
+    // 9. Tactical AI Power-Up Brain (Context-Aware Utility across all 16 Power-Ups + Forward/Backward Aiming)
     let useItemJustPressed = false;
+    let itemAimDirection: -1 | 0 | 1 = 0;
     const patienceScale = policy.itemHoldPatience ?? 0.85;
     if (this.heldItem && this.rouletteTimer <= 0 && this.spinOutTimer <= 0) {
       this.aiItemUseDelay -= dt;
@@ -1406,31 +1481,43 @@ export class KartController implements CollidableKartBody {
         } else if (item === "ORBITAL_SHIELD") {
           // 3 emerald drones orbit immediately upon roulette completion:
           // Keep at least 1 drone for defense when in 1st place or under threat (unless near an item box),
-          // or fire a drone forward like a Ricochet Disc when a rival is in our forward cone!
+          // or fire a drone forward or backward like a Ricochet Disc when a rival is in our forward or rear cone!
+          const aggressionScale = policy.itemSeekWeight ?? 0.65;
           const canSpareOffensiveDrone =
             nearUpcomingItemBox ||
             (this.orbitalShieldCharges >= 2 && !urgentThreat) ||
             (this.rank > 1 &&
               !urgentThreat &&
-              this.aiItemUseDelay < -1.4 * patienceScale);
+              this.aiItemUseDelay < (-1.8 + aggressionScale * 0.6) * patienceScale);
 
           if (canSpareOffensiveDrone && allRacers && allRacers.length > 1) {
             let hasTargetInCone = nearUpcomingItemBox;
+            let rearTargetFound = false;
+            const maxRearSnipeDist = isProOrLearning
+              ? 28 + aggressionScale * 14
+              : 20;
+            const rearMinDot = isProOrLearning ? -0.76 : -0.84;
             if (!hasTargetInCone) {
               for (const other of allRacers) {
                 if (other.racerId === this.racerId) continue;
                 const toOther = other.position.subtract(this.position);
                 toOther.y = 0;
                 const d = toOther.length();
-                if (
-                  d > 3 &&
-                  d < 88 &&
-                  Vector3.Dot(fwd, toOther.scale(1 / d)) > 0.74
-                ) {
-                  hasTargetInCone = true;
-                  break;
+                if (d > 3 && d < 88) {
+                  const dot = Vector3.Dot(fwd, toOther.scale(1 / d));
+                  if (dot > 0.74) {
+                    hasTargetInCone = true;
+                    itemAimDirection = 1;
+                    break;
+                  } else if (d < maxRearSnipeDist && dot < rearMinDot) {
+                    rearTargetFound = true;
+                  }
                 }
               }
+            }
+            if (!hasTargetInCone && rearTargetFound) {
+              hasTargetInCone = true;
+              itemAimDirection = -1;
             }
             useItemJustPressed = hasTargetInCone;
           }
@@ -1450,25 +1537,37 @@ export class KartController implements CollidableKartBody {
               nearUpcomingItemBox ||
               this.aiItemUseDelay < -1.6 * patienceScale);
         } else if (item === "RICOCHET_DISC") {
+          const aggressionScale = policy.itemSeekWeight ?? 0.65;
           const maxHoldWait =
             (isProOrLearning ? -2.0 : -1.3) * patienceScale;
           let hasTargetInCone =
             this.aiItemUseDelay < maxHoldWait || nearUpcomingItemBox;
-          if (!hasTargetInCone && allRacers && allRacers.length > 1) {
+          let rearTargetFound = false;
+          const maxRearSnipeDist = isProOrLearning
+            ? 30 + aggressionScale * 14
+            : 22;
+          const rearMinDot = isProOrLearning ? -0.74 : -0.84;
+          if (allRacers && allRacers.length > 1) {
             for (const other of allRacers) {
               if (other.racerId === this.racerId) continue;
               const toOther = other.position.subtract(this.position);
               toOther.y = 0;
               const d = toOther.length();
-              if (
-                d > 3 &&
-                d < 95 &&
-                Vector3.Dot(fwd, toOther.scale(1 / d)) > 0.72
-              ) {
-                hasTargetInCone = true;
-                break;
+              if (d > 3 && d < 95) {
+                const dot = Vector3.Dot(fwd, toOther.scale(1 / d));
+                if (dot > 0.72) {
+                  hasTargetInCone = true;
+                  itemAimDirection = 1;
+                  break;
+                } else if (d < maxRearSnipeDist && dot < rearMinDot) {
+                  rearTargetFound = true;
+                }
               }
             }
+          }
+          if (!hasTargetInCone && rearTargetFound) {
+            hasTargetInCone = true;
+            itemAimDirection = -1;
           }
           useItemJustPressed = hasTargetInCone;
         } else if (
@@ -1476,24 +1575,35 @@ export class KartController implements CollidableKartBody {
           item === "TRIPLE_CRYO_MINE" ||
           item === "GLITCH_PRISM"
         ) {
-          // Tactical Trap Placement:
-          // - Drop immediately if an incoming seeker is chasing us (tail block)
-          // - For GLITCH_PRISM: prefer dropping near real Item Boxes to camouflage the decoy!
-          // - For CRYO_MINE / TRIPLE_CRYO_MINE: prefer dropping on tight inside corner apexes, boost pads/ramps, or when an opponent is drafting behind
+          // Tactical Trap Placement (Scaled by Difficulty & AI Brain itemAggressionWeight):
+          // - Drop backward immediately if an incoming seeker is chasing us (tail block)
+          // - Lob FORWARD (+1) if a rival is in our forward lob window (12-24m on MEDIUM, up to 40m with predictive lead on HARD/SELF_LEARNING)
+          // - Drop BACKWARD (-1) on tight inside corner apexes, boost pads/ramps, or when an opponent is drafting behind
+          const aggressionScale = policy.itemSeekWeight ?? 0.65;
+          const maxLobDist = isProOrLearning
+            ? 28 + aggressionScale * 12
+            : 24;
+          const minLobDot = isProOrLearning ? 0.75 : 0.85;
           let tailingOpponentBehind = false;
+          let targetAheadForLob = false;
           if (allRacers && allRacers.length > 1) {
             for (const other of allRacers) {
               if (other.racerId === this.racerId) continue;
               const toOther = other.position.subtract(this.position);
               toOther.y = 0;
               const d = toOther.length();
-              if (
-                d > 2.5 &&
-                d < 30 &&
-                Vector3.Dot(fwd, toOther.scale(1 / d)) < -0.68
-              ) {
-                tailingOpponentBehind = true;
-                break;
+              if (d > 2.5 && d < 42) {
+                const dot = Vector3.Dot(fwd, toOther.scale(1 / d));
+                if (d < 30 && dot < -0.68) {
+                  tailingOpponentBehind = true;
+                } else if (
+                  !urgentThreat &&
+                  d >= 10 &&
+                  d <= maxLobDist &&
+                  dot > minLobDot
+                ) {
+                  targetAheadForLob = true;
+                }
               }
             }
           }
@@ -1501,8 +1611,15 @@ export class KartController implements CollidableKartBody {
             turnStrength > 0.22 && Math.abs(signedLatRatio) < 0.52;
           const patienceExpired = this.aiItemUseDelay < -2.4 * patienceScale;
 
+          if (targetAheadForLob && !urgentThreat && !tailingOpponentBehind) {
+            itemAimDirection = 1;
+          } else {
+            itemAimDirection = -1;
+          }
+
           useItemJustPressed =
             urgentThreat ||
+            targetAheadForLob ||
             nearUpcomingItemBox ||
             tailingOpponentBehind ||
             onTightApexLine ||
@@ -1567,6 +1684,7 @@ export class KartController implements CollidableKartBody {
       driftHeld: wantDrift,
       hopJustPressed,
       useItemJustPressed,
+      itemAimDirection,
     };
   }
 
@@ -1756,6 +1874,10 @@ export class KartController implements CollidableKartBody {
       }
     }
 
+    if (this.driftExitRecoveryTimer > 0) {
+      this.driftExitRecoveryTimer = Math.max(0, this.driftExitRecoveryTimer - dt);
+    }
+
     // Trigger held power-up if requested (disabled while spinning out)
     if (
       raceActive &&
@@ -1764,6 +1886,7 @@ export class KartController implements CollidableKartBody {
       this.heldItem &&
       this.rouletteTimer <= 0
     ) {
+      this.lastItemAimDir = input.itemAimDirection ?? 0;
       const itemToFire = this.heldItem;
       if (itemToFire === "TRIPLE_NITRO") {
         this.heldItemCharges = Math.max(0, this.heldItemCharges - 1);
@@ -2235,12 +2358,27 @@ export class KartController implements CollidableKartBody {
         const edgeBonus =
           this.distToCenter > this.track.roadHalfWidth * 0.65 ? 0.14 : 0;
         alignAiHeadingToExitCorridor(policy.exitTangentAlignBlend + edgeBonus);
+        this.visualSlipAngle = 0;
+        this.lateralSpeed = 0;
+        this.velocity = this.forwardVector.scale(this.forwardSpeed);
+      } else {
+        // Smooth momentum-conserving exit alignment for human player:
+        // Blend headingYaw toward the actual world travel vector so the Mini-Turbo surges along the player's
+        // current line without a sideways traction snap, and let visualSlipAngle unwind smoothly over ~8 frames!
+        const horizSpeedSq =
+          this.velocity.x * this.velocity.x + this.velocity.z * this.velocity.z;
+        if (horizSpeedSq > 4.0) {
+          const velYaw = Math.atan2(this.velocity.x, this.velocity.z);
+          let yawDiff = velYaw - this.headingYaw;
+          while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
+          while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
+          this.headingYaw += yawDiff * 0.42;
+        }
+        this.lateralSpeed = 0;
+        this.velocity = this.forwardVector.scale(this.forwardSpeed);
+        this.driftExitRecoveryTimer = 0.16;
       }
 
-      // Instant straightening alignment (chassisSlipAngle = 0) & forward surge
-      this.visualSlipAngle = 0;
-      this.lateralSpeed = 0;
-      this.velocity = this.forwardVector.scale(this.forwardSpeed);
       this.cameraShakeTimer = Math.max(
         this.cameraShakeTimer,
         this.miniTurboTier === 3 ? 0.2 : this.miniTurboTier === 2 ? 0.14 : 0.1
@@ -2250,7 +2388,7 @@ export class KartController implements CollidableKartBody {
 
     // Mandatory Entry Hop (State 1: HOPPING):
     // Pressing Drift/Hop applies an upward vertical impulse (vy = 6.5 relative to slope climb rate) for a 10-frame (~0.167s) window.
-    // As soon as abs(steerInput) > 0.2 during the hop window, driftDirection is locked once for the entire hop/drift!
+    // While airborne in the hop, the player can steer or counter-steer to set their intended driftDirection before landing!
     if (
       input.hopJustPressed &&
       this.grounded &&
@@ -2260,6 +2398,9 @@ export class KartController implements CollidableKartBody {
     ) {
       if (this.driftState === "DRIFT_ACTIVE") {
         const tierBeforeSwitch = this.miniTurboTier;
+        if (this.driftDirection !== 0) {
+          this.aiLastDriftDir = this.driftDirection;
+        }
         if (tierBeforeSwitch > 0) {
           triggerChargedMiniTurboBurst();
         }
@@ -2277,26 +2418,24 @@ export class KartController implements CollidableKartBody {
       this.airborneTime = 0;
       this.hopTimer = PHYSICS_CONSTANTS.HOP_DURATION_SEC;
       this.driftState = "HOPPING";
+      this.hopDirectionLocked = false;
       if (
         Math.abs(input.steer) > PHYSICS_CONSTANTS.HOP_DIRECTION_LOCK_THRESHOLD
       ) {
         this.driftDirection = input.steer > 0 ? 1 : -1;
-        this.hopDirectionLocked = true;
       } else {
         this.driftDirection = 0;
-        this.hopDirectionLocked = false;
       }
     }
 
-    // Lock driftDirection on the first |steerInput| > 0.2 during the airborne hop window (never flips once locked)
+    // While airborne in the hop window, allow the player to freely steer/counter-steer to choose or switch
+    // their driftDirection in mid-air right up until the tires touch down on landing!
     if (this.driftState === "HOPPING") {
       this.hopTimer = Math.max(0, this.hopTimer - dt);
       if (
-        !this.hopDirectionLocked &&
         Math.abs(input.steer) > PHYSICS_CONSTANTS.HOP_DIRECTION_LOCK_THRESHOLD
       ) {
         this.driftDirection = input.steer > 0 ? 1 : -1;
-        this.hopDirectionLocked = true;
       }
     }
 
@@ -2382,6 +2521,7 @@ export class KartController implements CollidableKartBody {
               this.driftDirection = input.steer >= 0 ? 1 : -1;
             }
             this.hopDirectionLocked = true;
+            this.aiLastDriftDir = this.driftDirection;
             this.driftState = "DRIFT_ACTIVE";
             this.driftChargeSubState = 0; // Phase 0: GRAY_SMOKE
             this.pumpPhaseHoldSec = 0;
@@ -2428,13 +2568,15 @@ export class KartController implements CollidableKartBody {
       ) {
         // Release drift -> trigger Mini-Turbo speed boost if charged, or convert remaining lateral slip into forward speed
         const tierAtRelease = this.miniTurboTier;
+        if (this.driftDirection !== 0) {
+          this.aiLastDriftDir = this.driftDirection;
+        }
         const firedBoost = triggerChargedMiniTurboBurst();
         globalAiBrain.recordDriftFinished(
           this.racerId,
           firedBoost ? tierAtRelease : 0
         );
         if (!firedBoost && this.spinOutTimer <= 0) {
-          alignAiHeadingToExitCorridor(0.45);
           const currentTotalSpeed = Math.hypot(
             this.velocity.x,
             this.velocity.z
@@ -2443,8 +2585,25 @@ export class KartController implements CollidableKartBody {
             Math.max(this.forwardSpeed, currentTotalSpeed),
             this.stats.topSpeed * 1.05
           );
-          this.lateralSpeed = 0;
-          this.velocity = this.forwardVector.scale(this.forwardSpeed);
+          if (!this.isPlayer) {
+            alignAiHeadingToExitCorridor(0.45);
+            this.lateralSpeed = 0;
+            this.velocity = this.forwardVector.scale(this.forwardSpeed);
+          } else {
+            // Smooth momentum-conserving exit without abrupt lateral traction snap (Section 4C):
+            // Preserve the world-space velocity direction and blend headingYaw smoothly toward it over the exit recovery window!
+            if (currentTotalSpeed > 2.0) {
+              const velYaw = Math.atan2(this.velocity.x, this.velocity.z);
+              let yawDiff = velYaw - this.headingYaw;
+              while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
+              while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
+              this.headingYaw += yawDiff * 0.55;
+            }
+            const rightNow = this.rightVector;
+            this.lateralSpeed =
+              this.velocity.x * rightNow.x + this.velocity.z * rightNow.z;
+            this.driftExitRecoveryTimer = 0.16;
+          }
         }
         this.driftState = "NONE";
         this.driftDirection = 0;
@@ -2454,9 +2613,18 @@ export class KartController implements CollidableKartBody {
         this.miniTurboTier = 0;
         this.pumpPhaseHoldSec = 0;
         this.pumpOutsideHoldSec = 0;
+        const chainWeight =
+          this.aiDifficulty === "EASY"
+            ? 0
+            : globalAiBrain.getGenomeForSlot(
+                this.aiDifficulty,
+                this.aiSlotIndex
+              ).weights.chainDriftWeight ?? 0.42;
+        const minAiCooldown =
+          chainWeight > 0.35 && firedBoost ? 0.14 : firedBoost ? 0.36 : 0.28;
         this.aiDriftCooldown = Math.max(
           this.aiDriftCooldown,
-          offRoadWallBreak ? 0.6 : firedBoost ? 0.48 : 0.32
+          offRoadWallBreak ? 0.6 : minAiCooldown
         );
       } else if (this.grounded) {
         // A. Advance the 5-Phase Manual Alternation State Machine (GRAY_SMOKE -> PUMP_1_OUTSIDE -> BLUE_SPARKS -> PUMP_2_OUTSIDE -> ORANGE_SPARKS)
@@ -2735,14 +2903,13 @@ export class KartController implements CollidableKartBody {
 
       if (this.driftState === "HOPPING") {
         if (this.driftDirection !== 0) {
-          // During the airborne hop, rotate the visual chassis into the slip angle (Section 8)
-          // while keeping the physics travel heading turning gently at the baseline corner arc
-          // so the kart never hooks into the inside curb upon landing!
+          // During the airborne hop, pre-rotate the visual chassis and ForwardHeadingVector toward driftDirection
+          // over the 10-frame hop window without changing the world-space VelocityVector (Section 4A)!
           yawRate =
             this.driftDirection *
             PHYSICS_CONSTANTS.MAX_DRIFT_YAW_RATE *
             PHYSICS_CONSTANTS.BASE_DRIFT_RATIO *
-            0.78;
+            0.72;
         } else {
           // Single neutral alignment hop (SSMT straightening hop)
           yawRate = progressiveSteer * effectiveTurnHandling * 0.85;
@@ -2774,6 +2941,10 @@ export class KartController implements CollidableKartBody {
             : 0;
         const offRoadSteerAssist = this.surface === "OFFROAD" ? 1.15 : 1.0;
         const aiSteerAuthority = !this.isPlayer ? 1.12 : 1.0;
+        const exitRecoverySteerScale =
+          this.isPlayer && this.driftExitRecoveryTimer > 0
+            ? 0.45 + 0.55 * (1 - this.driftExitRecoveryTimer / 0.16)
+            : 1.0;
         yawRate =
           progressiveSteer *
           effectiveTurnHandling *
@@ -2781,7 +2952,8 @@ export class KartController implements CollidableKartBody {
           offRoadSteerAssist *
           boostTurnScale *
           speedTurnFactor *
-          airSteerFactor;
+          airSteerFactor *
+          exitRecoverySteerScale;
       }
     }
 
@@ -2795,18 +2967,31 @@ export class KartController implements CollidableKartBody {
       this.lateralSpeed = 0;
       this.velocity.x = fwdAfterYaw.x * this.forwardSpeed;
       this.velocity.z = fwdAfterYaw.z * this.forwardSpeed;
-    } else if (
-      this.driftState === "HOPPING" &&
-      !this.grounded &&
-      this.driftDirection !== 0
-    ) {
-      // While airborne in the ~0.18s entry hop with driftDirection locked, smoothly curve VelocityVector along fwdAfterYaw
-      // so the kart begins carving the corner arc immediately instead of flying straight toward the outside curb!
-      this.lateralSpeed *= Math.pow(0.65, dt * 60);
-      this.velocity.x =
-        fwdAfterYaw.x * this.forwardSpeed + rightAfterYaw.x * this.lateralSpeed;
-      this.velocity.z =
-        fwdAfterYaw.z * this.forwardSpeed + rightAfterYaw.z * this.lateralSpeed;
+    } else if (this.driftState === "HOPPING" && !this.grounded) {
+      if (this.isPlayer) {
+        // Section 4A (Airborne Hop Float): While the human player's tires are off the ground during the 10-frame hop,
+        // preserve the world-space horizontal travel direction (no mid-air tire traction or trajectory jerk)
+        // while ForwardHeadingVector and visualSlipAngle pre-rotate in the air toward the new driftDirection!
+        const currentHorizSpeed = Math.hypot(this.velocity.x, this.velocity.z);
+        if (currentHorizSpeed > 0.5) {
+          const scale = this.forwardSpeed / currentHorizSpeed;
+          this.velocity.x *= scale;
+          this.velocity.z *= scale;
+        } else {
+          this.velocity.x = fwdAfterYaw.x * this.forwardSpeed;
+          this.velocity.z = fwdAfterYaw.z * this.forwardSpeed;
+        }
+        this.lateralSpeed =
+          this.velocity.x * rightAfterYaw.x + this.velocity.z * rightAfterYaw.z;
+      } else if (this.driftDirection !== 0) {
+        this.lateralSpeed *= Math.pow(0.65, dt * 60);
+        this.velocity.x =
+          fwdAfterYaw.x * this.forwardSpeed +
+          rightAfterYaw.x * this.lateralSpeed;
+        this.velocity.z =
+          fwdAfterYaw.z * this.forwardSpeed +
+          rightAfterYaw.z * this.lateralSpeed;
+      }
     } else {
       // Decompose current horizontal VelocityVector into local lateralSpeed along rightAfterYaw
       const currentLateralVel =
@@ -2836,16 +3021,25 @@ export class KartController implements CollidableKartBody {
           currentLateralVel * lateralRetain +
           targetOutwardGlide * (1 - lateralRetain);
       } else {
-        // In Normal Driving: cancel out lateralSpeed aggressively (~0.85 per 60Hz frame) so the kart tracks tightly where it points
+        // In Normal Driving: cancel out lateralSpeed smoothly; during the 8-frame drift exit recovery window,
+        // ramp tire grip gradually from drift grip (0.35) to normal grip (0.85) so tires never jerk on drift release!
         const baseFrameGrip =
           PHYSICS_CONSTANTS.NORMAL_LATERAL_GRIP_60HZ * lateralGrip;
-        const activeGrip = !this.isPlayer
+        const fullGrip = !this.isPlayer
           ? Math.max(baseFrameGrip, 0.78)
           : Math.min(0.95, baseFrameGrip + handlingGripBonus);
+        const recoveryBlend =
+          this.isPlayer && this.driftExitRecoveryTimer > 0
+            ? 1 - this.driftExitRecoveryTimer / 0.16
+            : 1.0;
+        const activeGrip =
+          PHYSICS_CONSTANTS.DRIFT_LATERAL_GRIP_60HZ +
+          (fullGrip - PHYSICS_CONSTANTS.DRIFT_LATERAL_GRIP_60HZ) * recoveryBlend;
         const airGripMult = this.grounded ? 1.0 : 0.55;
-        const lateralRetain = isPowerBoosting
-          ? 0
-          : Math.pow(1 - activeGrip * airGripMult, dt * 60);
+        const lateralRetain =
+          isPowerBoosting && (!this.isPlayer || this.driftExitRecoveryTimer <= 0)
+            ? 0
+            : Math.pow(1 - activeGrip * airGripMult, dt * 60);
         this.lateralSpeed = currentLateralVel * lateralRetain;
       }
 

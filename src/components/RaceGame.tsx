@@ -918,9 +918,11 @@ export const RaceGame: React.FC = () => {
   const pendingEdgesRef = useRef<{
     hopJustPressed: boolean;
     useItemJustPressed: boolean;
+    itemAimOverride: -1 | 0 | 1;
   }>({
     hopJustPressed: false,
     useItemJustPressed: false,
+    itemAimOverride: 0,
   });
 
   const cameraModeRef = useRef<CameraMode>("CHASE");
@@ -2123,6 +2125,16 @@ export const RaceGame: React.FC = () => {
         e.preventDefault();
         pendingEdgesRef.current.useItemJustPressed = true;
       }
+      if (code === "KeyF") {
+        e.preventDefault();
+        pendingEdgesRef.current.itemAimOverride = 1;
+        pendingEdgesRef.current.useItemJustPressed = true;
+      }
+      if (code === "KeyQ") {
+        e.preventDefault();
+        pendingEdgesRef.current.itemAimOverride = -1;
+        pendingEdgesRef.current.useItemJustPressed = true;
+      }
       if (code === "KeyC") {
         cycleCameraMode();
       }
@@ -2398,6 +2410,15 @@ export const RaceGame: React.FC = () => {
         ? itemManager.getActiveItemBoxPositions()
         : [];
 
+      const resolvedItemAimDir: -1 | 0 | 1 =
+        pendingEdgesRef.current.itemAimOverride !== 0
+          ? pendingEdgesRef.current.itemAimOverride
+          : kb.down || tc.brake > 0.3 || tc.brakeButtonHeld
+          ? -1
+          : kb.up || tc.throttle > 0.3
+          ? 1
+          : 0;
+
       const playerInput: ControlInputState = localPlayerKart
         ? {
             throttle: localPlayerKart.finished ? 0.85 : combinedThrottle,
@@ -2408,6 +2429,7 @@ export const RaceGame: React.FC = () => {
             driftHeld: localPlayerKart.finished ? false : combinedDriftHeld,
             hopJustPressed: pendingEdgesRef.current.hopJustPressed,
             useItemJustPressed: pendingEdgesRef.current.useItemJustPressed,
+            itemAimDirection: resolvedItemAimDir,
           }
         : {
             throttle: 0,
@@ -2416,11 +2438,13 @@ export const RaceGame: React.FC = () => {
             driftHeld: false,
             hopJustPressed: false,
             useItemJustPressed: false,
+            itemAimDirection: 0,
           };
 
       // Clear one-shot rising edges
       pendingEdgesRef.current.hopJustPressed = false;
       pendingEdgesRef.current.useItemJustPressed = false;
+      pendingEdgesRef.current.itemAimOverride = 0;
 
       const raceActive = racePhase !== "COUNTDOWN";
       const isOnlineSession = Boolean(mp?.activeRoomId);
