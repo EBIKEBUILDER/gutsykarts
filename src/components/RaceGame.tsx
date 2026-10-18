@@ -238,8 +238,8 @@ export const RaceGame: React.FC = () => {
   aiDifficultyRef.current = aiDifficulty;
 
   const [showAiLab, setShowAiLab] = useState<boolean>(false);
-  const [simSpeedMult, setSimSpeedMult] = useState<1 | 4 | 8>(1);
-  const simSpeedMultRef = useRef<1 | 4 | 8>(1);
+  const [simSpeedMult, setSimSpeedMult] = useState<1 | 4 | 8 | 16>(1);
+  const simSpeedMultRef = useRef<1 | 4 | 8 | 16>(1);
   simSpeedMultRef.current = simSpeedMult;
 
   const [autoRepeatTraining, setAutoRepeatTraining] = useState<boolean>(false);
@@ -545,9 +545,10 @@ export const RaceGame: React.FC = () => {
     });
   }, [trackDef]);
 
-  const getSavedAiSimSpeed = useCallback((): 1 | 4 | 8 => {
+  const getSavedAiSimSpeed = useCallback((): 1 | 4 | 8 | 16 => {
     try {
       const raw = window.localStorage.getItem("gutsy_karts_ai_sim_speed");
+      if (raw === "16") return 16;
       if (raw === "8") return 8;
       if (raw === "4") return 4;
       return 1;
@@ -4386,7 +4387,7 @@ export const RaceGame: React.FC = () => {
 
           {!telemetry.multiplayer?.active && !mpRef.current?.activeRoomId && (
             <div className="inline-flex items-center rounded-xl border border-white/20 bg-slate-900/85 p-0.5 text-[11px] font-black">
-              {([1, 4, 8] as const).map((spd) => (
+              {([1, 4, 8, 16] as const).map((spd) => (
                 <button
                   key={spd}
                   type="button"
