@@ -1795,6 +1795,11 @@ export function loadSavedCupsCatalog(): GrandPrixCupDefinition[] {
       return officialCups;
     }
 
+    const catalogUpdatedAt =
+      Number(
+        (defaultCupsJson as unknown as { updatedAt?: number })?.updatedAt
+      ) || 0;
+
     // Merge official cups with explicitly user-modified tracks & custom cups from localStorage
     const mergedCups: GrandPrixCupDefinition[] = officialCups.map(
       (officialCup) => {
@@ -1809,7 +1814,15 @@ export function loadSavedCupsCatalog(): GrandPrixCupDefinition[] {
               (officialTrack.id
                 ? savedCup.tracks.find((t) => t.id === officialTrack.id)
                 : undefined) ?? savedCup.tracks[idx];
-            if (savedTrack && savedTrack.isUserModified) {
+            const officialTimestamp = Math.max(
+              officialTrack.updatedAt ?? 0,
+              catalogUpdatedAt
+            );
+            if (
+              savedTrack &&
+              savedTrack.isUserModified &&
+              (savedTrack.updatedAt ?? 0) > officialTimestamp
+            ) {
               return hydrateTrackDefinition(savedTrack);
             }
             return officialTrack;

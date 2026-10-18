@@ -50,6 +50,9 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
     insideApexTarget: 0.18,
     exitTangentAlignBlend: 0.62,
     padSeekWeight: 0.32,
+    itemSeekWeight: 0.25,
+    juggernautAvoidanceWeight: 0.45,
+    itemHoldPatience: 1.4,
     neuralBias: [
       -0.2809,
       0.231,
@@ -77,6 +80,9 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
     insideApexTarget: 0.155,
     exitTangentAlignBlend: 0.6,
     padSeekWeight: 0.45,
+    itemSeekWeight: 0.44,
+    juggernautAvoidanceWeight: 0.85,
+    itemHoldPatience: 1.0,
     neuralBias: [
       -0.2809,
       0.231,
@@ -104,6 +110,9 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
     insideApexTarget: 0.134,
     exitTangentAlignBlend: 0.593,
     padSeekWeight: 0.492,
+    itemSeekWeight: 0.54,
+    juggernautAvoidanceWeight: 1.05,
+    itemHoldPatience: 0.85,
     neuralBias: [
       -0.2809,
       0.231,
@@ -131,6 +140,9 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
     insideApexTarget: 0.134,
     exitTangentAlignBlend: 0.593,
     padSeekWeight: 0.492,
+    itemSeekWeight: 0.54,
+    juggernautAvoidanceWeight: 1.05,
+    itemHoldPatience: 0.85,
     neuralBias: [
       -0.2809,
       0.231,
@@ -151,6 +163,9 @@ function clamp(val: number, min: number, max: number): number {
 function cloneWeights(w: AiPolicyWeights): AiPolicyWeights {
   return {
     ...w,
+    itemSeekWeight: w.itemSeekWeight ?? 0.54,
+    juggernautAvoidanceWeight: w.juggernautAvoidanceWeight ?? 1.05,
+    itemHoldPatience: w.itemHoldPatience ?? 0.85,
     neuralBias: Array.isArray(w.neuralBias)
       ? [...w.neuralBias]
       : [0, 0, 0, 0, 0, 0, 0, 0],
@@ -272,6 +287,23 @@ export function mutatePolicyWeights(
       0.2,
       0.92
     ),
+    itemSeekWeight: clamp(
+      Number(((base.itemSeekWeight ?? 0.54) + n() * 0.05).toFixed(3)),
+      0.2,
+      0.92
+    ),
+    juggernautAvoidanceWeight: clamp(
+      Number(
+        ((base.juggernautAvoidanceWeight ?? 1.05) + n() * 0.08).toFixed(3)
+      ),
+      0.35,
+      1.85
+    ),
+    itemHoldPatience: clamp(
+      Number(((base.itemHoldPatience ?? 0.85) + n() * 0.06).toFixed(3)),
+      0.35,
+      1.65
+    ),
     neuralBias: bias,
   };
 }
@@ -309,6 +341,18 @@ export function crossoverPolicyWeights(
       parentB.exitTangentAlignBlend
     ),
     padSeekWeight: pick(parentA.padSeekWeight, parentB.padSeekWeight),
+    itemSeekWeight: pick(
+      parentA.itemSeekWeight ?? 0.54,
+      parentB.itemSeekWeight ?? 0.54
+    ),
+    juggernautAvoidanceWeight: pick(
+      parentA.juggernautAvoidanceWeight ?? 1.05,
+      parentB.juggernautAvoidanceWeight ?? 1.05
+    ),
+    itemHoldPatience: pick(
+      parentA.itemHoldPatience ?? 0.85,
+      parentB.itemHoldPatience ?? 0.85
+    ),
     neuralBias: biasA.map((val, i) => pick(val, biasB[i] ?? 0)),
   };
 }
@@ -472,12 +516,12 @@ interface PersistedBrainState {
 }
 
 export class AiBrainManager {
-  private generation = 8578;
-  private episodesCompleted = 8577;
+  private generation = 12809;
+  private episodesCompleted = 12808;
   private itemsEnabled = true;
   private autoBalanceRosterEnabled = false;
   private trainingTrackMode: "ROTATE_CUP" | "ALL_CUPS" | "SINGLE_TRACK" =
-    "ROTATE_CUP";
+    "ALL_CUPS";
   private championGenome: AiPolicyGenome;
   private population: AiPolicyGenome[] = [];
   private baselineMetrics: {
@@ -509,20 +553,20 @@ export class AiBrainManager {
 
   constructor() {
     this.championGenome = createGenome(
-      "gen8578_champ",
-      "Gen-8578 Seed Ace",
-      8578,
+      "gen12809_champ",
+      "Gen-12809 Seed Ace",
+      12809,
       DEFAULT_POLICY_WEIGHTS.SELF_LEARNING
     );
     this.championGenome.fitness = 100.0;
-    this.championGenome.bestLapMs = 16310;
-    this.championGenome.pavementPct = 100.0;
+    this.championGenome.bestLapMs = 15960;
+    this.championGenome.pavementPct = 98.8;
     const seed = DEFAULT_POLICY_WEIGHTS.SELF_LEARNING;
     this.population = [
-      createGenome("g8578_slot0", "Alpha Policy (Apex)", 8578, seed),
-      createGenome("g8578_slot1", "Beta Policy (Smooth)", 8578, seed, "g8578_slot0"),
-      createGenome("g8578_slot2", "Gamma Policy (Charger)", 8578, seed, "g8578_slot0"),
-      createGenome("g8578_slot3", "Delta Policy (Explorer)", 8578, seed, "g8578_slot0"),
+      createGenome("g12809_slot0", "Alpha Policy (Apex)", 12809, seed),
+      createGenome("g12809_slot1", "Beta Policy (Smooth)", 12809, seed, "g12809_slot0"),
+      createGenome("g12809_slot2", "Gamma Policy (Charger)", 12809, seed, "g12809_slot0"),
+      createGenome("g12809_slot3", "Delta Policy (Explorer)", 12809, seed, "g12809_slot0"),
     ];
     this.initDefaultCharacterStats();
   }
@@ -561,27 +605,27 @@ export class AiBrainManager {
   private initDefaultPopulation(): void {
     const seed = DEFAULT_POLICY_WEIGHTS.SELF_LEARNING;
     this.population = [
-      createGenome("g8578_slot0", "Alpha Policy (Apex)", 8578, seed),
+      createGenome("g12809_slot0", "Alpha Policy (Apex)", 12809, seed),
       createGenome(
-        "g8578_slot1",
+        "g12809_slot1",
         "Beta Policy (Smooth)",
-        8578,
+        12809,
         mutatePolicyWeights(seed, 0.45),
-        "g8578_slot0"
+        "g12809_slot0"
       ),
       createGenome(
-        "g8578_slot2",
+        "g12809_slot2",
         "Gamma Policy (Charger)",
-        8578,
+        12809,
         mutatePolicyWeights(seed, 0.55),
-        "g8578_slot0"
+        "g12809_slot0"
       ),
       createGenome(
-        "g8578_slot3",
+        "g12809_slot3",
         "Delta Policy (Explorer)",
-        8578,
+        12809,
         mutatePolicyWeights(seed, 0.7),
-        "g8578_slot0"
+        "g12809_slot0"
       ),
     ];
   }
@@ -640,6 +684,9 @@ export class AiBrainManager {
         if (w.maxHoldChargeSec < w.preferredChargeSec + 0.45) {
           w.maxHoldChargeSec = Number((w.preferredChargeSec + 0.55).toFixed(2));
         }
+        w.itemSeekWeight = w.itemSeekWeight ?? 0.54;
+        w.juggernautAvoidanceWeight = w.juggernautAvoidanceWeight ?? 1.05;
+        w.itemHoldPatience = w.itemHoldPatience ?? 0.85;
         this.championGenome = parsed.championGenome;
       }
       if (Array.isArray(parsed.population) && parsed.population.length >= 4) {
@@ -653,6 +700,10 @@ export class AiBrainManager {
                 (g.weights.preferredChargeSec + 0.55).toFixed(2)
               );
             }
+            g.weights.itemSeekWeight = g.weights.itemSeekWeight ?? 0.54;
+            g.weights.juggernautAvoidanceWeight =
+              g.weights.juggernautAvoidanceWeight ?? 1.05;
+            g.weights.itemHoldPatience = g.weights.itemHoldPatience ?? 0.85;
           }
           return g;
         });
@@ -1162,6 +1213,7 @@ export class AiBrainManager {
       mtConversionBonus +
       combatUtilityBonus -
       penalties;
+    const rawFitnessScore = Number(rawFitness.toFixed(2));
     const fitnessScore = clamp(Number(rawFitness.toFixed(1)), 5, 100);
 
     return {
@@ -1202,6 +1254,7 @@ export class AiBrainManager {
       bestLapMs: acc.bestLapMs,
       lastLapMs: acc.lastLapMs,
       fitnessScore,
+      rawFitnessScore,
       pathSamples: acc.pathSamples,
     };
   }
@@ -1626,8 +1679,20 @@ export class AiBrainManager {
       };
     }
 
+    // Compute episode-mean best lap so we can reward faster laps relative to this specific track/episode
+    const validEpisodeBestLaps = racers
+      .map((r) => r.bestLapMs)
+      .filter((ms): ms is number => ms !== null && ms > 1000);
+    const episodeMeanBestLapMs =
+      validEpisodeBestLaps.length > 0
+        ? validEpisodeBestLaps.reduce((a, b) => a + b, 0) /
+          validEpisodeBestLaps.length
+        : null;
+
     // Score each genome in our population (matching by genomeId so rotated slots map accurately)
-    const scored = racers
+    // Uses unclamped rawFitnessScore + episode finish rank + episode-relative lap bonus so ties at 100.0
+    // never freeze evolution on Slot 0 across different-length tracks in ALL_CUPS!
+    const scoredEntries = racers
       .map((r) => {
         const g =
           this.population.find((popG) => popG.id === r.genomeId) ??
@@ -1638,6 +1703,26 @@ export class AiBrainManager {
             this.generation,
             DEFAULT_POLICY_WEIGHTS.SELF_LEARNING
           );
+        const rank =
+          finishRanksByRacerId?.[r.racerId] ??
+          fallbackRanked.findIndex((fr) => fr.racerId === r.racerId) + 1;
+        const rawFit = r.rawFitnessScore ?? r.fitnessScore;
+        const rankBonus = (2.5 - rank) * 1.35;
+        const relLapBonus =
+          episodeMeanBestLapMs !== null &&
+          episodeMeanBestLapMs > 1000 &&
+          r.bestLapMs !== null
+            ? clamp(
+                ((episodeMeanBestLapMs - r.bestLapMs) / episodeMeanBestLapMs) *
+                  35.0,
+                -6.0,
+                6.0
+              )
+            : 0;
+        const episodeCompScore = Number(
+          (rawFit + rankBonus + relLapBonus).toFixed(3)
+        );
+
         const updated: AiPolicyGenome = {
           ...g,
           fitness: r.fitnessScore,
@@ -1651,12 +1736,23 @@ export class AiBrainManager {
           miniTurbosFired: r.miniTurbosFired,
           updatedAt: Date.now(),
         };
-        return updated;
+        return {
+          genome: updated,
+          episodeCompScore,
+          episodeBestLapMs: r.bestLapMs,
+          rawFit,
+        };
       })
-      .sort((a, b) => b.fitness - a.fitness);
+      .sort((a, b) => b.episodeCompScore - a.episodeCompScore);
 
-    const bestOfEpisode = scored[0];
-    if (bestOfEpisode) {
+    const scored = scoredEntries.map((s) => s.genome);
+    const bestEntry = scoredEntries[0];
+    const reigningChampEntry = scoredEntries.find((s) =>
+      s.genome.id.endsWith("_slot0")
+    );
+
+    if (bestEntry) {
+      const bestOfEpisode = bestEntry.genome;
       const strictlyHigherFitness =
         bestOfEpisode.fitness > this.championGenome.fitness ||
         this.championGenome.fitness === 0;
@@ -1666,9 +1762,34 @@ export class AiBrainManager {
         (this.championGenome.bestLapMs === null ||
           bestOfEpisode.bestLapMs <= this.championGenome.bestLapMs);
 
-      if (strictlyHigherFitness || tiedFitnessFasterLap) {
+      // Head-to-head promotion across ALL_CUPS:
+      // If a mutated challenger (slot 1/2/3) cleanly beats the reigning Champion (slot 0) in the SAME race
+      // on the SAME track (with higher unclamped fitness + faster episode lap and >= 95% on-track discipline),
+      // promote the challenger even if this track is longer than the all-time shortest track!
+      const beatReigningChampHeadToHead =
+        reigningChampEntry !== undefined &&
+        bestOfEpisode.id !== reigningChampEntry.genome.id &&
+        bestOfEpisode.pavementPct >= 95.0 &&
+        bestEntry.episodeCompScore >
+          reigningChampEntry.episodeCompScore + 0.35 &&
+        bestEntry.rawFit >= reigningChampEntry.rawFit &&
+        (bestEntry.episodeBestLapMs === null ||
+          reigningChampEntry.episodeBestLapMs === null ||
+          bestEntry.episodeBestLapMs <= reigningChampEntry.episodeBestLapMs);
+
+      if (
+        strictlyHigherFitness ||
+        tiedFitnessFasterLap ||
+        beatReigningChampHeadToHead
+      ) {
+        const preservedBestLapMs =
+          bestOfEpisode.bestLapMs !== null &&
+          this.championGenome.bestLapMs !== null
+            ? Math.min(bestOfEpisode.bestLapMs, this.championGenome.bestLapMs)
+            : bestOfEpisode.bestLapMs ?? this.championGenome.bestLapMs;
         this.championGenome = {
           ...bestOfEpisode,
+          bestLapMs: preservedBestLapMs,
           id: `champ_g${this.generation}`,
           name: `Gen-${this.generation} Champion`,
         };

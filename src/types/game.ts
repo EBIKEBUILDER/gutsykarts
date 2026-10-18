@@ -187,6 +187,9 @@ export interface AiPolicyWeights {
   insideApexTarget: number;
   exitTangentAlignBlend: number;
   padSeekWeight: number;
+  itemSeekWeight?: number;
+  juggernautAvoidanceWeight?: number;
+  itemHoldPatience?: number;
   neuralBias: number[];
 }
 
@@ -256,6 +259,7 @@ export interface AiRacerTelemetrySummary {
   bestLapMs: number | null;
   lastLapMs: number | null;
   fitnessScore: number;
+  rawFitnessScore?: number;
   pathSamples: AiPathSample[];
 }
 

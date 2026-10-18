@@ -755,6 +755,7 @@ export class KartController implements CollidableKartBody {
       }
 
       // Active Item Box Hunting when empty-handed (MEDIUM, HARD, SELF_LEARNING)
+      let isSeekingItemBox = false;
       if (
         !chosenPadPos &&
         !this.heldItem &&
@@ -784,15 +785,19 @@ export class KartController implements CollidableKartBody {
           if (score < bestBoxScore) {
             bestBoxScore = score;
             chosenPadPos = boxPos;
+            isSeekingItemBox = true;
           }
         }
       }
 
       if (chosenPadPos) {
+        const seekBlend = isSeekingItemBox
+          ? policy.itemSeekWeight ?? policy.padSeekWeight
+          : policy.padSeekWeight;
         targetWorldPos = Vector3.Lerp(
           targetWorldPos,
           chosenPadPos,
-          policy.padSeekWeight
+          seekBlend
         );
       }
     }
@@ -826,6 +831,7 @@ export class KartController implements CollidableKartBody {
 
     // 6b. Juggernaut & Pack Lateral Spacing (prevents lighter AI karts from steering into heavier Juggernauts)
     let packLateralShift = 0;
+    const juggernautAvoidScale = policy.juggernautAvoidanceWeight ?? 1.0;
     if (
       this.grounded &&
       !isAligningForJump &&
@@ -855,7 +861,8 @@ export class KartController implements CollidableKartBody {
               ? -rawAwaySign
               : rawAwaySign;
           const urgency = (1 - absLatSep / 4.2) * Math.min(1.3, massAdvantage / 90);
-          const lateralShift = awaySign * 2.35 * urgency;
+          const lateralShift =
+            awaySign * 2.35 * urgency * juggernautAvoidScale;
           packLateralShift += lateralShift;
           targetWorldPos.addInPlace(
             this.closestTrack.binormal.scale(lateralShift)
@@ -1187,6 +1194,7 @@ export class KartController implements CollidableKartBody {
 
     // 9. Tactical AI Power-Up Brain (Context-Aware Utility across all 11 Power-Ups)
     let useItemJustPressed = false;
+    const patienceScale = policy.itemHoldPatience ?? 0.85;
     if (this.heldItem && this.rouletteTimer <= 0 && this.spinOutTimer <= 0) {
       this.aiItemUseDelay -= dt;
 
@@ -1235,7 +1243,7 @@ export class KartController implements CollidableKartBody {
             this.heldItemCharges >= 2 &&
             curveDot >= 0.78 &&
             this.nitroBoostTimer <= 0.15;
-          const patienceExpired = this.aiItemUseDelay < -3.2;
+          const patienceExpired = this.aiItemUseDelay < -3.2 * patienceScale;
 
           useItemJustPressed =
             recoveringSpeed ||
@@ -1254,7 +1262,9 @@ export class KartController implements CollidableKartBody {
             const canSpareOffensiveDrone =
               nearUpcomingItemBox ||
               (this.orbitalShieldCharges >= 2 && !urgentThreat) ||
-              (this.rank > 1 && !urgentThreat && this.aiItemUseDelay < -1.4);
+              (this.rank > 1 &&
+                !urgentThreat &&
+                this.aiItemUseDelay < -1.4 * patienceScale);
 
             if (canSpareOffensiveDrone && allRacers && allRacers.length > 1) {
               let hasTargetInCone = nearUpcomingItemBox;
@@ -1278,7 +1288,8 @@ export class KartController implements CollidableKartBody {
             }
           }
         } else if (item === "RICOCHET_DISC") {
-          const maxHoldWait = isProOrLearning ? -2.0 : -1.3;
+          const maxHoldWait =
+            (isProOrLearning ? -2.0 : -1.3) * patienceScale;
           let hasTargetInCone =
             this.aiItemUseDelay < maxHoldWait || nearUpcomingItemBox;
           if (!hasTargetInCone && allRacers && allRacers.length > 1) {
@@ -1322,7 +1333,7 @@ export class KartController implements CollidableKartBody {
           }
           const onTightApexLine =
             turnStrength > 0.22 && Math.abs(signedLatRatio) < 0.52;
-          const patienceExpired = this.aiItemUseDelay < -2.4;
+          const patienceExpired = this.aiItemUseDelay < -2.4 * patienceScale;
 
           useItemJustPressed =
             urgentThreat ||
@@ -1350,10 +1361,11 @@ export class KartController implements CollidableKartBody {
             opponentAheadHasItem ||
             cuttingCorner ||
             nearUpcomingItemBox ||
-            this.aiItemUseDelay < -1.8;
+            this.aiItemUseDelay < -1.8 * patienceScale;
         } else if (item === "EMP_SHOCKWAVE") {
           // Trigger global Ion Storm when leaders ahead are at high speed, boosting, or airborne
-          let highValueLeaderTarget = this.aiItemUseDelay < -1.6 || nearUpcomingItemBox;
+          let highValueLeaderTarget =
+            this.aiItemUseDelay < -1.6 * patienceScale || nearUpcomingItemBox;
           if (!highValueLeaderTarget && allRacers) {
             for (const other of allRacers) {
               if (other.racerId === this.racerId || other.rank >= this.rank) continue;
@@ -1373,7 +1385,7 @@ export class KartController implements CollidableKartBody {
           useItemJustPressed =
             curveDot > 0.72 ||
             nearUpcomingItemBox ||
-            this.aiItemUseDelay < -1.5;
+            this.aiItemUseDelay < -1.5 * patienceScale;
         } else {
           // NOVA_OVERDRIVE & LIL_SAUCER
           useItemJustPressed = true;
