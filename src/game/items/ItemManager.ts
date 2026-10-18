@@ -393,6 +393,29 @@ export class ItemManager {
         ? this.canRacerAcquireLilSaucer(racer, allRacers)
         : true);
 
+    // Compute progress gap behind the leader and behind the nearest rival ahead (pack gap)
+    let distBehindLeader = 0;
+    let distBehindPack = 0;
+    if (racer && allRacers && allRacers.length > 1) {
+      let maxLeaderProgress = racer.totalProgressDistance;
+      let nearestAheadGap = Number.POSITIVE_INFINITY;
+      for (const other of allRacers) {
+        if (other.racerId === racer.racerId) continue;
+        if (other.totalProgressDistance > maxLeaderProgress) {
+          maxLeaderProgress = other.totalProgressDistance;
+        }
+        const gap = other.totalProgressDistance - racer.totalProgressDistance;
+        if (gap > 0 && gap < nearestAheadGap) {
+          nearestAheadGap = gap;
+        }
+      }
+      distBehindLeader = Math.max(
+        0,
+        maxLeaderProgress - racer.totalProgressDistance
+      );
+      distBehindPack = Number.isFinite(nearestAheadGap) ? nearestAheadGap : 0;
+    }
+
     if (rank === 1) {
       if (r < 0.22) return "CRYO_MINE";
       if (r < 0.36) return "TRIPLE_CRYO_MINE";
@@ -402,43 +425,64 @@ export class ItemManager {
       if (r < 0.96) return "ORBITAL_SHIELD";
       return "PULSE_SEEKER";
     }
+
+    // Hardcoded Stranded Underdog Rule:
+    // If a racer in last place (or 3rd place dropped far behind the pack) has a large distance deficit,
+    // 100% guarantee a high-velocity catch-up or field-equalizer item so low-acceleration heavyweights never get stranded.
+    const isStrandedUnderdog =
+      (rank >= 4 && (distBehindPack >= 55 || distBehindLeader >= 115)) ||
+      (rank === 3 && (distBehindPack >= 75 || distBehindLeader >= 145));
+
+    if (isStrandedUnderdog) {
+      if (r < 0.35) return "WARP_AUTOPILOT";
+      if (r < 0.57) return "GOLDEN_OVERCLOCK";
+      if (r < 0.75) return "NOVA_OVERDRIVE";
+      if (r < 0.90) return "EMP_SHOCKWAVE";
+      return "TRIPLE_SEEKER";
+    }
+
     if (rank === 2) {
+      if (distBehindLeader >= 65) {
+        // 2nd place chasing a runaway leader gets stronger chase tools
+        if (r < 0.24) return "TRIPLE_SEEKER";
+        if (r < 0.44) return "TRIPLE_NITRO";
+        if (r < 0.60) return "GOLDEN_OVERCLOCK";
+        if (r < 0.75) return "PULSE_SEEKER";
+        if (canGetSaucer && r < 0.88) return "LIL_SAUCER";
+        return "NOVA_OVERDRIVE";
+      }
       if (canGetSaucer && r < 0.06) return "LIL_SAUCER";
       if (r < 0.20) return "PULSE_SEEKER";
-      if (r < 0.32) return "TRIPLE_SEEKER";
-      if (r < 0.44) return "NITRO_CORE";
-      if (r < 0.54) return "TRIPLE_NITRO";
-      if (r < 0.60) return "GOLDEN_OVERCLOCK";
-      if (r < 0.70) return "RICOCHET_DISC";
-      if (r < 0.79) return "ORBITAL_SHIELD";
-      if (r < 0.86) return "TRIPLE_CRYO_MINE";
-      if (r < 0.92) return "OIL_SQUALL";
-      if (r < 0.97) return "PHASE_CLOAK";
+      if (r < 0.34) return "TRIPLE_SEEKER";
+      if (r < 0.46) return "NITRO_CORE";
+      if (r < 0.58) return "TRIPLE_NITRO";
+      if (r < 0.66) return "GOLDEN_OVERCLOCK";
+      if (r < 0.75) return "RICOCHET_DISC";
+      if (r < 0.84) return "ORBITAL_SHIELD";
+      if (r < 0.90) return "TRIPLE_CRYO_MINE";
+      if (r < 0.95) return "OIL_SQUALL";
       return "NOVA_OVERDRIVE";
     }
+
     if (rank === 3) {
-      if (canGetSaucer && r < 0.14) return "LIL_SAUCER";
-      if (r < 0.28) return "TRIPLE_SEEKER";
-      if (r < 0.40) return "TRIPLE_NITRO";
+      if (r < 0.22) return "TRIPLE_SEEKER";
+      if (r < 0.38) return "TRIPLE_NITRO";
       if (r < 0.52) return "GOLDEN_OVERCLOCK";
-      if (r < 0.60) return "WARP_AUTOPILOT";
-      if (r < 0.69) return "OIL_SQUALL";
-      if (r < 0.79) return "PULSE_SEEKER";
-      if (r < 0.87) return "ORBITAL_SHIELD";
-      if (r < 0.92) return "PHASE_CLOAK";
-      if (r < 0.97) return "NOVA_OVERDRIVE";
-      return "EMP_SHOCKWAVE";
+      if (r < 0.64) return "WARP_AUTOPILOT";
+      if (r < 0.76) return "NOVA_OVERDRIVE";
+      if (r < 0.84) return "EMP_SHOCKWAVE";
+      if (canGetSaucer && r < 0.92) return "LIL_SAUCER";
+      return "ORBITAL_SHIELD";
     }
-    // Rank 4+ (Underdog comeback arsenal)
-    if (canGetSaucer && r < 0.22) return "LIL_SAUCER";
-    if (r < 0.38) return "WARP_AUTOPILOT";
-    if (r < 0.53) return "GOLDEN_OVERCLOCK";
-    if (r < 0.65) return "TRIPLE_SEEKER";
-    if (r < 0.75) return "TRIPLE_NITRO";
-    if (r < 0.85) return "NOVA_OVERDRIVE";
-    if (r < 0.92) return "EMP_SHOCKWAVE";
-    if (r < 0.96) return "OIL_SQUALL";
-    return "PHASE_CLOAK";
+
+    // Rank 4+ (Underdog comeback arsenal — always guarantees high-tier mobility or lock-on power)
+    if (r < 0.22) return "TRIPLE_SEEKER";
+    if (r < 0.42) return "WARP_AUTOPILOT";
+    if (r < 0.60) return "GOLDEN_OVERCLOCK";
+    if (r < 0.74) return "NOVA_OVERDRIVE";
+    if (r < 0.86) return "TRIPLE_NITRO";
+    if (r < 0.95) return "EMP_SHOCKWAVE";
+    return canGetSaucer ? "LIL_SAUCER" : "TRIPLE_SEEKER";
   }
 
   public activatePowerUp(
@@ -486,11 +530,26 @@ export class ItemManager {
     }
 
     if (item === "WARP_AUTOPILOT") {
-      caster.activateWarpAutopilot();
+      let nearestAheadGap = Number.POSITIVE_INFINITY;
+      for (const other of allRacers) {
+        if (other.racerId === caster.racerId) continue;
+        const gap = other.totalProgressDistance - caster.totalProgressDistance;
+        if (gap > 0 && gap < nearestAheadGap) {
+          nearestAheadGap = gap;
+        }
+      }
+      const distBehindPack = Number.isFinite(nearestAheadGap)
+        ? nearestAheadGap
+        : 0;
+      const shuttleDuration = Math.min(
+        10.0,
+        6.0 + Math.max(0, distBehindPack - 25) / 35
+      );
+      caster.activateWarpAutopilot(shuttleDuration);
       this.ensureWarpAutopilotCanopy(caster);
       globalAiBrain.recordItemUsed(caster.racerId, true);
       onBannerEvent?.(
-        `🚀 ${caster.name} engaged ${meta.name} (95 u/s Hyper-Shuttle)!`
+        `🚀 ${caster.name} engaged ${meta.name} (108 u/s Hyper-Shuttle)!`
       );
       return;
     }
@@ -1664,7 +1723,7 @@ export class ItemManager {
         coreMesh.setEnabled(false);
       }
 
-      // 2a2. Hyper-Shuttle Autopilot Canopy
+      // 2a2. Hyper-Shuttle Autopilot Canopy, Pack-Reentry Disengage & Plow-Through Knockback
       const warpCanopy = this.warpAutopilotCanopies.get(racer.racerId);
       if (racer.warpAutopilotTimer > 0) {
         const activeCanopy =
@@ -1675,6 +1734,52 @@ export class ItemManager {
             : warpCanopy;
         activeCanopy.setEnabled(true);
         activeCanopy.rotation.z += dt * 9.0;
+
+        // Smooth pack-reentry disengage once the shuttle has carried the racer back into the crowd
+        if (racer.warpAutopilotElapsed >= 4.0 && racer.warpAutopilotTimer > 0.65) {
+          let nearestAheadGap = Number.POSITIVE_INFINITY;
+          for (const other of racers) {
+            if (other.racerId === racer.racerId) continue;
+            const gap = other.totalProgressDistance - racer.totalProgressDistance;
+            if (gap > 0 && gap < nearestAheadGap) {
+              nearestAheadGap = gap;
+            }
+          }
+          if (
+            racer.rank <= 2 ||
+            (racer.rank === 3 && nearestAheadGap <= 18.0)
+          ) {
+            racer.warpAutopilotTimer = Math.min(racer.warpAutopilotTimer, 0.65);
+          }
+        }
+
+        // Supersonic hull contact knocks aside rivals in the shuttle's path
+        for (const other of racers) {
+          if (
+            other.racerId === racer.racerId ||
+            other.spinOutTimer > 0 ||
+            other.spinOutMercyTimer > 0 ||
+            other.phaseCloakTimer > 0 ||
+            other.novaOverdriveTimer > 0 ||
+            other.warpAutopilotTimer > 0
+          ) {
+            continue;
+          }
+          const dx = other.position.x - racer.position.x;
+          const dz = other.position.z - racer.position.z;
+          const distSq = dx * dx + dz * dz;
+          if (distSq <= 2.65 * 2.65) {
+            const dist = Math.sqrt(distSq);
+            const nx = dist > 1e-4 ? dx / dist : Math.cos(racer.headingYaw);
+            const nz = dist > 1e-4 ? dz / dist : -Math.sin(racer.headingYaw);
+            other.knockVelocity.set(nx * 24.0, 0, nz * 24.0);
+            other.triggerSpinOut(1.05, 3.4);
+            globalAiBrain.recordItemHitLanded(racer.racerId);
+            onBannerEvent?.(
+              `🚀 ${racer.name}'s Hyper-Shuttle blasted past ${other.name}!`
+            );
+          }
+        }
       } else if (warpCanopy && !warpCanopy.isDisposed()) {
         warpCanopy.setEnabled(false);
       }
@@ -1741,6 +1846,7 @@ export class ItemManager {
           if (
             other.racerId === racer.racerId ||
             other.spinOutTimer > 0 ||
+            other.spinOutMercyTimer > 0 ||
             other.phaseCloakTimer > 0
           ) {
             continue;
@@ -1821,6 +1927,7 @@ export class ItemManager {
           if (
             other.racerId === racer.racerId ||
             other.spinOutTimer > 0 ||
+            other.spinOutMercyTimer > 0 ||
             other.phaseCloakTimer > 0
           ) {
             continue;
@@ -2032,7 +2139,13 @@ export class ItemManager {
 
       let triggered = false;
       for (const racer of racers) {
-        if (racer.phaseCloakTimer > 0) continue;
+        if (
+          racer.phaseCloakTimer > 0 ||
+          racer.spinOutTimer > 0 ||
+          racer.spinOutMercyTimer > 0
+        ) {
+          continue;
+        }
         const dx = racer.position.x - mine.position.x;
         const dz = racer.position.z - mine.position.z;
         // 1.8u trigger radius per spec
@@ -2098,7 +2211,13 @@ export class ItemManager {
 
       let triggered = false;
       for (const racer of racers) {
-        if (racer.phaseCloakTimer > 0) continue;
+        if (
+          racer.phaseCloakTimer > 0 ||
+          racer.spinOutTimer > 0 ||
+          racer.spinOutMercyTimer > 0
+        ) {
+          continue;
+        }
         const dx = racer.position.x - prism.basePosition.x;
         const dz = racer.position.z - prism.basePosition.z;
         if (dx * dx + dz * dz <= 2.0 * 2.0) {
@@ -2328,8 +2447,12 @@ export class ItemManager {
         if (racer.racerId === proj.ownerId && proj.lifeTimer > graceThreshold) {
           continue; // Brief launch grace window for caster
         }
-        if (racer.phaseCloakTimer > 0) {
-          continue; // Ghost Phase Cloak passes right through projectiles
+        if (
+          racer.phaseCloakTimer > 0 ||
+          racer.spinOutTimer > 0 ||
+          racer.spinOutMercyTimer > 0
+        ) {
+          continue; // Intangible during Phase Cloak, active spin-out, or post-spinout recovery grace window
         }
         const dx = racer.position.x - proj.position.x;
         const dz = racer.position.z - proj.position.z;

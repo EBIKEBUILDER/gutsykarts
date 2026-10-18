@@ -94,10 +94,12 @@ export class KartController implements CollidableKartBody {
   public novaOverdriveTimer = 0;
   public goldenOverclockTimer = 0;
   public warpAutopilotTimer = 0;
+  public warpAutopilotElapsed = 0;
   public oilSquallTimer = 0;
   public phaseCloakTimer = 0;
   public empShrinkTimer = 0;
   public spinOutTimer = 0;
+  public spinOutMercyTimer = 0;
   public spinOutAngle = 0;
   public wobbleTimer = 0;
   public combatRecoveryTimer = 0;
@@ -280,9 +282,11 @@ export class KartController implements CollidableKartBody {
     if (
       this.novaOverdriveTimer > 0 ||
       this.phaseCloakTimer > 0 ||
-      this.warpAutopilotTimer > 0
+      this.warpAutopilotTimer > 0 ||
+      this.spinOutTimer > 0 ||
+      this.spinOutMercyTimer > 0
     ) {
-      return; // Immune during Nova Overdrive, Phantom Phase Cloak, or Hyper-Shuttle Autopilot
+      return; // Immune during active invulnerability, active spin-out, or post-spinout recovery grace window
     }
     this.spinOutTimer = Math.max(this.spinOutTimer, durationSec);
     this.combatRecoveryTimer = Math.max(
@@ -363,19 +367,21 @@ export class KartController implements CollidableKartBody {
     this.activeBoostLabel = "GOLDEN OVERCLOCK (+45%)";
   }
 
-  public activateWarpAutopilot(): void {
+  public activateWarpAutopilot(durationSec = 6.5): void {
     globalAiBrain.recordItemUsed(this.racerId, true);
-    this.warpAutopilotTimer = 6.0;
+    this.warpAutopilotTimer = Math.max(4.5, Math.min(10.0, durationSec));
+    this.warpAutopilotElapsed = 0;
     this.empShrinkTimer = 0;
     this.oilSquallTimer = 0;
     this.combatRecoveryTimer = 0;
     this.spinOutTimer = 0;
+    this.spinOutMercyTimer = 0;
     this.wobbleTimer = 0;
     this.driftState = "NONE";
     this.driftDirection = 0;
     this.prolongedRocketBoostActive = true;
-    this.activeBoostLabel = "HYPER-SHUTTLE AUTOPILOT (95 U/S)";
-    this.forwardSpeed = Math.max(this.forwardSpeed, 95.0);
+    this.activeBoostLabel = "HYPER-SHUTTLE AUTOPILOT (108 U/S)";
+    this.forwardSpeed = Math.max(this.forwardSpeed, 108.0);
     this.lateralSpeed = 0;
     this.velocity = this.forwardVector.scale(this.forwardSpeed);
   }
@@ -1632,20 +1638,19 @@ export class KartController implements CollidableKartBody {
         this.equipPowerUpImmediate(null);
       }
     }
+    if (this.spinOutMercyTimer > 0) {
+      this.spinOutMercyTimer = Math.max(0, this.spinOutMercyTimer - dt);
+    }
     if (this.warpAutopilotTimer > 0) {
+      this.warpAutopilotElapsed += dt;
       this.warpAutopilotTimer = Math.max(0, this.warpAutopilotTimer - dt);
       if (this.warpAutopilotTimer <= 0) {
-        if (this.activeBoostLabel?.includes("AUTOPILOT")) {
-          this.activeBoostLabel = null;
-        }
-        if (
-          this.boostTimer <= 0 &&
-          this.nitroBoostTimer <= 0 &&
-          this.novaOverdriveTimer <= 0 &&
-          this.phaseCloakTimer <= 0
-        ) {
-          this.prolongedRocketBoostActive = false;
-        }
+        this.warpAutopilotElapsed = 0;
+        this.spinOutMercyTimer = Math.max(this.spinOutMercyTimer, 1.0);
+        this.boostTimer = Math.max(this.boostTimer, 1.1);
+        this.boostMultiplier = Math.max(this.boostMultiplier, 1.35);
+        this.prolongedRocketBoostActive = true;
+        this.activeBoostLabel = "SHUTTLE EXIT BOOST (+35%)";
       }
     }
     if (this.phaseCloakTimer > 0) {
@@ -2535,7 +2540,7 @@ export class KartController implements CollidableKartBody {
     if (this.warpAutopilotTimer > 0) {
       powerSpeedMult = Math.max(
         powerSpeedMult,
-        Math.max(2.25, 95.0 / Math.max(25.0, this.stats.topSpeed))
+        Math.max(2.5, 108.0 / Math.max(25.0, this.stats.topSpeed))
       );
     }
     if (this.boostTimer > 0) {
@@ -2565,14 +2570,19 @@ export class KartController implements CollidableKartBody {
       this.warpAutopilotTimer > 0;
 
     if (this.warpAutopilotTimer > 0) {
-      // Hyper-Shuttle Autopilot locks cruise speed to 95 u/s along the track spline
+      // Hyper-Shuttle Autopilot locks cruise speed to 108 u/s along the track spline
       this.spinOutTimer = 0;
       this.spinOutAngle = 0;
-      this.forwardSpeed = 95.0;
+      this.forwardSpeed = 108.0;
     } else if (this.spinOutTimer > 0) {
       this.spinOutTimer = Math.max(0, this.spinOutTimer - dt);
       this.spinOutAngle += dt * Math.PI * 4; // 720-degree spin-out
       this.forwardSpeed *= Math.max(0, 1 - 2.8 * dt);
+      if (this.spinOutTimer <= 0) {
+        // Grant 1.35s post-spinout mercy grace window so recovering karts cannot be chain-stunned at 0 speed
+        this.spinOutMercyTimer = Math.max(this.spinOutMercyTimer, 1.35);
+        this.burnoutTimer = Math.max(this.burnoutTimer, 0.55);
+      }
     } else {
       this.spinOutAngle = 0;
       const effectiveThrottle =
@@ -2589,6 +2599,8 @@ export class KartController implements CollidableKartBody {
         const launchTorque = 1.0 + 0.55 * (1.0 - lowSpeedProgress);
         const accelBoost = isPowerBoosting
           ? 1.65
+          : this.spinOutMercyTimer > 0
+          ? 1.35
           : this.driftState === "DRIFT_ACTIVE" && this.grounded
           ? PHYSICS_CONSTANTS.DRIFT_ACTIVE_ACCEL_MULT
           : 1.0;
