@@ -84,74 +84,74 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
     juggernautAvoidanceWeight: 0.85,
     itemHoldPatience: 1.0,
     neuralBias: [
-      -0.2809,
-      0.231,
-      -0.0123,
-      -0.126,
-      0.0021,
-      -0.1437,
-      -0.0329,
-      -0.0514,
+      -0.329,
+      0.2537,
+      0.2229,
+      -0.3076,
+      -0.0987,
+      -0.0692,
+      -0.1011,
+      0.1329,
     ],
   },
   HARD: {
-    lookAheadBase: 19.35,
-    lookAheadCurve: 12.27,
-    lookAheadDrift: 13.27,
-    apexCutRatio: 0.27,
-    driftCutRatio: 0.259,
-    steerGain: 2.524,
-    driftEntryThreshold: 0.171,
-    preferredChargeSec: 2.87,
-    maxHoldChargeSec: 5.02,
-    driftAngleGain: 2.331,
-    driftLatGain: 2.012,
-    driftVelDamping: 2.565,
-    insideApexTarget: 0.134,
-    exitTangentAlignBlend: 0.593,
-    padSeekWeight: 0.492,
-    itemSeekWeight: 0.54,
-    juggernautAvoidanceWeight: 1.05,
-    itemHoldPatience: 0.85,
+    lookAheadBase: 17.68,
+    lookAheadCurve: 12.29,
+    lookAheadDrift: 16.44,
+    apexCutRatio: 0.339,
+    driftCutRatio: 0.299,
+    steerGain: 2.527,
+    driftEntryThreshold: 0.166,
+    preferredChargeSec: 3.62,
+    maxHoldChargeSec: 4.54,
+    driftAngleGain: 2.409,
+    driftLatGain: 2.571,
+    driftVelDamping: 2.545,
+    insideApexTarget: 0.186,
+    exitTangentAlignBlend: 0.609,
+    padSeekWeight: 0.459,
+    itemSeekWeight: 0.446,
+    juggernautAvoidanceWeight: 1.148,
+    itemHoldPatience: 0.783,
     neuralBias: [
-      -0.2809,
-      0.231,
-      -0.0123,
-      -0.126,
-      0.0021,
-      -0.1437,
-      -0.0329,
-      -0.0514,
+      -0.329,
+      0.2537,
+      0.2229,
+      -0.3076,
+      -0.0987,
+      -0.0692,
+      -0.1011,
+      0.1329,
     ],
   },
   SELF_LEARNING: {
-    lookAheadBase: 19.35,
-    lookAheadCurve: 12.27,
-    lookAheadDrift: 13.27,
-    apexCutRatio: 0.27,
-    driftCutRatio: 0.259,
-    steerGain: 2.524,
-    driftEntryThreshold: 0.171,
-    preferredChargeSec: 2.87,
-    maxHoldChargeSec: 5.02,
-    driftAngleGain: 2.331,
-    driftLatGain: 2.012,
-    driftVelDamping: 2.565,
-    insideApexTarget: 0.134,
-    exitTangentAlignBlend: 0.593,
-    padSeekWeight: 0.492,
-    itemSeekWeight: 0.54,
-    juggernautAvoidanceWeight: 1.05,
-    itemHoldPatience: 0.85,
+    lookAheadBase: 17.68,
+    lookAheadCurve: 12.29,
+    lookAheadDrift: 16.44,
+    apexCutRatio: 0.339,
+    driftCutRatio: 0.299,
+    steerGain: 2.527,
+    driftEntryThreshold: 0.166,
+    preferredChargeSec: 3.62,
+    maxHoldChargeSec: 4.54,
+    driftAngleGain: 2.409,
+    driftLatGain: 2.571,
+    driftVelDamping: 2.545,
+    insideApexTarget: 0.186,
+    exitTangentAlignBlend: 0.609,
+    padSeekWeight: 0.459,
+    itemSeekWeight: 0.446,
+    juggernautAvoidanceWeight: 1.148,
+    itemHoldPatience: 0.783,
     neuralBias: [
-      -0.2809,
-      0.231,
-      -0.0123,
-      -0.126,
-      0.0021,
-      -0.1437,
-      -0.0329,
-      -0.0514,
+      -0.329,
+      0.2537,
+      0.2229,
+      -0.3076,
+      -0.0987,
+      -0.0692,
+      -0.1011,
+      0.1329,
     ],
   },
 };
@@ -163,9 +163,9 @@ function clamp(val: number, min: number, max: number): number {
 function cloneWeights(w: AiPolicyWeights): AiPolicyWeights {
   return {
     ...w,
-    itemSeekWeight: w.itemSeekWeight ?? 0.54,
-    juggernautAvoidanceWeight: w.juggernautAvoidanceWeight ?? 1.05,
-    itemHoldPatience: w.itemHoldPatience ?? 0.85,
+    itemSeekWeight: w.itemSeekWeight ?? 0.446,
+    juggernautAvoidanceWeight: w.juggernautAvoidanceWeight ?? 1.148,
+    itemHoldPatience: w.itemHoldPatience ?? 0.783,
     neuralBias: Array.isArray(w.neuralBias)
       ? [...w.neuralBias]
       : [0, 0, 0, 0, 0, 0, 0, 0],
@@ -516,8 +516,8 @@ interface PersistedBrainState {
 }
 
 export class AiBrainManager {
-  private generation = 12809;
-  private episodesCompleted = 12808;
+  private generation = 13364;
+  private episodesCompleted = 13363;
   private itemsEnabled = true;
   private autoBalanceRosterEnabled = false;
   private trainingTrackMode: "ROTATE_CUP" | "ALL_CUPS" | "SINGLE_TRACK" =
@@ -553,20 +553,20 @@ export class AiBrainManager {
 
   constructor() {
     this.championGenome = createGenome(
-      "gen12809_champ",
-      "Gen-12809 Seed Ace",
-      12809,
+      "gen13364_champ",
+      "Gen-13364 Seed Ace",
+      13364,
       DEFAULT_POLICY_WEIGHTS.SELF_LEARNING
     );
     this.championGenome.fitness = 100.0;
-    this.championGenome.bestLapMs = 15960;
-    this.championGenome.pavementPct = 98.8;
+    this.championGenome.bestLapMs = 16580;
+    this.championGenome.pavementPct = 99.2;
     const seed = DEFAULT_POLICY_WEIGHTS.SELF_LEARNING;
     this.population = [
-      createGenome("g12809_slot0", "Alpha Policy (Apex)", 12809, seed),
-      createGenome("g12809_slot1", "Beta Policy (Smooth)", 12809, seed, "g12809_slot0"),
-      createGenome("g12809_slot2", "Gamma Policy (Charger)", 12809, seed, "g12809_slot0"),
-      createGenome("g12809_slot3", "Delta Policy (Explorer)", 12809, seed, "g12809_slot0"),
+      createGenome("g13364_slot0", "Alpha Policy (Apex)", 13364, seed),
+      createGenome("g13364_slot1", "Beta Policy (Smooth)", 13364, seed, "g13364_slot0"),
+      createGenome("g13364_slot2", "Gamma Policy (Charger)", 13364, seed, "g13364_slot0"),
+      createGenome("g13364_slot3", "Delta Policy (Explorer)", 13364, seed, "g13364_slot0"),
     ];
     this.initDefaultCharacterStats();
   }
@@ -605,27 +605,27 @@ export class AiBrainManager {
   private initDefaultPopulation(): void {
     const seed = DEFAULT_POLICY_WEIGHTS.SELF_LEARNING;
     this.population = [
-      createGenome("g12809_slot0", "Alpha Policy (Apex)", 12809, seed),
+      createGenome("g13364_slot0", "Alpha Policy (Apex)", 13364, seed),
       createGenome(
-        "g12809_slot1",
+        "g13364_slot1",
         "Beta Policy (Smooth)",
-        12809,
+        13364,
         mutatePolicyWeights(seed, 0.45),
-        "g12809_slot0"
+        "g13364_slot0"
       ),
       createGenome(
-        "g12809_slot2",
+        "g13364_slot2",
         "Gamma Policy (Charger)",
-        12809,
+        13364,
         mutatePolicyWeights(seed, 0.55),
-        "g12809_slot0"
+        "g13364_slot0"
       ),
       createGenome(
-        "g12809_slot3",
+        "g13364_slot3",
         "Delta Policy (Explorer)",
-        12809,
+        13364,
         mutatePolicyWeights(seed, 0.7),
-        "g12809_slot0"
+        "g13364_slot0"
       ),
     ];
   }
@@ -654,8 +654,10 @@ export class AiBrainManager {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw) as Partial<PersistedBrainState>;
-      if (typeof parsed.generation === "number" && parsed.generation >= 1) {
-        this.generation = Math.max(this.generation, parsed.generation);
+      const storedGen =
+        typeof parsed.generation === "number" ? parsed.generation : 0;
+      if (storedGen >= 1) {
+        this.generation = Math.max(this.generation, storedGen);
       }
       if (typeof parsed.episodesCompleted === "number") {
         this.episodesCompleted = Math.max(
@@ -676,7 +678,11 @@ export class AiBrainManager {
       ) {
         this.trainingTrackMode = parsed.trainingTrackMode;
       }
-      if (parsed.championGenome && parsed.championGenome.weights) {
+      if (
+        storedGen >= 13364 &&
+        parsed.championGenome &&
+        parsed.championGenome.weights
+      ) {
         const w = parsed.championGenome.weights;
         if (w.preferredChargeSec < 2.55) {
           w.preferredChargeSec = 2.95;
@@ -684,12 +690,16 @@ export class AiBrainManager {
         if (w.maxHoldChargeSec < w.preferredChargeSec + 0.45) {
           w.maxHoldChargeSec = Number((w.preferredChargeSec + 0.55).toFixed(2));
         }
-        w.itemSeekWeight = w.itemSeekWeight ?? 0.54;
-        w.juggernautAvoidanceWeight = w.juggernautAvoidanceWeight ?? 1.05;
-        w.itemHoldPatience = w.itemHoldPatience ?? 0.85;
+        w.itemSeekWeight = w.itemSeekWeight ?? 0.446;
+        w.juggernautAvoidanceWeight = w.juggernautAvoidanceWeight ?? 1.148;
+        w.itemHoldPatience = w.itemHoldPatience ?? 0.783;
         this.championGenome = parsed.championGenome;
       }
-      if (Array.isArray(parsed.population) && parsed.population.length >= 4) {
+      if (
+        storedGen >= 13364 &&
+        Array.isArray(parsed.population) &&
+        parsed.population.length >= 4
+      ) {
         this.population = parsed.population.slice(0, 4).map((g) => {
           if (g?.weights) {
             if (g.weights.preferredChargeSec < 2.45) {
@@ -700,10 +710,10 @@ export class AiBrainManager {
                 (g.weights.preferredChargeSec + 0.55).toFixed(2)
               );
             }
-            g.weights.itemSeekWeight = g.weights.itemSeekWeight ?? 0.54;
+            g.weights.itemSeekWeight = g.weights.itemSeekWeight ?? 0.446;
             g.weights.juggernautAvoidanceWeight =
-              g.weights.juggernautAvoidanceWeight ?? 1.05;
-            g.weights.itemHoldPatience = g.weights.itemHoldPatience ?? 0.85;
+              g.weights.juggernautAvoidanceWeight ?? 1.148;
+            g.weights.itemHoldPatience = g.weights.itemHoldPatience ?? 0.783;
           }
           return g;
         });
@@ -1891,15 +1901,18 @@ export class AiBrainManager {
   }
 
   public resetBrainToSeed(alsoResetBalance = true): void {
-    this.generation = 1;
-    this.episodesCompleted = 0;
+    this.generation = 13364;
+    this.episodesCompleted = 13363;
     this.baselineMetrics = null;
     this.championGenome = createGenome(
-      "gen1_champ",
-      "Gen-1 Seed Ace",
-      1,
+      "gen13364_champ",
+      "Gen-13364 Seed Ace",
+      13364,
       DEFAULT_POLICY_WEIGHTS.SELF_LEARNING
     );
+    this.championGenome.fitness = 100.0;
+    this.championGenome.bestLapMs = 16580;
+    this.championGenome.pavementPct = 99.2;
     this.initDefaultPopulation();
     if (alsoResetBalance) {
       this.initDefaultCharacterStats();
