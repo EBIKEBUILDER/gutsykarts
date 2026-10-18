@@ -77,6 +77,12 @@ interface TripleNitroRig {
   orbitAngle: number;
 }
 
+interface TripleCryoMineRig {
+  root: TransformNode;
+  mineNodes: TransformNode[];
+  bobPhase: number;
+}
+
 export class ItemManager {
   private readonly scene: Scene;
   private readonly track: BuiltTrack;
@@ -88,9 +94,11 @@ export class ItemManager {
   private readonly glitchPrisms: DeployedGlitchPrism[] = [];
   private readonly empWaves: ActiveEmpWaveRing[] = [];
   private readonly novaOverdriveCores = new Map<string, Mesh>();
+  private readonly warpAutopilotCanopies = new Map<string, Mesh>();
   private readonly orbitalShieldRigs = new Map<string, OrbitalShieldRig>();
   private readonly tripleSeekerRigs = new Map<string, OrbitalShieldRig>();
   private readonly tripleNitroRigs = new Map<string, TripleNitroRig>();
+  private readonly tripleCryoMineRigs = new Map<string, TripleCryoMineRig>();
   private readonly phaseCloakShells = new Map<string, Mesh>();
 
   private elapsedSec = 0;
@@ -104,6 +112,8 @@ export class ItemManager {
   private readonly mineYellowMat: StandardMaterial;
   private readonly mineBlackMat: StandardMaterial;
   private readonly novaGoldMat: StandardMaterial;
+  private readonly warpShuttleMat: StandardMaterial;
+  private readonly oilSquallRingMat: StandardMaterial;
   private readonly saucerChromeMat: StandardMaterial;
   private readonly saucerDomeFaceMat: StandardMaterial;
   private readonly saucerBeamMat: StandardMaterial;
@@ -147,6 +157,18 @@ export class ItemManager {
     this.novaGoldMat = new StandardMaterial("novaGoldMat", scene);
     this.novaGoldMat.diffuseColor = new Color3(1.0, 0.88, 0.2);
     this.novaGoldMat.emissiveColor = new Color3(0.85, 0.68, 0.1);
+
+    this.warpShuttleMat = new StandardMaterial("warpShuttleMat", scene);
+    this.warpShuttleMat.diffuseColor = new Color3(0.15, 0.88, 1.0);
+    this.warpShuttleMat.emissiveColor = new Color3(0.1, 0.65, 0.92);
+    this.warpShuttleMat.specularColor = new Color3(1.0, 1.0, 1.0);
+    this.warpShuttleMat.alpha = 0.52;
+    this.warpShuttleMat.backFaceCulling = false;
+
+    this.oilSquallRingMat = new StandardMaterial("oilSquallRingMat", scene);
+    this.oilSquallRingMat.diffuseColor = new Color3(0.55, 0.22, 0.85);
+    this.oilSquallRingMat.emissiveColor = new Color3(0.38, 0.12, 0.65);
+    this.oilSquallRingMat.alpha = 0.78;
 
     // Quirky retro UFO saucer materials + procedural face texture
     this.saucerChromeMat = new StandardMaterial("saucerChromeMat", scene);
@@ -372,44 +394,51 @@ export class ItemManager {
         : true);
 
     if (rank === 1) {
-      if (r < 0.26) return "CRYO_MINE";
-      if (r < 0.48) return "GLITCH_PRISM";
-      if (r < 0.70) return "RICOCHET_DISC";
-      if (r < 0.84) return "NITRO_CORE";
-      if (r < 0.94) return "ORBITAL_SHIELD";
+      if (r < 0.22) return "CRYO_MINE";
+      if (r < 0.36) return "TRIPLE_CRYO_MINE";
+      if (r < 0.54) return "GLITCH_PRISM";
+      if (r < 0.74) return "RICOCHET_DISC";
+      if (r < 0.86) return "NITRO_CORE";
+      if (r < 0.96) return "ORBITAL_SHIELD";
       return "PULSE_SEEKER";
     }
     if (rank === 2) {
-      if (canGetSaucer && r < 0.08) return "LIL_SAUCER";
-      if (r < 0.22) return "PULSE_SEEKER";
-      if (r < 0.34) return "TRIPLE_SEEKER";
-      if (r < 0.48) return "NITRO_CORE";
-      if (r < 0.60) return "TRIPLE_NITRO";
-      if (r < 0.72) return "RICOCHET_DISC";
-      if (r < 0.83) return "ORBITAL_SHIELD";
-      if (r < 0.91) return "PHASE_CLOAK";
-      if (r < 0.96) return "GLITCH_PRISM";
+      if (canGetSaucer && r < 0.06) return "LIL_SAUCER";
+      if (r < 0.20) return "PULSE_SEEKER";
+      if (r < 0.32) return "TRIPLE_SEEKER";
+      if (r < 0.44) return "NITRO_CORE";
+      if (r < 0.54) return "TRIPLE_NITRO";
+      if (r < 0.60) return "GOLDEN_OVERCLOCK";
+      if (r < 0.70) return "RICOCHET_DISC";
+      if (r < 0.79) return "ORBITAL_SHIELD";
+      if (r < 0.86) return "TRIPLE_CRYO_MINE";
+      if (r < 0.92) return "OIL_SQUALL";
+      if (r < 0.97) return "PHASE_CLOAK";
       return "NOVA_OVERDRIVE";
     }
     if (rank === 3) {
-      if (canGetSaucer && r < 0.16) return "LIL_SAUCER";
-      if (r < 0.32) return "TRIPLE_SEEKER";
-      if (r < 0.48) return "TRIPLE_NITRO";
-      if (r < 0.60) return "NITRO_CORE";
-      if (r < 0.72) return "PULSE_SEEKER";
-      if (r < 0.82) return "ORBITAL_SHIELD";
-      if (r < 0.90) return "PHASE_CLOAK";
-      if (r < 0.96) return "NOVA_OVERDRIVE";
+      if (canGetSaucer && r < 0.14) return "LIL_SAUCER";
+      if (r < 0.28) return "TRIPLE_SEEKER";
+      if (r < 0.40) return "TRIPLE_NITRO";
+      if (r < 0.52) return "GOLDEN_OVERCLOCK";
+      if (r < 0.60) return "WARP_AUTOPILOT";
+      if (r < 0.69) return "OIL_SQUALL";
+      if (r < 0.79) return "PULSE_SEEKER";
+      if (r < 0.87) return "ORBITAL_SHIELD";
+      if (r < 0.92) return "PHASE_CLOAK";
+      if (r < 0.97) return "NOVA_OVERDRIVE";
       return "EMP_SHOCKWAVE";
     }
-    // Rank 4+ (Underdog comeback arsenal: UFO Saucer, Triple Seeker, Triple Nitro, Nova Overdrive, EMP Shockwave, Phase Cloak)
-    if (canGetSaucer && r < 0.30) return "LIL_SAUCER";
-    if (r < 0.46) return "TRIPLE_SEEKER";
-    if (r < 0.62) return "TRIPLE_NITRO";
-    if (r < 0.76) return "NOVA_OVERDRIVE";
-    if (r < 0.88) return "EMP_SHOCKWAVE";
-    if (r < 0.95) return "PHASE_CLOAK";
-    return "ORBITAL_SHIELD";
+    // Rank 4+ (Underdog comeback arsenal)
+    if (canGetSaucer && r < 0.22) return "LIL_SAUCER";
+    if (r < 0.38) return "WARP_AUTOPILOT";
+    if (r < 0.53) return "GOLDEN_OVERCLOCK";
+    if (r < 0.65) return "TRIPLE_SEEKER";
+    if (r < 0.75) return "TRIPLE_NITRO";
+    if (r < 0.85) return "NOVA_OVERDRIVE";
+    if (r < 0.92) return "EMP_SHOCKWAVE";
+    if (r < 0.96) return "OIL_SQUALL";
+    return "PHASE_CLOAK";
   }
 
   public activatePowerUp(
@@ -439,6 +468,62 @@ export class ItemManager {
           ? `${caster.name} fired ${meta.name} (${rem}x left)!`
           : `${caster.name} fired final ${meta.name} cylinder!`
       );
+      return;
+    }
+
+    if (item === "GOLDEN_OVERCLOCK") {
+      const wasFirstActivation = caster.goldenOverclockTimer <= 0;
+      if (wasFirstActivation) {
+        caster.activateGoldenOverclock();
+        onBannerEvent?.(
+          `⚡ ${caster.name} ignited ${meta.name} (7.5s Unlimited Rapid Boost)!`
+        );
+      } else {
+        caster.activateNitroCore();
+      }
+      globalAiBrain.recordItemUsed(caster.racerId, isOffRoadOrShortcut);
+      return;
+    }
+
+    if (item === "WARP_AUTOPILOT") {
+      caster.activateWarpAutopilot();
+      this.ensureWarpAutopilotCanopy(caster);
+      globalAiBrain.recordItemUsed(caster.racerId, true);
+      onBannerEvent?.(
+        `🚀 ${caster.name} engaged ${meta.name} (95 u/s Hyper-Shuttle)!`
+      );
+      return;
+    }
+
+    if (item === "TRIPLE_CRYO_MINE") {
+      const currentCharges =
+        caster.tripleCryoMineCharges > 0
+          ? caster.tripleCryoMineCharges
+          : Math.max(1, caster.heldItemCharges || 3);
+      const nextCharges = Math.max(0, currentCharges - 1);
+      caster.tripleCryoMineCharges = nextCharges;
+      this.deployCryoMine(caster);
+      globalAiBrain.recordItemUsed(caster.racerId, false);
+      if (caster.incomingThreatCount > 0) {
+        globalAiBrain.recordDefensiveBlock(caster.racerId);
+      }
+      if (nextCharges > 0) {
+        caster.heldItem = "TRIPLE_CRYO_MINE";
+        caster.heldItemCharges = nextCharges;
+        onBannerEvent?.(
+          `${caster.name} dropped a Cryo Mine (${nextCharges}x left)!`
+        );
+      } else {
+        caster.heldItem = null;
+        caster.heldItemCharges = 0;
+        onBannerEvent?.(`${caster.name} dropped final Cryo Mine!`);
+      }
+      return;
+    }
+
+    if (item === "OIL_SQUALL") {
+      globalAiBrain.recordItemUsed(caster.racerId, false);
+      this.triggerOilSquall(caster, allRacers, onBannerEvent);
       return;
     }
 
@@ -663,6 +748,98 @@ export class ItemManager {
     this.novaOverdriveCores.set(racer.racerId, coreMesh);
   }
 
+  private ensureWarpAutopilotCanopy(racer: KartController): Mesh {
+    const existing = this.warpAutopilotCanopies.get(racer.racerId);
+    if (
+      existing &&
+      !existing.isDisposed() &&
+      existing.parent === racer.assembly.visualRoot
+    ) {
+      return existing;
+    }
+    if (existing && !existing.isDisposed()) {
+      existing.dispose();
+    }
+    const canopy = MeshBuilder.CreateCylinder(
+      `warpCanopy_${racer.racerId}`,
+      {
+        height: 4.2,
+        diameterTop: 0.35,
+        diameterBottom: 2.35,
+        tessellation: 14,
+      },
+      this.scene
+    );
+    canopy.convertToFlatShadedMesh();
+    canopy.material = this.warpShuttleMat;
+    canopy.parent = racer.assembly.visualRoot;
+    canopy.rotation.x = Math.PI * 0.5;
+    canopy.position = new Vector3(0, 0.85, 0.25);
+    canopy.isPickable = false;
+    this.warpAutopilotCanopies.set(racer.racerId, canopy);
+    return canopy;
+  }
+
+  private ensureTripleCryoMineRig(racer: KartController): TripleCryoMineRig {
+    const existing = this.tripleCryoMineRigs.get(racer.racerId);
+    if (
+      existing &&
+      !existing.root.isDisposed() &&
+      existing.root.parent === racer.assembly.kartRoot
+    ) {
+      return existing;
+    }
+    if (existing && !existing.root.isDisposed()) {
+      existing.root.dispose();
+    }
+    const rigRoot = new TransformNode(
+      `tripleCryoMine_${racer.racerId}`,
+      this.scene
+    );
+    rigRoot.parent = racer.assembly.kartRoot;
+    rigRoot.position = new Vector3(0, 0.45, 0);
+
+    const mineNodes: TransformNode[] = [];
+    for (let i = 0; i < 3; i++) {
+      const mNode = new TransformNode(
+        `trailMine_${racer.racerId}_${i}`,
+        this.scene
+      );
+      mNode.parent = rigRoot;
+      mNode.position = new Vector3(0, 0, -2.15 - i * 1.15);
+
+      const tetra = MeshBuilder.CreatePolyhedron(
+        `trailMineTetra_${racer.racerId}_${i}`,
+        { type: 0, size: 0.58 },
+        this.scene
+      );
+      tetra.convertToFlatShadedMesh();
+      tetra.material = this.mineYellowMat;
+      tetra.parent = mNode;
+      tetra.isPickable = false;
+
+      const ring = MeshBuilder.CreateTorus(
+        `trailMineRing_${racer.racerId}_${i}`,
+        { diameter: 1.15, thickness: 0.12, tessellation: 10 },
+        this.scene
+      );
+      ring.material = this.mineBlackMat;
+      ring.parent = mNode;
+      ring.position.y = -0.15;
+      ring.isPickable = false;
+
+      mineNodes.push(mNode);
+    }
+
+    const rig: TripleCryoMineRig = {
+      root: rigRoot,
+      mineNodes,
+      bobPhase: 0,
+    };
+    this.tripleCryoMineRigs.set(racer.racerId, rig);
+    return rig;
+  }
+
   private ensureOrbitalShieldRig(racer: KartController): OrbitalShieldRig {
     const existing = this.orbitalShieldRigs.get(racer.racerId);
     if (
@@ -764,7 +941,7 @@ export class ItemManager {
 
   private tryConsumeOrbitingDroneBlock(
     racer: KartController
-  ): "ORBITAL_SHIELD" | "TRIPLE_SEEKER" | null {
+  ): "ORBITAL_SHIELD" | "TRIPLE_SEEKER" | "TRIPLE_CRYO_MINE" | null {
     if (racer.orbitalShieldCharges > 0) {
       racer.orbitalShieldCharges = Math.max(0, racer.orbitalShieldCharges - 1);
       if (racer.heldItem === "ORBITAL_SHIELD") {
@@ -782,6 +959,18 @@ export class ItemManager {
       }
       globalAiBrain.recordDefensiveBlock(racer.racerId);
       return "TRIPLE_SEEKER";
+    }
+    if (racer.tripleCryoMineCharges > 0) {
+      racer.tripleCryoMineCharges = Math.max(
+        0,
+        racer.tripleCryoMineCharges - 1
+      );
+      if (racer.heldItem === "TRIPLE_CRYO_MINE") {
+        racer.heldItemCharges = racer.tripleCryoMineCharges;
+        if (racer.tripleCryoMineCharges <= 0) racer.heldItem = null;
+      }
+      globalAiBrain.recordDefensiveBlock(racer.racerId);
+      return "TRIPLE_CRYO_MINE";
     }
     return null;
   }
@@ -882,7 +1071,11 @@ export class ItemManager {
 
     let zappedCount = 0;
     for (const target of targets) {
-      if (target.novaOverdriveTimer > 0 || target.phaseCloakTimer > 0) {
+      if (
+        target.novaOverdriveTimer > 0 ||
+        target.warpAutopilotTimer > 0 ||
+        target.phaseCloakTimer > 0
+      ) {
         continue;
       }
       target.applyEmpShockwaveDebuff();
@@ -910,6 +1103,68 @@ export class ItemManager {
       zappedCount > 0
         ? `⚡ ${caster.name}'s Ion Storm Shockwave zapped & shrunk ${zappedCount} rival${zappedCount > 1 ? "s" : ""}!`
         : `⚡ ${caster.name} discharged an Ion Storm Shockwave!`
+    );
+  }
+
+  private triggerOilSquall(
+    caster: KartController,
+    allRacers: KartController[],
+    onBannerEvent?: (message: string) => void
+  ): void {
+    const squallWave = MeshBuilder.CreateTorus(
+      `oilSquallWave_${this.nextEntityId++}`,
+      { diameter: 1.8, thickness: 0.22, tessellation: 20 },
+      this.scene
+    );
+    squallWave.material = this.oilSquallRingMat;
+    squallWave.position = caster.position.add(new Vector3(0, 1.1, 0));
+    squallWave.isPickable = false;
+    squallWave.parent = this.root;
+    this.empWaves.push({
+      mesh: squallWave,
+      lifeTimer: 0.7,
+      maxRadius: 36.0,
+    });
+
+    let targets = this.getRacersAheadOf(caster, allRacers);
+    if (targets.length === 0) {
+      targets = allRacers.filter((r) => r.racerId !== caster.racerId);
+    }
+
+    let splatteredCount = 0;
+    for (const target of targets) {
+      if (
+        target.novaOverdriveTimer > 0 ||
+        target.warpAutopilotTimer > 0 ||
+        target.phaseCloakTimer > 0
+      ) {
+        continue;
+      }
+      target.applyOilSquallDebuff();
+
+      const cloudRing = MeshBuilder.CreateTorus(
+        `oilSquallHit_${this.nextEntityId++}`,
+        { diameter: 1.5, thickness: 0.25, tessellation: 16 },
+        this.scene
+      );
+      cloudRing.material = this.oilSquallRingMat;
+      cloudRing.position = target.position.add(new Vector3(0, 1.5, 0));
+      cloudRing.isPickable = false;
+      cloudRing.parent = this.root;
+      this.empWaves.push({
+        mesh: cloudRing,
+        lifeTimer: 0.6,
+        maxRadius: 5.5,
+      });
+
+      splatteredCount++;
+      globalAiBrain.recordItemHitLanded(caster.racerId);
+    }
+
+    onBannerEvent?.(
+      splatteredCount > 0
+        ? `🛢️ ${caster.name}'s Slick-Cloud Discharger splattered ${splatteredCount} rival${splatteredCount > 1 ? "s" : ""} (-20% Grip)!`
+        : `🛢️ ${caster.name} fired a Slick-Cloud Discharger!`
     );
   }
 
@@ -1389,7 +1644,7 @@ export class ItemManager {
       }
     }
 
-    // 2. Update Nova Overdrive Cores, Triple Nitro Rigs, Phase Cloak Shells & Orbital Shield Drones
+    // 2. Update Nova Overdrive Cores, Warp Autopilot Canopies, Triple Nitro Rigs, Phase Cloak Shells, Orbital Drones & Trailing Mines
     for (const racer of racers) {
       // 2a. Nova Overdrive Core
       const coreMesh = this.novaOverdriveCores.get(racer.racerId);
@@ -1407,6 +1662,21 @@ export class ItemManager {
         }
       } else if (coreMesh && !coreMesh.isDisposed()) {
         coreMesh.setEnabled(false);
+      }
+
+      // 2a2. Hyper-Shuttle Autopilot Canopy
+      const warpCanopy = this.warpAutopilotCanopies.get(racer.racerId);
+      if (racer.warpAutopilotTimer > 0) {
+        const activeCanopy =
+          !warpCanopy ||
+          warpCanopy.isDisposed() ||
+          warpCanopy.parent !== racer.assembly.visualRoot
+            ? this.ensureWarpAutopilotCanopy(racer)
+            : warpCanopy;
+        activeCanopy.setEnabled(true);
+        activeCanopy.rotation.z += dt * 9.0;
+      } else if (warpCanopy && !warpCanopy.isDisposed()) {
+        warpCanopy.setEnabled(false);
       }
 
       // 2b. Triple Nitro Orbiting Rear Canisters
@@ -1437,6 +1707,88 @@ export class ItemManager {
         }
       } else if (nitroRig && !nitroRig.root.isDisposed()) {
         nitroRig.root.setEnabled(false);
+      }
+
+      // 2b2. Tri-Cryo Mine Cluster (3x trailing spiked mines behind rear bumper + contact wipeout)
+      const trailMineRig = this.tripleCryoMineRigs.get(racer.racerId);
+      if (racer.tripleCryoMineCharges > 0) {
+        const activeTrailRig =
+          !trailMineRig ||
+          trailMineRig.root.isDisposed() ||
+          trailMineRig.root.parent !== racer.assembly.kartRoot
+            ? this.ensureTripleCryoMineRig(racer)
+            : trailMineRig;
+        activeTrailRig.root.setEnabled(true);
+        activeTrailRig.bobPhase += dt * 5.0;
+        for (let m = 0; m < 3; m++) {
+          const mNode = activeTrailRig.mineNodes[m];
+          if (m < racer.tripleCryoMineCharges) {
+            mNode.setEnabled(true);
+            mNode.position.set(
+              Math.sin(activeTrailRig.bobPhase + m * 1.1) * 0.18,
+              Math.cos(activeTrailRig.bobPhase * 1.3 + m) * 0.08,
+              -2.15 - m * 1.15
+            );
+            mNode.rotation.y += dt * 4.2;
+          } else {
+            mNode.setEnabled(false);
+          }
+        }
+
+        // Check if any rival kart tailgating behind hits one of the trailing Cryo Mines
+        const fwd = racer.forwardVector;
+        for (const other of racers) {
+          if (
+            other.racerId === racer.racerId ||
+            other.spinOutTimer > 0 ||
+            other.phaseCloakTimer > 0
+          ) {
+            continue;
+          }
+          let hitTrailMine = false;
+          for (let m = 0; m < Math.min(3, racer.tripleCryoMineCharges); m++) {
+            const distBack = 2.15 + m * 1.15;
+            const mx = racer.position.x - fwd.x * distBack;
+            const mz = racer.position.z - fwd.z * distBack;
+            const dx = other.position.x - mx;
+            const dz = other.position.z - mz;
+            if (dx * dx + dz * dz <= 1.95 * 1.95) {
+              hitTrailMine = true;
+              break;
+            }
+          }
+          if (hitTrailMine) {
+            racer.tripleCryoMineCharges = Math.max(
+              0,
+              racer.tripleCryoMineCharges - 1
+            );
+            if (racer.heldItem === "TRIPLE_CRYO_MINE") {
+              if (racer.tripleCryoMineCharges > 0) {
+                racer.heldItemCharges = racer.tripleCryoMineCharges;
+              } else {
+                racer.heldItem = null;
+                racer.heldItemCharges = 0;
+              }
+            }
+            if (
+              other.novaOverdriveTimer > 0 ||
+              other.warpAutopilotTimer > 0
+            ) {
+              onBannerEvent?.(
+                `${other.name} shattered ${racer.name}'s trailing Cryo Mine!`
+              );
+            } else {
+              other.triggerSpinOut(1.15, 3.2);
+              globalAiBrain.recordItemHitLanded(racer.racerId);
+              onBannerEvent?.(
+                `💥 ${other.name} ran into ${racer.name}'s trailing Cryo Mine!`
+              );
+            }
+            break;
+          }
+        }
+      } else if (trailMineRig && !trailMineRig.root.isDisposed()) {
+        trailMineRig.root.setEnabled(false);
       }
 
       // 2c. Phase Cloak Hologram Shell
@@ -1511,9 +1863,12 @@ export class ItemManager {
             racer.collisionCooldown = Math.max(racer.collisionCooldown, 0.45);
             other.collisionCooldown = Math.max(other.collisionCooldown, 0.45);
 
-            if (other.novaOverdriveTimer > 0) {
+            if (
+              other.novaOverdriveTimer > 0 ||
+              other.warpAutopilotTimer > 0
+            ) {
               onBannerEvent?.(
-                `${other.name}'s Nova Overdrive shattered ${racer.name}'s ${droneLabel}!`
+                `${other.name} shattered ${racer.name}'s ${droneLabel}!`
               );
             } else {
               if (centerDist < 3.25) {
@@ -1682,9 +2037,12 @@ export class ItemManager {
         const dz = racer.position.z - mine.position.z;
         // 1.8u trigger radius per spec
         if (dx * dx + dz * dz <= 1.8 * 1.8) {
-          if (racer.novaOverdriveTimer > 0) {
+          if (
+            racer.novaOverdriveTimer > 0 ||
+            racer.warpAutopilotTimer > 0
+          ) {
             onBannerEvent?.(
-              `${racer.name}'s Nova Overdrive shattered a Cryo Mine!`
+              `${racer.name} shattered a Cryo Mine!`
             );
           } else {
             const blockedBy = this.tryConsumeOrbitingDroneBlock(racer);
@@ -1692,6 +2050,8 @@ export class ItemManager {
               const label =
                 blockedBy === "TRIPLE_SEEKER"
                   ? "Tri-Seeker Swarm"
+                  : blockedBy === "TRIPLE_CRYO_MINE"
+                  ? "Tri-Cryo Mine Cluster"
                   : "Orbital Shield";
               onBannerEvent?.(
                 `${racer.name}'s ${label} neutralized a Cryo Mine!`
@@ -1742,9 +2102,12 @@ export class ItemManager {
         const dx = racer.position.x - prism.basePosition.x;
         const dz = racer.position.z - prism.basePosition.z;
         if (dx * dx + dz * dz <= 2.0 * 2.0) {
-          if (racer.novaOverdriveTimer > 0) {
+          if (
+            racer.novaOverdriveTimer > 0 ||
+            racer.warpAutopilotTimer > 0
+          ) {
             onBannerEvent?.(
-              `${racer.name}'s Nova Overdrive smashed a Prank Glitch Prism!`
+              `${racer.name} smashed a Prank Glitch Prism!`
             );
           } else {
             const blockedBy = this.tryConsumeOrbitingDroneBlock(racer);
@@ -1752,6 +2115,8 @@ export class ItemManager {
               const label =
                 blockedBy === "TRIPLE_SEEKER"
                   ? "Tri-Seeker Swarm"
+                  : blockedBy === "TRIPLE_CRYO_MINE"
+                  ? "Tri-Cryo Mine Cluster"
                   : "Orbital Shield";
               onBannerEvent?.(
                 `${racer.name}'s ${label} zapped a Prank Glitch Prism!`
@@ -1887,7 +2252,7 @@ export class ItemManager {
         const query = this.track.queryClosestTrackPoint(proj.position);
         proj.position.y = query.roadY + 0.62;
 
-        const wallBoundary = this.track.roadHalfWidth + 2.4;
+        const wallBoundary = query.localRoadHalfWidth + 2.4;
         if (query.horizontalDistance >= wallBoundary) {
           const sign = query.signedLateralOffset >= 0 ? 1 : -1;
           const wallNormal = query.binormal.scale(-sign);
@@ -1976,16 +2341,23 @@ export class ItemManager {
               ? "Pulse Seeker"
               : "Ricochet Disc";
 
-          if (racer.novaOverdriveTimer > 0) {
+          if (
+            racer.novaOverdriveTimer > 0 ||
+            racer.warpAutopilotTimer > 0
+          ) {
             onBannerEvent?.(`${racer.name} deflected ${projLabel}!`);
           } else if (
-            (racer.orbitalShieldCharges > 0 || racer.tripleSeekerCharges > 0) &&
+            (racer.orbitalShieldCharges > 0 ||
+              racer.tripleSeekerCharges > 0 ||
+              racer.tripleCryoMineCharges > 0) &&
             proj.type !== "LIL_SAUCER"
           ) {
             const blockedBy = this.tryConsumeOrbitingDroneBlock(racer);
             const shieldLabel =
               blockedBy === "TRIPLE_SEEKER"
                 ? "Tri-Seeker Swarm"
+                : blockedBy === "TRIPLE_CRYO_MINE"
+                ? "Tri-Cryo Mine Cluster"
                 : "Orbital Shield";
             onBannerEvent?.(
               `${racer.name}'s ${shieldLabel} intercepted ${projLabel}!`

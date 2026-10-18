@@ -73,6 +73,7 @@ type EditorTool =
   | { kind: "ERASER" }
   | { kind: "BOOST_PAD" }
   | { kind: "ITEM_ROW" }
+  | { kind: "TRACK_MASK"; maskType: "ROAD_HOLE" | "SPLIT_MEDIAN" }
   | { kind: "OBSTACLE"; prefab: ObstaclePrefabType }
   | { kind: "SCENERY"; prefab: SceneryPrefabType };
 
@@ -176,16 +177,22 @@ const OBSTACLE_LIBRARY: Array<{
     color: "#06b6d4",
   },
   {
+    type: "OIL_SLICK",
+    name: "Oil Slick Puddle",
+    desc: "Iridescent oil puddle that spins out karts",
+    color: "#a855f7",
+  },
+  {
+    type: "WATER_PUDDLE",
+    name: "Water Puddle",
+    desc: "Hydroplane puddle that slows & wobbles unboosted karts",
+    color: "#38bdf8",
+  },
+  {
     type: "PYLON_CONE",
     name: "Traffic Pylon Cone",
     desc: "Bumps karts sideways & trims 15% speed",
     color: "#f97316",
-  },
-  {
-    type: "OIL_SLICK",
-    name: "Oil Slick Puddle",
-    desc: "Causes karts to spin out when driven over",
-    color: "#a855f7",
   },
   {
     type: "BARRIER_CRATE",
@@ -902,6 +909,8 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
   const [activeTool, setActiveTool] = useState<EditorTool>({ kind: "SPLINE" });
   const [selectedControlIdx, setSelectedControlIdx] = useState<number>(0);
   const [prefabScale, setPrefabScale] = useState<number>(1.0);
+  const [maskWidth, setMaskWidth] = useState<number>(8.0);
+  const [maskLength, setMaskLength] = useState<number>(38.0);
   const [brushRadius, setBrushRadius] = useState<number>(58);
   const [brushStrength, setBrushStrength] = useState<number>(8.5);
   const [showAiTraces, setShowAiTraces] = useState<boolean>(true);
@@ -1055,6 +1064,10 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
   brushStrengthRef.current = brushStrength;
   const prefabScaleRef = useRef<number>(prefabScale);
   prefabScaleRef.current = prefabScale;
+  const maskWidthRef = useRef<number>(maskWidth);
+  maskWidthRef.current = maskWidth;
+  const maskLengthRef = useRef<number>(maskLength);
+  maskLengthRef.current = maskLength;
   const selectedIdxRef = useRef<number>(selectedControlIdx);
   selectedIdxRef.current = selectedControlIdx;
 
@@ -2189,15 +2202,22 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // Compute live Catmull-Rom spline & Frenet frames whenever controlPoints or terrainMods change
+  // Compute live Catmull-Rom spline & Frenet frames whenever controlPoints, roadHalfWidth, trackMasks, or terrainMods change
   const splineData = useMemo(
     () =>
       computeTrackSplineSamples(
         trackDef.controlPoints,
         28,
-        trackDef.terrainMods ?? []
+        trackDef.terrainMods ?? [],
+        trackDef.roadHalfWidth,
+        trackDef.trackMasks ?? []
       ),
-    [trackDef.controlPoints, trackDef.terrainMods]
+    [
+      trackDef.controlPoints,
+      trackDef.terrainMods,
+      trackDef.roadHalfWidth,
+      trackDef.trackMasks,
+    ]
   );
 
   // Detect any control nodes where the inner curb/road ribbon is pinching or buckling
@@ -2231,7 +2251,9 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     const spline = computeTrackSplineSamples(
       currentDef.controlPoints,
       24,
-      currentDef.terrainMods ?? []
+      currentDef.terrainMods ?? [],
+      currentDef.roadHalfWidth,
+      currentDef.trackMasks ?? []
     );
 
     if (tool.kind === "TERRAIN_RAISE" || tool.kind === "TERRAIN_LOWER") {
@@ -2275,9 +2297,10 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
       });
     } else if (tool.kind === "BOOST_PAD") {
       const q = spline.queryClosestTrackPoint(new Vector3(worldX, 0, worldZ));
+      const localHalfW = q.localRoadHalfWidth || currentDef.roadHalfWidth;
       const clampedLat = Math.max(
-        -(currentDef.roadHalfWidth - 2.2),
-        Math.min(currentDef.roadHalfWidth - 2.2, q.signedLateralOffset)
+        -(localHalfW - 2.2),
+        Math.min(localHalfW - 2.2, q.signedLateralOffset)
       );
       commitWorkingEdit({
         ...currentDef,
@@ -2319,10 +2342,59 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
           },
         ],
       });
+    } else if (tool.kind === "TRACK_MASK") {
+      const q = spline.queryClosestTrackPoint(new Vector3(worldX, 0, worldZ));
+      const localHalfW = q.localRoadHalfWidth || currentDef.roadHalfWidth;
+      const clampedLat =
+        tool.maskType === "SPLIT_MEDIAN"
+          ? 0
+          : Math.max(
+              -(localHalfW - 2.0),
+              Math.min(localHalfW - 2.0, q.signedLateralOffset)
+            );
+      commitWorkingEdit(
+        syncTracksideSceneryAndClearRoad({
+          ...currentDef,
+          trackMasks: [
+            ...(currentDef.trackMasks ?? []),
+            {
+              id: `mask_${Date.now()}_${Math.floor(Math.random() * 999)}`,
+              type: tool.maskType,
+              normT: Number(q.normalizedSplineT.toFixed(4)),
+              lateral: Number(clampedLat.toFixed(2)),
+              width: maskWidthRef.current,
+              length: maskLengthRef.current,
+            },
+          ],
+        })
+      );
+    } else if (tool.kind === "ERASER") {
+      const nextMasks = (currentDef.trackMasks ?? []).filter((m) => {
+        const pt = spline.getPointAtNormalizedT(m.normT, m.lateral).position;
+        const dx = pt.x - worldX;
+        const dz = pt.z - worldZ;
+        return dx * dx + dz * dz > Math.max(100, (m.length * 0.55) ** 2);
+      });
+      const nextObs = currentDef.obstacles.filter((o) => {
+        const dx = o.x - worldX;
+        const dz = o.z - worldZ;
+        return dx * dx + dz * dz > 64;
+      });
+      if (
+        nextMasks.length !== (currentDef.trackMasks ?? []).length ||
+        nextObs.length !== currentDef.obstacles.length
+      ) {
+        commitWorkingEdit({
+          ...currentDef,
+          trackMasks: nextMasks,
+          obstacles: nextObs,
+        });
+      }
     } else if (tool.kind === "SCENERY") {
       const q = spline.queryClosestTrackPoint(new Vector3(worldX, 0, worldZ));
+      const localHalfW = q.localRoadHalfWidth || currentDef.roadHalfWidth;
       // Prevent stamping trees directly onto the asphalt pavement
-      if (q.horizontalDistance < currentDef.roadHalfWidth + 3.0) {
+      if (q.horizontalDistance < localHalfW + 3.0) {
         return;
       }
       const randomYaw = Number((Math.random() * Math.PI * 2).toFixed(2));
@@ -2448,6 +2520,8 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
           tool.kind === "BOOST_PAD" ||
           tool.kind === "ITEM_ROW" ||
           tool.kind === "OBSTACLE" ||
+          tool.kind === "TRACK_MASK" ||
+          tool.kind === "ERASER" ||
           tool.kind === "SCENERY"
         ) {
           applyToolAtWorldPoint(hit.pickedPoint.x, hit.pickedPoint.z);
@@ -3691,34 +3765,80 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
               </div>
 
               {selectedPt && (
-                <div className="pt-2 border-t border-white/10">
-                  <div className="flex items-center justify-between text-xs font-bold">
-                    <span className="text-slate-300">
-                      NODE P{selectedControlIdx} 3D ELEVATION (Y)
-                    </span>
-                    <span className="text-cyan-300 font-mono">
-                      {selectedPt.y.toFixed(1)}m
-                    </span>
+                <div className="pt-2 border-t border-white/10 space-y-2.5">
+                  <div>
+                    <div className="flex items-center justify-between text-xs font-bold">
+                      <span className="text-slate-300">
+                        NODE P{selectedControlIdx} 3D ELEVATION (Y)
+                      </span>
+                      <span className="text-cyan-300 font-mono">
+                        {selectedPt.y.toFixed(1)}m
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={22}
+                      step={0.5}
+                      value={selectedPt.y}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        const nextPts = trackDef.controlPoints.map((pt, i) =>
+                          i === selectedControlIdx ? { ...pt, y: val } : pt
+                        );
+                        commitWorkingEdit({
+                          ...trackDef,
+                          controlPoints: nextPts,
+                        });
+                      }}
+                      className="mt-1 w-full accent-cyan-400 cursor-pointer"
+                    />
                   </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={22}
-                    step={0.5}
-                    value={selectedPt.y}
-                    onChange={(e) => {
-                      const val = parseFloat(e.target.value);
-                      const nextPts = trackDef.controlPoints.map((pt, i) =>
-                        i === selectedControlIdx ? { ...pt, y: val } : pt
-                      );
-                      commitWorkingEdit({
-                        ...trackDef,
-                        controlPoints: nextPts,
-                      });
-                    }}
-                    className="mt-1 w-full accent-cyan-400 cursor-pointer"
-                  />
-                  <div className="mt-2 flex gap-2">
+
+                  <div>
+                    <div className="flex items-center justify-between text-xs font-bold">
+                      <span className="text-slate-300">
+                        NODE P{selectedControlIdx} ROAD WIDTH SCALE
+                      </span>
+                      <span className="text-amber-300 font-mono">
+                        {(selectedPt.widthScale ?? 1.0).toFixed(2)}x (
+                        {(
+                          trackDef.roadHalfWidth *
+                          2 *
+                          (selectedPt.widthScale ?? 1.0)
+                        ).toFixed(0)}
+                        m)
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={2.0}
+                      step={0.05}
+                      value={selectedPt.widthScale ?? 1.0}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        const nextPts = trackDef.controlPoints.map((pt, i) =>
+                          i === selectedControlIdx
+                            ? {
+                                ...pt,
+                                widthScale:
+                                  Math.abs(val - 1.0) < 0.01 ? undefined : val,
+                              }
+                            : pt
+                        );
+                        commitWorkingEdit(
+                          syncTracksideSceneryAndClearRoad({
+                            ...trackDef,
+                            controlPoints: nextPts,
+                          })
+                        );
+                      }}
+                      className="mt-1 w-full accent-amber-400 cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="flex gap-2">
                     <button
                       type="button"
                       onClick={handleInsertControlPointAfter}
@@ -3737,6 +3857,127 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                   </div>
                 </div>
               )}
+
+              {/* Track Masks: Road Hole / Pit Cutout & Parallel Split-Lane Median */}
+              <div className="pt-2 border-t border-white/10 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-black uppercase tracking-wider text-fuchsia-300">
+                    TRACK MASKS &amp; SPLIT LANES (
+                    {(trackDef.trackMasks ?? []).length})
+                  </span>
+                  {(trackDef.trackMasks?.length ?? 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        commitWorkingEdit(
+                          syncTracksideSceneryAndClearRoad({
+                            ...trackDef,
+                            trackMasks: [],
+                          })
+                        )
+                      }
+                      className="text-[10px] font-bold text-rose-400 hover:underline cursor-pointer"
+                    >
+                      Clear Masks
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMaskWidth(7.5);
+                      setMaskLength(16);
+                      setActiveTool({
+                        kind: "TRACK_MASK",
+                        maskType: "ROAD_HOLE",
+                      });
+                    }}
+                    className={`rounded-xl border p-2 text-left transition cursor-pointer ${
+                      activeTool.kind === "TRACK_MASK" &&
+                      activeTool.maskType === "ROAD_HOLE"
+                        ? "border-rose-400 bg-rose-500/20 text-white"
+                        : "border-white/10 bg-slate-900/70 text-slate-300 hover:border-white/25"
+                    }`}
+                  >
+                    <div className="text-[11px] font-black text-rose-300">
+                      ROAD HOLE / PIT
+                    </div>
+                    <div className="text-[9px] text-slate-400">
+                      Stamp hazard cutout
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMaskWidth(8.5);
+                      setMaskLength(38);
+                      setActiveTool({
+                        kind: "TRACK_MASK",
+                        maskType: "SPLIT_MEDIAN",
+                      });
+                    }}
+                    className={`rounded-xl border p-2 text-left transition cursor-pointer ${
+                      activeTool.kind === "TRACK_MASK" &&
+                      activeTool.maskType === "SPLIT_MEDIAN"
+                        ? "border-fuchsia-400 bg-fuchsia-500/20 text-white"
+                        : "border-white/10 bg-slate-900/70 text-slate-300 hover:border-white/25"
+                    }`}
+                  >
+                    <div className="text-[11px] font-black text-fuchsia-300">
+                      SPLIT-LANE MEDIAN
+                    </div>
+                    <div className="text-[9px] text-slate-400">
+                      Parallel twin lanes
+                    </div>
+                  </button>
+                </div>
+
+                {activeTool.kind === "TRACK_MASK" && (
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <div>
+                      <div className="flex justify-between text-[10px] font-bold">
+                        <span className="text-slate-400">MASK WIDTH</span>
+                        <span className="text-fuchsia-300 font-mono">
+                          {maskWidth.toFixed(1)}m
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={4}
+                        max={16}
+                        step={0.5}
+                        value={maskWidth}
+                        onChange={(e) =>
+                          setMaskWidth(parseFloat(e.target.value))
+                        }
+                        className="mt-1 w-full accent-fuchsia-400 cursor-pointer"
+                      />
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-[10px] font-bold">
+                        <span className="text-slate-400">MASK LENGTH</span>
+                        <span className="text-fuchsia-300 font-mono">
+                          {maskLength.toFixed(0)}m
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={10}
+                        max={70}
+                        step={2}
+                        value={maskLength}
+                        onChange={(e) =>
+                          setMaskLength(parseFloat(e.target.value))
+                        }
+                        className="mt-1 w-full accent-fuchsia-400 cursor-pointer"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
@@ -4044,6 +4285,27 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                 );
               })}
             </div>
+
+            {/* Hazard / Puddle / Ramp Scale Slider */}
+            <div className="mt-2.5 rounded-xl border border-white/10 bg-slate-950/70 p-2.5">
+              <div className="flex justify-between text-[11px] font-bold">
+                <span className="text-slate-400">
+                  HAZARD / PUDDLE SIZE SCALE
+                </span>
+                <span className="text-orange-300 font-mono">
+                  {prefabScale.toFixed(1)}x
+                </span>
+              </div>
+              <input
+                type="range"
+                min={0.6}
+                max={3.0}
+                step={0.2}
+                value={prefabScale}
+                onChange={(e) => setPrefabScale(parseFloat(e.target.value))}
+                className="mt-1 w-full accent-orange-400 cursor-pointer"
+              />
+            </div>
           </div>
         </aside>
 
@@ -4335,26 +4597,82 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                   opacity={0.55}
                 />
 
-                {/* 2. Red/White Rumble Strip Curb Outline */}
-                <path
-                  d={svgPathString}
-                  fill="none"
-                  stroke="#ef4444"
-                  strokeWidth={(trackDef.roadHalfWidth + 1.6) * 2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  opacity={0.85}
-                />
-
-                {/* 3. Asphalt Road Ribbon */}
-                <path
-                  d={svgPathString}
-                  fill="none"
-                  stroke="#1e293b"
-                  strokeWidth={trackDef.roadHalfWidth * 2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
+                {/* 2 & 3. Rumble Strip Curb Outline & Asphalt Road Ribbon (supports per-node variable width & split-lane flaring) */}
+                {trackDef.controlPoints.some(
+                  (pt) =>
+                    pt.widthScale !== undefined &&
+                    Math.abs(pt.widthScale - 1.0) > 0.01
+                ) || (trackDef.trackMasks?.length ?? 0) > 0 ? (
+                  <g className="pointer-events-none">
+                    {splineData.samples.map((s, idx) => {
+                      if (idx % 2 !== 0) return null;
+                      const next =
+                        splineData.samples[
+                          (idx + 2) % splineData.samples.length
+                        ];
+                      const halfW =
+                        ((s.localRoadHalfWidth || trackDef.roadHalfWidth) +
+                          (next.localRoadHalfWidth || trackDef.roadHalfWidth)) *
+                        0.5;
+                      return (
+                        <line
+                          key={`curb_seg_${idx}`}
+                          x1={s.position.x}
+                          y1={-s.position.z}
+                          x2={next.position.x}
+                          y2={-next.position.z}
+                          stroke="#ef4444"
+                          strokeWidth={(halfW + 1.6) * 2}
+                          strokeLinecap="round"
+                          opacity={0.85}
+                        />
+                      );
+                    })}
+                    {splineData.samples.map((s, idx) => {
+                      if (idx % 2 !== 0) return null;
+                      const next =
+                        splineData.samples[
+                          (idx + 2) % splineData.samples.length
+                        ];
+                      const halfW =
+                        ((s.localRoadHalfWidth || trackDef.roadHalfWidth) +
+                          (next.localRoadHalfWidth || trackDef.roadHalfWidth)) *
+                        0.5;
+                      return (
+                        <line
+                          key={`road_seg_${idx}`}
+                          x1={s.position.x}
+                          y1={-s.position.z}
+                          x2={next.position.x}
+                          y2={-next.position.z}
+                          stroke="#1e293b"
+                          strokeWidth={halfW * 2}
+                          strokeLinecap="round"
+                        />
+                      );
+                    })}
+                  </g>
+                ) : (
+                  <>
+                    <path
+                      d={svgPathString}
+                      fill="none"
+                      stroke="#ef4444"
+                      strokeWidth={(trackDef.roadHalfWidth + 1.6) * 2}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      opacity={0.85}
+                    />
+                    <path
+                      d={svgPathString}
+                      fill="none"
+                      stroke="#1e293b"
+                      strokeWidth={trackDef.roadHalfWidth * 2}
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </>
+                )}
 
                 {/* 4. Dashed Yellow Centerline */}
                 <path
@@ -4365,6 +4683,62 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                   strokeDasharray="10 10"
                   opacity={0.85}
                 />
+
+                {/* 4a. Track Masks: Road Holes / Pit Cutouts & Parallel Split-Lane Medians */}
+                {(trackDef.trackMasks ?? []).map((mask) => {
+                  const lat =
+                    mask.type === "SPLIT_MEDIAN" ? 0 : mask.lateral;
+                  const sample = splineData.getPointAtNormalizedT(
+                    mask.normT,
+                    lat
+                  );
+                  const angleDeg =
+                    (Math.atan2(sample.tangent.x, sample.tangent.z) * 180) /
+                    Math.PI;
+                  return (
+                    <g
+                      key={mask.id}
+                      transform={`translate(${sample.position.x.toFixed(1)}, ${(-sample.position.z).toFixed(1)}) rotate(${angleDeg.toFixed(1)})`}
+                      onClick={(e) => {
+                        if (activeTool.kind === "ERASER") {
+                          e.stopPropagation();
+                          commitWorkingEdit(
+                            syncTracksideSceneryAndClearRoad({
+                              ...trackDef,
+                              trackMasks: (trackDef.trackMasks ?? []).filter(
+                                (m) => m.id !== mask.id
+                              ),
+                            })
+                          );
+                        }
+                      }}
+                    >
+                      {mask.type === "ROAD_HOLE" ? (
+                        <ellipse
+                          cx={0}
+                          cy={0}
+                          rx={mask.width * 0.5}
+                          ry={mask.length * 0.5}
+                          fill="#05070b"
+                          stroke="#f43f5e"
+                          strokeWidth={1.8}
+                          strokeDasharray="3 2"
+                        />
+                      ) : (
+                        <rect
+                          x={-mask.width * 0.5}
+                          y={-mask.length * 0.5}
+                          width={mask.width}
+                          height={mask.length}
+                          rx={Math.min(mask.width * 0.45, 5)}
+                          fill="#15803d"
+                          stroke="#f43f5e"
+                          strokeWidth={1.8}
+                        />
+                      )}
+                    </g>
+                  );
+                })}
 
                 {/* 4b. Recorded AI Racing Path Traces & Off-Road Overshoot Hotspots */}
                 {showAiTraces &&
@@ -4419,11 +4793,12 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                 {/* 5. Start / Finish Line Banner */}
                 {splineData.samples.length > 0 && (() => {
                   const s0 = splineData.samples[0];
+                  const halfW0 = s0.localRoadHalfWidth || trackDef.roadHalfWidth;
                   const p1 = s0.position.subtract(
-                    s0.binormal.scale(trackDef.roadHalfWidth)
+                    s0.binormal.scale(halfW0)
                   );
                   const p2 = s0.position.add(
-                    s0.binormal.scale(trackDef.roadHalfWidth)
+                    s0.binormal.scale(halfW0)
                   );
                   return (
                     <line

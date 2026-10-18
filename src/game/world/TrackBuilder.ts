@@ -25,8 +25,10 @@ import {
   PlacedBoostPad,
   PlacedObstacle,
   PlacedSceneryProp,
+  PlacedTrackMask,
   SceneryPrefabType,
   TerrainSculptMod,
+  TrackMaskType,
 } from "@/src/types/game";
 import defaultCupsJson from "./defaultCups.json";
 
@@ -37,6 +39,9 @@ export interface TrackSample {
   normal: Vector3;
   binormal: Vector3;
   cumulativeDistance: number;
+  widthScale: number;
+  localRoadHalfWidth: number;
+  localCurbWidth: number;
 }
 
 export interface ClosestTrackQuery {
@@ -50,6 +55,9 @@ export interface ClosestTrackQuery {
   roadY: number;
   normalizedSplineT: number;
   distanceAlongTrack: number;
+  widthScale: number;
+  localRoadHalfWidth: number;
+  localCurbWidth: number;
 }
 
 export interface BoostPadZone {
@@ -85,6 +93,7 @@ export interface BuiltTrack {
   itemBoxRowIndices: number[];
   boostPads: BoostPadZone[];
   obstacles: TrackObstacleZone[];
+  trackMasks: PlacedTrackMask[];
   queryClosestTrackPoint: (
     worldPos: Vector3,
     hintSampleIndex?: number
@@ -199,9 +208,11 @@ export function evaluateTerrainModsAt(
  * and the 3D Babylon.js TrackBuilder.
  */
 export function computeTrackSplineSamples(
-  rawControlPoints: Array<{ x: number; y: number; z: number }>,
+  rawControlPoints: Array<{ x: number; y: number; z: number; widthScale?: number }>,
   subdivisionsPerSegment = 35,
-  terrainMods: TerrainSculptMod[] = []
+  terrainMods: TerrainSculptMod[] = [],
+  baseRoadHalfWidth = ROAD_HALF_WIDTH,
+  trackMasks: PlacedTrackMask[] = []
 ): {
   controlPoints: Vector3[];
   splinePoints: Vector3[];
@@ -223,10 +234,16 @@ export function computeTrackSplineSamples(
   const safePoints =
     rawControlPoints.length >= 4 ? rawControlPoints : DEFAULT_CONTROL_POINTS;
   const controlPoints = safePoints.map((p) => new Vector3(p.x, p.y, p.z));
+  const hasCustomWidths = safePoints.some(
+    (p) =>
+      typeof (p as { widthScale?: number }).widthScale === "number" &&
+      Math.abs(((p as { widthScale?: number }).widthScale ?? 1.0) - 1.0) > 1e-3
+  );
 
   // 1. Evaluate dense Centripetal Catmull-Rom (alpha = 0.5), which is mathematically guaranteed
   // never to form self-intersecting pigtail loops or cusps on unevenly spaced control points.
   const denseCentripetal: Vector3[] = [];
+  const denseWidths: number[] = [];
   const numCtrl = controlPoints.length;
   const denseSteps = 36;
   for (let i = 0; i < numCtrl; i++) {
@@ -234,10 +251,27 @@ export function computeTrackSplineSamples(
     const p1 = controlPoints[i];
     const p2 = controlPoints[(i + 1) % numCtrl];
     const p3 = controlPoints[(i + 2) % numCtrl];
+    const w1 = Math.max(
+      0.5,
+      Math.min(
+        2.2,
+        Number((safePoints[i] as { widthScale?: number }).widthScale ?? 1.0) || 1.0
+      )
+    );
+    const w2 = Math.max(
+      0.5,
+      Math.min(
+        2.2,
+        Number(
+          (safePoints[(i + 1) % numCtrl] as { widthScale?: number }).widthScale ?? 1.0
+        ) || 1.0
+      )
+    );
     for (let s = 0; s < denseSteps; s++) {
-      denseCentripetal.push(
-        evalCentripetalCatmullRom(p0, p1, p2, p3, s / denseSteps)
-      );
+      const u = s / denseSteps;
+      denseCentripetal.push(evalCentripetalCatmullRom(p0, p1, p2, p3, u));
+      const smoothU = u * u * (3 - 2 * u);
+      denseWidths.push(w1 + (w2 - w1) * smoothU);
     }
   }
 
@@ -260,6 +294,7 @@ export function computeTrackSplineSamples(
 
   const numGuideNodes = Math.max(72, numCtrl * 8);
   const uniformGuidePoints: Vector3[] = [];
+  const uniformGuideWidths: number[] = [];
   let searchIdx = 0;
   for (let g = 0; g < numGuideNodes; g++) {
     const targetD = (g / numGuideNodes) * denseTotalLen;
@@ -275,6 +310,10 @@ export function computeTrackSplineSamples(
     const f = d1 > d0 ? Math.max(0, Math.min(1, (targetD - d0) / (d1 - d0))) : 0;
     uniformGuidePoints.push(
       Vector3.Lerp(denseCentripetal[searchIdx], denseCentripetal[nextIdx], f)
+    );
+    uniformGuideWidths.push(
+      denseWidths[searchIdx] +
+        (denseWidths[nextIdx] - denseWidths[searchIdx]) * f
     );
   }
 
@@ -325,6 +364,34 @@ export function computeTrackSplineSamples(
     }
   }
 
+  // Compute per-sample widthScale (strictly 1.0 everywhere if no custom node widths or split medians exist)
+  const sampleWidths = new Float64Array(nPts);
+  if (!hasCustomWidths) {
+    sampleWidths.fill(1.0);
+  } else {
+    for (let i = 0; i < nPts; i++) {
+      const gFloat = (i / nPts) * numGuideNodes;
+      const g0 = Math.floor(gFloat) % numGuideNodes;
+      const g1 = (g0 + 1) % numGuideNodes;
+      const gf = gFloat - Math.floor(gFloat);
+      sampleWidths[i] =
+        uniformGuideWidths[g0] +
+        (uniformGuideWidths[g1] - uniformGuideWidths[g0]) * gf;
+    }
+    const tempW = new Float64Array(nPts);
+    for (let pass = 0; pass < 10; pass++) {
+      for (let i = 0; i < nPts; i++) {
+        const prevW = sampleWidths[(i - 1 + nPts) % nPts];
+        const currW = sampleWidths[i];
+        const nextW = sampleWidths[(i + 1) % nPts];
+        tempW[i] = 0.25 * prevW + 0.5 * currW + 0.25 * nextW;
+      }
+      for (let i = 0; i < nPts; i++) {
+        sampleWidths[i] = tempW[i];
+      }
+    }
+  }
+
   const path3d = new Path3D(splinePoints, new Vector3(0, 1, 0), false, true);
 
   const samples: TrackSample[] = [];
@@ -361,6 +428,8 @@ export function computeTrackSplineSamples(
 
     const normal = Vector3.Cross(tangent, binormal).normalize();
 
+    const wScale = sampleWidths[i];
+    const localHalfW = baseRoadHalfWidth * wScale;
     samples.push({
       index: i,
       position: center,
@@ -368,6 +437,9 @@ export function computeTrackSplineSamples(
       normal,
       binormal,
       cumulativeDistance: runningDistance,
+      widthScale: wScale,
+      localRoadHalfWidth: localHalfW,
+      localCurbWidth: localHalfW + 1.5,
     });
   }
 
@@ -380,6 +452,41 @@ export function computeTrackSplineSamples(
     1,
     lastSample.cumulativeDistance + closingStep
   );
+
+  // Automatically flare road width around any SPLIT_MEDIAN masks so left & right parallel lanes remain wide
+  const splitMedians = (trackMasks ?? []).filter(
+    (m) => m.type === "SPLIT_MEDIAN"
+  );
+  if (splitMedians.length > 0) {
+    for (let i = 0; i < samples.length; i++) {
+      const s = samples[i];
+      for (const mask of splitMedians) {
+        const maskCenterDist =
+          (((mask.normT % 1) + 1) % 1) * totalTrackLength;
+        const rawDiff = Math.abs(s.cumulativeDistance - maskCenterDist);
+        const longDist = Math.min(rawDiff, totalTrackLength - rawDiff);
+        const halfLen = Math.max(8, mask.length * 0.5);
+        const rampLen = 18.0;
+        if (longDist <= halfLen + rampLen) {
+          const flareFactor =
+            longDist <= halfLen
+              ? 1.0
+              : 0.5 *
+                (1 + Math.cos((Math.PI * (longDist - halfLen)) / rampLen));
+          const extraScale = Math.max(
+            0.36,
+            (mask.width * 0.5 + 3.2) / Math.max(8, baseRoadHalfWidth)
+          );
+          s.widthScale = Math.max(
+            s.widthScale,
+            1.0 + flareFactor * extraScale
+          );
+          s.localRoadHalfWidth = baseRoadHalfWidth * s.widthScale;
+          s.localCurbWidth = s.localRoadHalfWidth + 1.5;
+        }
+      }
+    }
+  }
 
   const queryClosestTrackPoint = (
     worldPos: Vector3,
@@ -515,6 +622,10 @@ export function computeTrackSplineSamples(
       chosenB.binormal,
       tSeg
     ).normalize();
+    const interpWidthScale =
+      chosenA.widthScale + (chosenB.widthScale - chosenA.widthScale) * tSeg;
+    const localRoadHalfWidth = baseRoadHalfWidth * interpWidthScale;
+    const localCurbWidth = localRoadHalfWidth + 1.5;
 
     const dx = worldPos.x - closestPt.x;
     const dz = worldPos.z - closestPt.z;
@@ -538,6 +649,9 @@ export function computeTrackSplineSamples(
       roadY: smoothRoadY,
       normalizedSplineT,
       distanceAlongTrack,
+      widthScale: interpWidthScale,
+      localRoadHalfWidth,
+      localCurbWidth,
     };
   };
 
@@ -811,16 +925,18 @@ export function evaluateTerrainHeightAt(
   const query = queryClosestTrackPoint(new Vector3(wx, 0, wz));
   const dist = query.horizontalDistance;
   const roadY = query.roadY;
+  const effectiveCurbWidth = query.localCurbWidth || curbOuterWidth;
+  const effectiveWallHalf = effectiveCurbWidth + 11.0 || wallHalfWidth;
 
-  // Deeply recess the coarse ground grid under the asphalt road & curbs (by 4.4u out to curbOuterWidth + 1.2)
+  // Deeply recess the coarse ground grid under the asphalt road & curbs (by 4.4u out to effectiveCurbWidth + 1.2)
   // so its ~6.5u square triangles can NEVER poke through the smooth road ribbon on steep hills or curves!
-  if (dist <= curbOuterWidth + 1.2) {
+  if (dist <= effectiveCurbWidth + 1.2) {
     return { y: roadY - 4.4, dist, roadY };
   }
-  if (dist <= curbOuterWidth + 4.8) {
+  if (dist <= effectiveCurbWidth + 4.8) {
     const shoulderT = Math.max(
       0,
-      Math.min(1, (dist - (curbOuterWidth + 1.2)) / 3.6)
+      Math.min(1, (dist - (effectiveCurbWidth + 1.2)) / 3.6)
     );
     const smoothShoulder = shoulderT * shoulderT * (3 - 2 * shoulderT);
     return {
@@ -830,7 +946,7 @@ export function evaluateTerrainHeightAt(
     };
   }
 
-  const offDist = dist - (curbOuterWidth + 4.8);
+  const offDist = dist - (effectiveCurbWidth + 4.8);
   const blendLinear = Math.min(1, offDist / 16);
   const blend = blendLinear * blendLinear * (3 - 2 * blendLinear);
   const hillWave =
@@ -838,8 +954,8 @@ export function evaluateTerrainHeightAt(
       Math.sin((wx + wz) * 0.025) * 2.0) *
     terrainHillScale;
   const outerBowl =
-    dist > wallHalfWidth
-      ? Math.min(18, (dist - wallHalfWidth) * 0.22 * terrainHillScale)
+    dist > effectiveWallHalf
+      ? Math.min(18, (dist - effectiveWallHalf) * 0.22 * terrainHillScale)
       : 0;
 
   // Since roadY already incorporates terrainMods along the road centerline, apply only the
@@ -980,11 +1096,21 @@ export function isBuiltinCupId(cupId: string): boolean {
 export function hydrateTrackDefinition(
   rawTrack: CustomTrackDefinition
 ): CustomTrackDefinition {
-  const controlPoints = (rawTrack.controlPoints ?? []).map((p) => ({
-    x: Number(p.x),
-    y: Number(p.y),
-    z: Number(p.z),
-  }));
+  const controlPoints = (rawTrack.controlPoints ?? []).map((p) => {
+    const pt: { x: number; y: number; z: number; widthScale?: number } = {
+      x: Number(p.x),
+      y: Number(p.y),
+      z: Number(p.z),
+    };
+    if (
+      typeof p.widthScale === "number" &&
+      Number.isFinite(p.widthScale) &&
+      Math.abs(p.widthScale - 1.0) > 1e-3
+    ) {
+      pt.widthScale = Math.max(0.5, Math.min(2.2, Number(p.widthScale)));
+    }
+    return pt;
+  });
   const roadHalfWidth = rawTrack.roadHalfWidth || ROAD_HALF_WIDTH;
   const autoTracksideScenery = rawTrack.autoTracksideScenery !== false;
   const scenerySeed = rawTrack.scenerySeed ?? 0;
@@ -1013,6 +1139,9 @@ export function hydrateTrackDefinition(
     boostPads: (rawTrack.boostPads ?? []).map((b) => ({ ...b })),
     itemBoxRows: (rawTrack.itemBoxRows ?? []).map((r) => ({ ...r })),
     obstacles: (rawTrack.obstacles ?? []).map((o) => ({ ...o })),
+    trackMasks: Array.isArray(rawTrack.trackMasks)
+      ? rawTrack.trackMasks.map((m) => ({ ...m }))
+      : undefined,
     sceneryProps,
     autoTracksideScenery,
     sceneryDensity,
@@ -1526,7 +1655,12 @@ export function sanitizeCustomTrackDefinition(
     return null;
   }
 
-  const controlPoints: Array<{ x: number; y: number; z: number }> = [];
+  const controlPoints: Array<{
+    x: number;
+    y: number;
+    z: number;
+    widthScale?: number;
+  }> = [];
   for (const pt of obj.controlPoints) {
     if (!pt || typeof pt !== "object") return null;
     const p = pt as Record<string, unknown>;
@@ -1536,7 +1670,19 @@ export function sanitizeCustomTrackDefinition(
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
       return null;
     }
-    controlPoints.push({ x, y, z });
+    const cleanPt: { x: number; y: number; z: number; widthScale?: number } = {
+      x,
+      y,
+      z,
+    };
+    if (
+      typeof p.widthScale === "number" &&
+      Number.isFinite(p.widthScale) &&
+      Math.abs(p.widthScale - 1.0) > 1e-3
+    ) {
+      cleanPt.widthScale = Math.max(0.5, Math.min(2.2, Number(p.widthScale)));
+    }
+    controlPoints.push(cleanPt);
   }
 
   const roadHalfWidth = Math.max(
@@ -1547,9 +1693,11 @@ export function sanitizeCustomTrackDefinition(
   const validObstacles: ObstaclePrefabType[] = [
     "PYLON_CONE",
     "OIL_SLICK",
+    "WATER_PUDDLE",
     "BARRIER_CRATE",
     "JUMP_RAMP",
   ];
+  const validTrackMasks: TrackMaskType[] = ["ROAD_HOLE", "SPLIT_MEDIAN"];
   const validScenery: SceneryPrefabType[] = [
     "PINE_TREE",
     "OAK_TREE",
@@ -1604,6 +1752,28 @@ export function sanitizeCustomTrackDefinition(
         })
     : [];
 
+  const trackMasks: PlacedTrackMask[] | undefined = Array.isArray(
+    obj.trackMasks
+  )
+    ? obj.trackMasks
+        .filter((m) => m && typeof m === "object")
+        .flatMap((m, i) => {
+          const rec = m as Record<string, unknown>;
+          const type = rec.type as TrackMaskType;
+          if (!validTrackMasks.includes(type)) return [];
+          return [
+            {
+              id: typeof rec.id === "string" ? rec.id : `mask_${i + 1}`,
+              type,
+              normT: Math.max(0, Math.min(1, Number(rec.normT) || 0)),
+              lateral: Number(rec.lateral) || 0,
+              length: Math.max(4, Math.min(180, Number(rec.length) || 16)),
+              width: Math.max(2.5, Math.min(20, Number(rec.width) || 6)),
+            },
+          ];
+        })
+    : undefined;
+
   const sceneryProps: PlacedSceneryProp[] = Array.isArray(obj.sceneryProps)
     ? obj.sceneryProps
         .filter((s) => s && typeof s === "object")
@@ -1653,6 +1823,7 @@ export function sanitizeCustomTrackDefinition(
     boostPads,
     itemBoxRows,
     obstacles,
+    trackMasks,
     sceneryProps,
     autoTracksideScenery: obj.autoTracksideScenery !== false,
     sceneryDensity: Math.max(
@@ -1921,6 +2092,7 @@ export function buildProceduralTrack(
   const roadHalfWidth = trackDef.roadHalfWidth || ROAD_HALF_WIDTH;
   const curbOuterWidth = roadHalfWidth + 1.5;
   const wallHalfWidth = roadHalfWidth + 12.5;
+  const trackMasks = trackDef.trackMasks ?? [];
 
   const root = new TransformNode("trackRoot", scene);
 
@@ -1958,7 +2130,9 @@ export function buildProceduralTrack(
   } = computeTrackSplineSamples(
     trackDef.controlPoints,
     35,
-    trackDef.terrainMods ?? []
+    trackDef.terrainMods ?? [],
+    roadHalfWidth,
+    trackMasks
   );
 
   const leftEdge: Vector3[] = [];
@@ -1984,25 +2158,27 @@ export function buildProceduralTrack(
     const center = s.position;
     const binormal = s.binormal;
     const normal = s.normal;
+    const localRoadHalf = roadHalfWidth * s.widthScale;
+    const localCurbOuter = localRoadHalf + 1.5;
 
-    const lRoad = center.subtract(binormal.scale(roadHalfWidth));
-    const rRoad = center.add(binormal.scale(roadHalfWidth));
+    const lRoad = center.subtract(binormal.scale(localRoadHalf));
+    const rRoad = center.add(binormal.scale(localRoadHalf));
 
     leftEdge.push(lRoad);
     centerLine.push(center.clone().add(normal.scale(0.03)));
     rightEdge.push(rRoad);
 
-    const curbMid = (roadHalfWidth + curbOuterWidth) * 0.5;
+    const curbMid = (localRoadHalf + localCurbOuter) * 0.5;
     leftCurbInner.push(lRoad.add(normal.scale(0.02)));
     leftCurbPeak.push(
       center.subtract(binormal.scale(curbMid)).add(normal.scale(0.18))
     );
     leftCurbOuter.push(
-      center.subtract(binormal.scale(curbOuterWidth)).subtract(normal.scale(0.08))
+      center.subtract(binormal.scale(localCurbOuter)).subtract(normal.scale(0.08))
     );
     leftShoulderSkirt.push(
       center
-        .subtract(binormal.scale(curbOuterWidth + 4.4))
+        .subtract(binormal.scale(localCurbOuter + 4.4))
         .subtract(normal.scale(0.42))
     );
 
@@ -2011,11 +2187,11 @@ export function buildProceduralTrack(
       center.add(binormal.scale(curbMid)).add(normal.scale(0.18))
     );
     rightCurbOuter.push(
-      center.add(binormal.scale(curbOuterWidth)).subtract(normal.scale(0.08))
+      center.add(binormal.scale(localCurbOuter)).subtract(normal.scale(0.08))
     );
     rightShoulderSkirt.push(
       center
-        .add(binormal.scale(curbOuterWidth + 4.4))
+        .add(binormal.scale(localCurbOuter + 4.4))
         .subtract(normal.scale(0.42))
     );
 
@@ -2093,7 +2269,7 @@ export function buildProceduralTrack(
     scene,
     root,
     samples[0],
-    roadHalfWidth,
+    roadHalfWidth * samples[0].widthScale,
     shadowGenerator
   );
 
@@ -2138,12 +2314,22 @@ export function buildProceduralTrack(
     trackDef.boostPads
   );
 
-  // Custom Track Obstacles (Pylons, Oil Slicks, Barrier Crates, Jump Ramps)
+  // Custom Track Obstacles (Pylons, Oil Slicks, Water Puddles, Barrier Crates, Jump Ramps)
   const obstacles = createTrackObstacles(
     scene,
     root,
     trackDef.obstacles,
     queryClosestTrackPoint,
+    shadowGenerator
+  );
+
+  // Track Masks (Road Holes / Pit Cutouts & Parallel Split-Lane Medians)
+  createTrackMasks(
+    scene,
+    root,
+    totalTrackLength,
+    getPointAtNormalizedT,
+    trackMasks,
     shadowGenerator
   );
 
@@ -2166,6 +2352,7 @@ export function buildProceduralTrack(
     itemBoxRowIndices,
     boostPads,
     obstacles,
+    trackMasks,
     queryClosestTrackPoint,
     getPointAtNormalizedT,
     miniMapSvgPath: svgPath,
@@ -2274,10 +2461,62 @@ function createTrackObstacles(
   const coneWhiteMat = new StandardMaterial("coneWhiteMat", scene);
   coneWhiteMat.diffuseColor = new Color3(0.95, 0.96, 0.98);
 
+  const oilTex = new DynamicTexture(
+    "oilSheenTex",
+    { width: 256, height: 256 },
+    scene,
+    true
+  );
+  const oCtx = oilTex.getContext() as unknown as CanvasRenderingContext2D;
+  oCtx.fillStyle = "#090a0f";
+  oCtx.fillRect(0, 0, 256, 256);
+  const oilGrad = oCtx.createRadialGradient(128, 128, 16, 128, 128, 118);
+  oilGrad.addColorStop(0.0, "#11131d");
+  oilGrad.addColorStop(0.38, "#4c1d95");
+  oilGrad.addColorStop(0.62, "#0e7490");
+  oilGrad.addColorStop(0.82, "#a21caf");
+  oilGrad.addColorStop(1.0, "#090a0f");
+  oCtx.fillStyle = oilGrad;
+  oCtx.beginPath();
+  oCtx.arc(128, 128, 122, 0, Math.PI * 2);
+  oCtx.fill();
+  oilTex.update();
+
   const oilMat = new StandardMaterial("oilSlickMat", scene);
-  oilMat.diffuseColor = new Color3(0.08, 0.09, 0.12);
-  oilMat.specularColor = new Color3(0.85, 0.45, 0.95);
+  oilMat.diffuseTexture = oilTex;
+  oilMat.emissiveColor = new Color3(0.16, 0.07, 0.24);
+  oilMat.specularColor = new Color3(0.95, 0.55, 1.0);
   oilMat.specularPower = 96;
+
+  const waterTex = new DynamicTexture(
+    "waterPuddleTex",
+    { width: 256, height: 256 },
+    scene,
+    true
+  );
+  const wCtx = waterTex.getContext() as unknown as CanvasRenderingContext2D;
+  const wGrad = wCtx.createRadialGradient(128, 128, 10, 128, 128, 124);
+  wGrad.addColorStop(0.0, "#0284c7");
+  wGrad.addColorStop(0.55, "#0ea5e9");
+  wGrad.addColorStop(0.84, "#38bdf8");
+  wGrad.addColorStop(1.0, "#7dd3fc");
+  wCtx.fillStyle = wGrad;
+  wCtx.fillRect(0, 0, 256, 256);
+  wCtx.strokeStyle = "rgba(255,255,255,0.38)";
+  wCtx.lineWidth = 3;
+  for (const r of [34, 68, 98]) {
+    wCtx.beginPath();
+    wCtx.arc(128, 128, r, 0, Math.PI * 2);
+    wCtx.stroke();
+  }
+  waterTex.update();
+
+  const waterMat = new StandardMaterial("waterPuddleMat", scene);
+  waterMat.diffuseTexture = waterTex;
+  waterMat.emissiveColor = new Color3(0.06, 0.28, 0.44);
+  waterMat.specularColor = new Color3(0.95, 0.98, 1.0);
+  waterMat.specularPower = 128;
+  waterMat.alpha = 0.88;
 
   const crateMat = new StandardMaterial("barrierCrateMat", scene);
   crateMat.diffuseColor = new Color3(0.92, 0.68, 0.14);
@@ -2345,11 +2584,12 @@ function createTrackObstacles(
         position: node.position.clone(),
         radius: 1.25 * scale,
         rotationY: node.rotation.y,
+        scale,
       });
     } else if (obs.type === "OIL_SLICK") {
       const slick = MeshBuilder.CreateCylinder(
         `oilSlick_${idx}`,
-        { height: 0.06, diameter: 5.2 * scale, tessellation: 20 },
+        { height: 0.06, diameter: 5.4 * scale, tessellation: 24 },
         scene
       );
       slick.parent = node;
@@ -2361,8 +2601,28 @@ function createTrackObstacles(
         id: obs.id,
         type: obs.type,
         position: node.position.clone(),
-        radius: 2.6 * scale,
+        radius: 2.7 * scale,
         rotationY: node.rotation.y,
+        scale,
+      });
+    } else if (obs.type === "WATER_PUDDLE") {
+      const puddle = MeshBuilder.CreateCylinder(
+        `waterPuddle_${idx}`,
+        { height: 0.05, diameter: 6.4 * scale, tessellation: 24 },
+        scene
+      );
+      puddle.parent = node;
+      puddle.position.y = 0.055;
+      puddle.material = waterMat;
+      puddle.isPickable = false;
+
+      zones.push({
+        id: obs.id,
+        type: obs.type,
+        position: node.position.clone(),
+        radius: 3.2 * scale,
+        rotationY: node.rotation.y,
+        scale,
       });
     } else if (obs.type === "BARRIER_CRATE") {
       const crate = MeshBuilder.CreateBox(
@@ -2382,6 +2642,7 @@ function createTrackObstacles(
         position: node.position.clone(),
         radius: 1.75 * scale,
         rotationY: node.rotation.y,
+        scale,
       });
     } else if (obs.type === "JUMP_RAMP") {
       const ramp = MeshBuilder.CreateBox(
@@ -2407,6 +2668,140 @@ function createTrackObstacles(
   });
 
   return zones;
+}
+
+function createTrackMasks(
+  scene: Scene,
+  parent: TransformNode,
+  totalTrackLength: number,
+  getPointAtNormalizedT: (t: number, lateralOffset?: number) => {
+    position: Vector3;
+    tangent: Vector3;
+    normal: Vector3;
+    binormal: Vector3;
+    sampleIndex: number;
+  },
+  trackMasks: PlacedTrackMask[],
+  shadowGenerator: ShadowGenerator
+): void {
+  if (!trackMasks || trackMasks.length === 0) return;
+
+  const voidMat = new StandardMaterial("roadHoleVoidMat", scene);
+  voidMat.diffuseColor = new Color3(0.02, 0.02, 0.04);
+  voidMat.emissiveColor = new Color3(0.03, 0.01, 0.08);
+  voidMat.specularColor = Color3.Black();
+
+  const cautionRimMat = new StandardMaterial("roadHoleRimMat", scene);
+  cautionRimMat.diffuseColor = new Color3(0.96, 0.72, 0.08);
+  cautionRimMat.emissiveColor = new Color3(0.32, 0.2, 0.02);
+
+  const medianGrassMat = new StandardMaterial("splitMedianGrassMat", scene);
+  medianGrassMat.diffuseColor = new Color3(0.18, 0.56, 0.24);
+  medianGrassMat.specularColor = new Color3(0.05, 0.08, 0.05);
+
+  const medianCurbMat = new StandardMaterial("splitMedianCurbMat", scene);
+  medianCurbMat.diffuseColor = new Color3(0.92, 0.26, 0.22);
+  medianCurbMat.emissiveColor = new Color3(0.18, 0.05, 0.04);
+
+  trackMasks.forEach((mask, idx) => {
+    if (mask.type === "ROAD_HOLE") {
+      const sample = getPointAtNormalizedT(mask.normT, mask.lateral);
+      const holeNode = new TransformNode(`roadHole_${idx}`, scene);
+      holeNode.parent = parent;
+      holeNode.position = sample.position.add(new Vector3(0, 0.075, 0));
+      const yaw = Math.atan2(sample.tangent.x, sample.tangent.z);
+      const pitch = -Math.asin(
+        Math.max(-0.45, Math.min(0.45, sample.tangent.y))
+      );
+      holeNode.rotation = new Vector3(pitch, yaw, 0);
+
+      const rim = MeshBuilder.CreateBox(
+        `roadHoleRim_${idx}`,
+        {
+          width: mask.width + 0.9,
+          height: 0.14,
+          depth: mask.length + 0.9,
+        },
+        scene
+      );
+      rim.parent = holeNode;
+      rim.material = cautionRimMat;
+      rim.isPickable = false;
+
+      const pitVoid = MeshBuilder.CreateBox(
+        `roadHoleVoid_${idx}`,
+        {
+          width: mask.width,
+          height: 0.18,
+          depth: mask.length,
+        },
+        scene
+      );
+      pitVoid.parent = holeNode;
+      pitVoid.position.y = 0.03;
+      pitVoid.material = voidMat;
+      pitVoid.isPickable = false;
+    } else if (mask.type === "SPLIT_MEDIAN") {
+      const steps = 16;
+      const halfSpanT =
+        Math.max(8, mask.length * 0.5) / Math.max(100, totalTrackLength);
+      const halfW = Math.max(1.5, mask.width * 0.5);
+
+      const leftBase: Vector3[] = [];
+      const leftTop: Vector3[] = [];
+      const rightTop: Vector3[] = [];
+      const rightBase: Vector3[] = [];
+
+      for (let s = 0; s <= steps; s++) {
+        const u = s / steps;
+        const t = mask.normT - halfSpanT + u * (halfSpanT * 2);
+        const taper =
+          u < 0.15
+            ? u / 0.15
+            : u > 0.85
+            ? (1 - u) / 0.15
+            : 1.0;
+        const w = Math.max(0.4, halfW * taper);
+        const pt = getPointAtNormalizedT(t, mask.lateral);
+        const c = pt.position;
+        const b = pt.binormal;
+        const n = pt.normal;
+
+        leftBase.push(c.subtract(b.scale(w + 0.45)).add(n.scale(0.03)));
+        leftTop.push(c.subtract(b.scale(w)).add(n.scale(0.55)));
+        rightTop.push(c.add(b.scale(w)).add(n.scale(0.55)));
+        rightBase.push(c.add(b.scale(w + 0.45)).add(n.scale(0.03)));
+      }
+
+      const medianCurb = MeshBuilder.CreateRibbon(
+        `splitMedianCurb_${idx}`,
+        {
+          pathArray: [leftBase, leftTop, rightTop, rightBase],
+          closePath: false,
+          sideOrientation: Mesh.DOUBLESIDE,
+        },
+        scene
+      );
+      medianCurb.parent = parent;
+      medianCurb.material = medianCurbMat;
+      medianCurb.isPickable = false;
+      shadowGenerator.addShadowCaster(medianCurb);
+
+      const medianGrass = MeshBuilder.CreateRibbon(
+        `splitMedianGrass_${idx}`,
+        {
+          pathArray: [leftTop, rightTop],
+          closePath: false,
+          sideOrientation: Mesh.DOUBLESIDE,
+        },
+        scene
+      );
+      medianGrass.parent = parent;
+      medianGrass.position.y += 0.02;
+      medianGrass.material = medianGrassMat;
+      medianGrass.isPickable = false;
+    }
+  });
 }
 
 function projectHorizontalSegment(

@@ -3101,8 +3101,16 @@ export const RaceGame: React.FC = () => {
           heldItemCharges: focusKart.heldItemCharges,
           orbitalShieldCharges: focusKart.orbitalShieldCharges,
           tripleSeekerCharges: focusKart.tripleSeekerCharges,
+          tripleCryoMineCharges: focusKart.tripleCryoMineCharges,
           phaseCloakRemaining: Number(focusKart.phaseCloakTimer.toFixed(1)),
           empShrinkRemaining: Number(focusKart.empShrinkTimer.toFixed(1)),
+          goldenOverclockRemaining: Number(
+            focusKart.goldenOverclockTimer.toFixed(1)
+          ),
+          warpAutopilotRemaining: Number(
+            focusKart.warpAutopilotTimer.toFixed(1)
+          ),
+          oilSquallRemaining: Number(focusKart.oilSquallTimer.toFixed(1)),
           rouletteSpinning: focusKart.rouletteTimer > 0,
           roulettePreviewItem: focusKart.roulettePreviewItem,
           novaOverdriveRemaining: Number(
@@ -5346,6 +5354,27 @@ export const RaceGame: React.FC = () => {
         )}
       </div>
 
+      {/* OIL SQUALL HUD VISOR SPLATTER OVERLAY */}
+      {(telemetry.oilSquallRemaining ?? 0) > 0 && (
+        <div
+          data-testid="oil-squall-visor-overlay"
+          className="pointer-events-none fixed inset-0 z-10 overflow-hidden"
+        >
+          <div
+            className="absolute -top-10 left-1/4 h-56 w-72 rounded-full bg-slate-950/85 blur-xl border border-fuchsia-500/20"
+            style={{ transform: "rotate(-14deg)" }}
+          />
+          <div
+            className="absolute top-16 right-1/5 h-64 w-64 rounded-full bg-slate-950/85 blur-xl border border-cyan-500/20"
+            style={{ transform: "rotate(22deg)" }}
+          />
+          <div
+            className="absolute bottom-24 left-1/3 h-48 w-64 rounded-full bg-slate-950/80 blur-xl border border-amber-500/20"
+            style={{ transform: "rotate(9deg)" }}
+          />
+        </div>
+      )}
+
       {/* TOP-CENTER HUD: Power-Up Item Slot & Event Banners */}
       <div className="pointer-events-none fixed top-3 inset-x-0 z-20 flex flex-col items-center gap-2 px-4">
         <div className="pointer-events-auto flex items-center gap-3 rounded-2xl border-2 border-white/25 bg-slate-950/85 px-4 py-2 backdrop-blur-md shadow-2xl">
@@ -5382,6 +5411,8 @@ export const RaceGame: React.FC = () => {
                 ? "ITEM ROULETTE..."
                 : telemetry.spinOutActive
                 ? "SPINNING OUT — ITEM LOCKED"
+                : (telemetry.goldenOverclockRemaining ?? 0) > 0
+                ? `GOLDEN OVERCLOCK (${telemetry.goldenOverclockRemaining}s) — MASH [E]!`
                 : "POWER-UP SLOT [E / TAP]"}
             </div>
             <div
@@ -5396,6 +5427,11 @@ export const RaceGame: React.FC = () => {
                     {telemetry.heldItemCharges} CHARGES
                   </span>
                 )}
+              {(telemetry.goldenOverclockRemaining ?? 0) > 0 && (
+                <span className="rounded bg-amber-400 px-1.5 py-0.2 text-[10px] font-mono font-black text-slate-950">
+                  {telemetry.goldenOverclockRemaining}s
+                </span>
+              )}
             </div>
             {heldItemMeta && (
               <div className="hidden sm:block text-[11px] text-slate-300 max-w-xs truncate">
@@ -5431,6 +5467,11 @@ export const RaceGame: React.FC = () => {
         {telemetry.wrongWay && (
           <div className="rounded-xl border-2 border-red-400 bg-red-600/90 px-4 py-1 text-xs font-black tracking-widest text-white uppercase animate-bounce">
             WRONG WAY! TURN AROUND
+          </div>
+        )}
+        {(telemetry.oilSquallRemaining ?? 0) > 0 && (
+          <div className="rounded-full border border-fuchsia-400 bg-slate-950/90 px-4 py-1 text-xs font-black tracking-wider text-fuchsia-200 uppercase shadow-lg">
+            🛢️ SLICK-CLOUD OIL VISOR ({telemetry.oilSquallRemaining}s) — -20% GRIP (BOOST TO CLEAR)
           </div>
         )}
         {telemetry.activeBoostLabel && (

@@ -124,17 +124,24 @@ export const VirtualJoystick: React.FC<VirtualJoystickProps> = ({
   const itemMeta = displayItem ? POWER_UP_CATALOG[displayItem] : null;
 
   const renderPowerUpIcon = (type: PowerUpType | null) => {
-    if (type === "NITRO_CORE" || type === "TRIPLE_NITRO")
+    if (
+      type === "NITRO_CORE" ||
+      type === "TRIPLE_NITRO" ||
+      type === "GOLDEN_OVERCLOCK"
+    )
       return <Flame className="w-6 h-6 text-orange-300" />;
     if (type === "PULSE_SEEKER" || type === "TRIPLE_SEEKER")
       return <Crosshair className="w-6 h-6 text-red-300" />;
     if (type === "RICOCHET_DISC" || type === "ORBITAL_SHIELD")
       return <Disc className="w-6 h-6 text-emerald-300" />;
-    if (type === "CRYO_MINE") return <ShieldAlert className="w-6 h-6 text-yellow-300" />;
+    if (type === "CRYO_MINE" || type === "TRIPLE_CRYO_MINE")
+      return <ShieldAlert className="w-6 h-6 text-yellow-300" />;
     if (type === "NOVA_OVERDRIVE" || type === "PHASE_CLOAK")
       return <Sparkles className="w-6 h-6 text-amber-200" />;
-    if (type === "LIL_SAUCER") return <Rocket className="w-6 h-6 text-purple-300" />;
-    if (type === "GLITCH_PRISM") return <Box className="w-6 h-6 text-rose-300" />;
+    if (type === "LIL_SAUCER" || type === "WARP_AUTOPILOT")
+      return <Rocket className="w-6 h-6 text-purple-300" />;
+    if (type === "GLITCH_PRISM" || type === "OIL_SQUALL")
+      return <Box className="w-6 h-6 text-rose-300" />;
     return <Zap className="w-6 h-6 text-cyan-300" />;
   };
 

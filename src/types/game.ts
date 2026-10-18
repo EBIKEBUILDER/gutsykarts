@@ -96,15 +96,19 @@ export type MiniTurboTier = 0 | 1 | 2 | 3;
 export type PowerUpType =
   | "NITRO_CORE"
   | "TRIPLE_NITRO"
+  | "GOLDEN_OVERCLOCK"
   | "PULSE_SEEKER"
   | "TRIPLE_SEEKER"
   | "RICOCHET_DISC"
   | "ORBITAL_SHIELD"
   | "CRYO_MINE"
+  | "TRIPLE_CRYO_MINE"
   | "GLITCH_PRISM"
   | "PHASE_CLOAK"
   | "EMP_SHOCKWAVE"
+  | "OIL_SQUALL"
   | "NOVA_OVERDRIVE"
+  | "WARP_AUTOPILOT"
   | "LIL_SAUCER";
 
 export interface PowerUpMetadata {
@@ -369,6 +373,10 @@ export interface HudTelemetry {
   heldItemCharges?: number;
   orbitalShieldCharges?: number;
   tripleSeekerCharges?: number;
+  tripleCryoMineCharges?: number;
+  goldenOverclockRemaining?: number;
+  warpAutopilotRemaining?: number;
+  oilSquallRemaining?: number;
   phaseCloakRemaining?: number;
   empShrinkRemaining?: number;
   rouletteSpinning: boolean;
@@ -387,6 +395,7 @@ export interface HudTelemetry {
 export type ObstaclePrefabType =
   | "PYLON_CONE"
   | "OIL_SLICK"
+  | "WATER_PUDDLE"
   | "BARRIER_CRATE"
   | "JUMP_RAMP";
 
@@ -397,6 +406,17 @@ export type SceneryPrefabType =
   | "GRANDSTAND"
   | "SUBURBAN_HOUSE"
   | "LAMP_POST";
+
+export type TrackMaskType = "ROAD_HOLE" | "SPLIT_MEDIAN";
+
+export interface PlacedTrackMask {
+  id: string;
+  type: TrackMaskType;
+  normT: number;
+  lateral: number;
+  width: number;
+  length: number;
+}
 
 export interface PlacedBoostPad {
   id: string;
@@ -442,11 +462,17 @@ export interface CustomTrackDefinition {
   name: string;
   description?: string;
   roadHalfWidth: number;
-  controlPoints: Array<{ x: number; y: number; z: number }>;
+  controlPoints: Array<{
+    x: number;
+    y: number;
+    z: number;
+    widthScale?: number;
+  }>;
   boostPads: PlacedBoostPad[];
   itemBoxRows: PlacedItemBoxRow[];
   obstacles: PlacedObstacle[];
   sceneryProps: PlacedSceneryProp[];
+  trackMasks?: PlacedTrackMask[];
   autoTracksideScenery?: boolean;
   sceneryDensity?: number;
   scenerySeed?: number;
@@ -604,6 +630,10 @@ export interface KartNetState {
   heldItemCharges?: number;
   orbitalShieldCharges?: number;
   tripleSeekerCharges?: number;
+  tripleCryoMineCharges?: number;
+  goldenOverclockTimer?: number;
+  warpAutopilotTimer?: number;
+  oilSquallTimer?: number;
   rouletteTimer: number;
   lap: number;
   maxLapReached: number;

@@ -324,6 +324,15 @@ export const POWER_UP_CATALOG: Record<PowerUpType, PowerUpMetadata> = {
     color: "#fb923c",
     accentColor: "#38bdf8",
   },
+  GOLDEN_OVERCLOCK: {
+    id: "GOLDEN_OVERCLOCK",
+    name: "Golden Overclock Core",
+    shortLabel: "OVERCLOCK",
+    description:
+      "7.5s of unlimited rapid-fire Nitro surges (+45% top speed & off-road immunity) on every Use Item press without consuming charges!",
+    color: "#f59e0b",
+    accentColor: "#fef08a",
+  },
   PULSE_SEEKER: {
     id: "PULSE_SEEKER",
     name: "Pulse Seeker",
@@ -369,6 +378,15 @@ export const POWER_UP_CATALOG: Record<PowerUpType, PowerUpMetadata> = {
     color: "#eab308",
     accentColor: "#18181b",
   },
+  TRIPLE_CRYO_MINE: {
+    id: "TRIPLE_CRYO_MINE",
+    name: "Tri-Cryo Mine Cluster",
+    shortLabel: "3x MINES",
+    description:
+      "Three trailing Cryo Mines behind your bumper that block rear-approaching attacks or drop one-by-one onto the racing line!",
+    color: "#ca8a04",
+    accentColor: "#fde047",
+  },
   GLITCH_PRISM: {
     id: "GLITCH_PRISM",
     name: "Prank Glitch Prism",
@@ -377,6 +395,15 @@ export const POWER_UP_CATALOG: Record<PowerUpType, PowerUpMetadata> = {
       "Drops a deceptive counterfeit Item Prism behind your kart that detonates a 720° glitch spin-out when collected!",
     color: "#f43f5e",
     accentColor: "#e879f9",
+  },
+  OIL_SQUALL: {
+    id: "OIL_SQUALL",
+    name: "Slick-Cloud Discharger",
+    shortLabel: "OIL SQUALL",
+    description:
+      "Blasts all racers ahead with an iridescent oil-static squall for 5.0s, splattering their visors and cutting lateral tire grip by 20%!",
+    color: "#6366f1",
+    accentColor: "#a855f7",
   },
   PHASE_CLOAK: {
     id: "PHASE_CLOAK",
@@ -404,6 +431,15 @@ export const POWER_UP_CATALOG: Record<PowerUpType, PowerUpMetadata> = {
       "7.5s of golden rainbow invincibility, +35% speed, off-road immunity, and 9,999 kg Juggernaut ramming mass!",
     color: "#fde047",
     accentColor: "#ec4899",
+  },
+  WARP_AUTOPILOT: {
+    id: "WARP_AUTOPILOT",
+    name: "Hyper-Shuttle Autopilot",
+    shortLabel: "SHUTTLE",
+    description:
+      "Transforms your kart into an aerodynamic 95 u/s autopilot shuttle for 6.0s that locks onto the track spline and bowls over rivals!",
+    color: "#0ea5e9",
+    accentColor: "#38bdf8",
   },
   LIL_SAUCER: {
     id: "LIL_SAUCER",

@@ -92,6 +92,9 @@ export class KartController implements CollidableKartBody {
   public prolongedRocketBoostActive = false;
   public nitroBoostTimer = 0;
   public novaOverdriveTimer = 0;
+  public goldenOverclockTimer = 0;
+  public warpAutopilotTimer = 0;
+  public oilSquallTimer = 0;
   public phaseCloakTimer = 0;
   public empShrinkTimer = 0;
   public spinOutTimer = 0;
@@ -111,6 +114,7 @@ export class KartController implements CollidableKartBody {
   public heldItemCharges = 0;
   public orbitalShieldCharges = 0;
   public tripleSeekerCharges = 0;
+  public tripleCryoMineCharges = 0;
   public incomingThreatCount = 0;
   public rouletteTimer = 0;
   public roulettePreviewItem: PowerUpType | null = null;
@@ -199,7 +203,7 @@ export class KartController implements CollidableKartBody {
 
 
   public get effectiveMass(): number {
-    if (this.novaOverdriveTimer > 0) {
+    if (this.novaOverdriveTimer > 0 || this.warpAutopilotTimer > 0) {
       return PHYSICS_CONSTANTS.NOVA_OVERDRIVE_MASS;
     }
     if (this.empShrinkTimer > 0) {
@@ -228,24 +232,33 @@ export class KartController implements CollidableKartBody {
       this.heldItemCharges = 0;
       this.orbitalShieldCharges = 0;
       this.tripleSeekerCharges = 0;
+      this.tripleCryoMineCharges = 0;
+      this.goldenOverclockTimer = 0;
       return;
     }
     const defaultCharges =
       item === "TRIPLE_NITRO" ||
       item === "ORBITAL_SHIELD" ||
-      item === "TRIPLE_SEEKER"
+      item === "TRIPLE_SEEKER" ||
+      item === "TRIPLE_CRYO_MINE"
         ? 3
         : 1;
     const charges = Math.max(1, chargesOverride ?? defaultCharges);
     this.heldItemCharges = charges;
     this.orbitalShieldCharges = item === "ORBITAL_SHIELD" ? charges : 0;
     this.tripleSeekerCharges = item === "TRIPLE_SEEKER" ? charges : 0;
+    this.tripleCryoMineCharges = item === "TRIPLE_CRYO_MINE" ? charges : 0;
+    this.goldenOverclockTimer = item === "GOLDEN_OVERCLOCK" ? 7.5 : 0;
   }
 
   public awardItemWithRoulette(item: PowerUpType): void {
     if (this.heldItem || this.rouletteTimer > 0) return;
     const safeItem: PowerUpType =
-      (item === "LIL_SAUCER" || item === "EMP_SHOCKWAVE") && this.rank <= 1
+      (item === "LIL_SAUCER" ||
+        item === "EMP_SHOCKWAVE" ||
+        item === "WARP_AUTOPILOT" ||
+        item === "OIL_SQUALL") &&
+      this.rank <= 1
         ? "NITRO_CORE"
         : item;
     this.pendingAwardedItem = safeItem;
@@ -264,7 +277,13 @@ export class KartController implements CollidableKartBody {
   }
 
   public triggerSpinOut(durationSec = 1.15, upwardKnock = 3.2): void {
-    if (this.novaOverdriveTimer > 0 || this.phaseCloakTimer > 0) return; // Immune during Nova Overdrive or Phantom Phase Cloak
+    if (
+      this.novaOverdriveTimer > 0 ||
+      this.phaseCloakTimer > 0 ||
+      this.warpAutopilotTimer > 0
+    ) {
+      return; // Immune during Nova Overdrive, Phantom Phase Cloak, or Hyper-Shuttle Autopilot
+    }
     this.spinOutTimer = Math.max(this.spinOutTimer, durationSec);
     this.combatRecoveryTimer = Math.max(
       this.combatRecoveryTimer,
@@ -320,6 +339,7 @@ export class KartController implements CollidableKartBody {
       this.surface === "OFFROAD" ||
       this.distToCenter > this.track.roadHalfWidth * 0.78;
     globalAiBrain.recordItemUsed(this.racerId, isOffRoadShortcut);
+    this.oilSquallTimer = 0;
     this.nitroBoostTimer = 2.0;
     this.boostTimer = Math.max(this.boostTimer, 2.0);
     this.boostMultiplier = 1.45;
@@ -334,10 +354,53 @@ export class KartController implements CollidableKartBody {
     this.velocity = fwd.scale(this.forwardSpeed);
   }
 
+  public activateGoldenOverclock(): void {
+    if (this.spinOutTimer > 0) return;
+    if (this.goldenOverclockTimer <= 0) {
+      this.goldenOverclockTimer = 7.5;
+    }
+    this.activateNitroCore();
+    this.activeBoostLabel = "GOLDEN OVERCLOCK (+45%)";
+  }
+
+  public activateWarpAutopilot(): void {
+    globalAiBrain.recordItemUsed(this.racerId, true);
+    this.warpAutopilotTimer = 6.0;
+    this.empShrinkTimer = 0;
+    this.oilSquallTimer = 0;
+    this.combatRecoveryTimer = 0;
+    this.spinOutTimer = 0;
+    this.wobbleTimer = 0;
+    this.driftState = "NONE";
+    this.driftDirection = 0;
+    this.prolongedRocketBoostActive = true;
+    this.activeBoostLabel = "HYPER-SHUTTLE AUTOPILOT (95 U/S)";
+    this.forwardSpeed = Math.max(this.forwardSpeed, 95.0);
+    this.lateralSpeed = 0;
+    this.velocity = this.forwardVector.scale(this.forwardSpeed);
+  }
+
+  public applyOilSquallDebuff(): boolean {
+    if (
+      this.novaOverdriveTimer > 0 ||
+      this.phaseCloakTimer > 0 ||
+      this.warpAutopilotTimer > 0 ||
+      this.nitroBoostTimer > 0
+    ) {
+      globalAiBrain.recordDefensiveBlock(this.racerId);
+      return false;
+    }
+    this.oilSquallTimer = 5.0;
+    this.wobbleTimer = Math.max(this.wobbleTimer, 0.25);
+    this.activeBoostLabel = "OIL SQUALL! VISOR SLICK (-20% GRIP)";
+    return true;
+  }
+
   public activateNovaOverdrive(): void {
     globalAiBrain.recordItemUsed(this.racerId, this.surface === "OFFROAD");
     this.novaOverdriveTimer = 7.5;
     this.empShrinkTimer = 0;
+    this.oilSquallTimer = 0;
     this.combatRecoveryTimer = 0;
     this.prolongedRocketBoostActive = true;
     this.activeBoostLabel = "NOVA OVERDRIVE (9999 KG)";
@@ -360,7 +423,11 @@ export class KartController implements CollidableKartBody {
   }
 
   public applyEmpShockwaveDebuff(): boolean {
-    if (this.novaOverdriveTimer > 0 || this.phaseCloakTimer > 0) {
+    if (
+      this.novaOverdriveTimer > 0 ||
+      this.phaseCloakTimer > 0 ||
+      this.warpAutopilotTimer > 0
+    ) {
       globalAiBrain.recordDefensiveBlock(this.racerId);
       return false;
     }
@@ -389,12 +456,15 @@ export class KartController implements CollidableKartBody {
     ).weights;
     const totalLen = Math.max(120, this.track.totalTrackLength);
     const baseT = this.closestTrack.normalizedSplineT;
-    const roadHalf = this.track.roadHalfWidth;
+    const roadHalf =
+      this.closestTrack.localRoadHalfWidth || this.track.roadHalfWidth;
 
     const hasReadyBoostItem =
       (this.heldItem === "NITRO_CORE" ||
         this.heldItem === "TRIPLE_NITRO" ||
+        this.heldItem === "GOLDEN_OVERCLOCK" ||
         this.heldItem === "NOVA_OVERDRIVE" ||
+        this.heldItem === "WARP_AUTOPILOT" ||
         this.heldItem === "PHASE_CLOAK") &&
       this.rouletteTimer <= 0 &&
       this.aiItemUseDelay <= 0.15 &&
@@ -404,6 +474,7 @@ export class KartController implements CollidableKartBody {
       this.boostTimer > 0 ||
       this.nitroBoostTimer > 0 ||
       this.novaOverdriveTimer > 0 ||
+      this.warpAutopilotTimer > 0 ||
       this.phaseCloakTimer > 0 ||
       this.prolongedRocketBoostActive;
 
@@ -824,7 +895,8 @@ export class KartController implements CollidableKartBody {
       }
     }
 
-    // 6. Hazard Avoidance (Oil Slicks, Barrier Crates, Pylon Cones on MEDIUM, HARD & SELF_LEARNING when grounded)
+    // 6. Hazard & Track Mask Avoidance (Oil Slicks, Water Puddles, Barrier Crates, Pylon Cones, Road Holes & Split Medians)
+    let emergencyHoleHop = false;
     if (
       this.grounded &&
       !isAligningForJump &&
@@ -846,6 +918,48 @@ export class KartController implements CollidableKartBody {
             targetWorldPos.addInPlace(
               this.closestTrack.binormal.scale(sideSign * safeClearance)
             );
+          }
+        }
+      }
+    }
+
+    if (
+      this.grounded &&
+      !isAligningForJump &&
+      this.track.trackMasks &&
+      this.track.trackMasks.length > 0
+    ) {
+      for (const mask of this.track.trackMasks) {
+        const maskCenterSample = this.track.getPointAtNormalizedT(
+          mask.normT,
+          mask.lateral
+        );
+        const toMask = maskCenterSample.position.subtract(this.position);
+        toMask.y = 0;
+        const fwdDist = Vector3.Dot(toMask, this.closestTrack.tangent);
+        const halfLen = mask.length * 0.5;
+        if (fwdDist > -halfLen && fwdDist < halfLen + 36.0) {
+          const currentLat = this.closestTrack.signedLateralOffset;
+          const sideSign =
+            currentLat >= mask.lateral ? 1 : -1;
+          const laneOffset =
+            mask.lateral + sideSign * (mask.width * 0.5 + 3.8);
+          const safeLanePt = this.track.getPointAtNormalizedT(
+            lookAheadT,
+            laneOffset
+          );
+          targetWorldPos = Vector3.Lerp(
+            targetWorldPos,
+            safeLanePt.position,
+            0.85
+          );
+          if (
+            mask.type === "ROAD_HOLE" &&
+            fwdDist > -2.0 &&
+            fwdDist < halfLen + 7.5 &&
+            Math.abs(currentLat - mask.lateral) < mask.width * 0.5 + 1.2
+          ) {
+            emergencyHoleHop = true;
           }
         }
       }
@@ -999,7 +1113,7 @@ export class KartController implements CollidableKartBody {
           !hasActiveOffRoadImmunity &&
           this.miniTurboTier >= 1 &&
           !nearNextTierOnGrass &&
-          this.distToCenter > this.track.curbWidth + 0.9;
+          this.distToCenter > (this.closestTrack.localCurbWidth || this.track.curbWidth) + 0.9;
 
         // Also cash in a charged Mini-Turbo if the kart has hooked too deep onto the inside shoulder and is moving further inward
         const hookedTooDeepInside =
@@ -1100,9 +1214,11 @@ export class KartController implements CollidableKartBody {
         // Initiate a new hop-drift only when the kart is settled on a forward racing line
         // (NOT while shooting diagonally across the road from a recovery or previous boost!)
         const entryTurnThreshold = policy.driftEntryThreshold;
+        const localCurbW =
+          this.closestTrack.localCurbWidth || this.track.curbWidth;
         const maxEntryDist = hasActiveOffRoadImmunity
-          ? this.track.curbWidth + 4.5
-          : this.track.curbWidth + 2.2;
+          ? localCurbW + 4.5
+          : localCurbW + 2.2;
         const easySectorAllowed =
           diff !== "EASY" ||
           (Math.floor(baseT * 12) + this.aiSlotIndex) % 2 === 0;
@@ -1139,7 +1255,9 @@ export class KartController implements CollidableKartBody {
     }
 
     const hopJustPressed =
-      (wantDrift && this.driftState === "NONE") || hopSwitchDrift;
+      (wantDrift && this.driftState === "NONE") ||
+      hopSwitchDrift ||
+      (emergencyHoleHop && this.grounded && this.driftState === "NONE");
 
     // 8. Throttle & Hairpin Trail-Braking Discipline
     // Modulate throttle and apply proportional trail-braking when entering or rounding an extreme hairpin
@@ -1214,7 +1332,7 @@ export class KartController implements CollidableKartBody {
       }
     }
 
-    // 9. Tactical AI Power-Up Brain (Context-Aware Utility across all 11 Power-Ups)
+    // 9. Tactical AI Power-Up Brain (Context-Aware Utility across all 16 Power-Ups)
     let useItemJustPressed = false;
     const patienceScale = policy.itemHoldPatience ?? 0.85;
     if (this.heldItem && this.rouletteTimer <= 0 && this.spinOutTimer <= 0) {
@@ -1245,12 +1363,16 @@ export class KartController implements CollidableKartBody {
 
         if (diff === "EASY") {
           useItemJustPressed = this.aiItemUseDelay <= 0;
-        } else if (item === "NITRO_CORE" || item === "TRIPLE_NITRO") {
+        } else if (
+          item === "NITRO_CORE" ||
+          item === "TRIPLE_NITRO" ||
+          item === "GOLDEN_OVERCLOCK"
+        ) {
           // Tactical Boost Timing:
           // 1. Immediate recovery if slowed down (< 78% top speed)
           // 2. Immediate off-road grass/curb shortcut cut when not already boost-immune
           // 3. Corner exit onto straightaway (curveDot >= 0.85 & not already boosting)
-          // 4. Upcoming item box refresh or holding multi-charge Triple Nitro on a straight
+          // 4. Rapid-fire surges during GOLDEN_OVERCLOCK
           const recoveringSpeed = speedRatio < 0.78;
           const cuttingOffRoad =
             (this.surface === "OFFROAD" || this.distToCenter > roadHalf * 0.76) &&
@@ -1261,10 +1383,11 @@ export class KartController implements CollidableKartBody {
             this.nitroBoostTimer <= 0.2 &&
             this.boostTimer <= 0.25;
           const multiChargeChain =
-            item === "TRIPLE_NITRO" &&
-            this.heldItemCharges >= 2 &&
-            curveDot >= 0.78 &&
-            this.nitroBoostTimer <= 0.15;
+            (item === "TRIPLE_NITRO" &&
+              this.heldItemCharges >= 2 &&
+              curveDot >= 0.78 &&
+              this.nitroBoostTimer <= 0.15) ||
+            (item === "GOLDEN_OVERCLOCK" && this.nitroBoostTimer <= 0.55);
           const patienceExpired = this.aiItemUseDelay < -3.2 * patienceScale;
 
           useItemJustPressed =
@@ -1342,11 +1465,15 @@ export class KartController implements CollidableKartBody {
             }
           }
           useItemJustPressed = hasTargetInCone;
-        } else if (item === "CRYO_MINE" || item === "GLITCH_PRISM") {
+        } else if (
+          item === "CRYO_MINE" ||
+          item === "TRIPLE_CRYO_MINE" ||
+          item === "GLITCH_PRISM"
+        ) {
           // Tactical Trap Placement:
           // - Drop immediately if an incoming seeker is chasing us (tail block)
           // - For GLITCH_PRISM: prefer dropping near real Item Boxes to camouflage the decoy!
-          // - For CRYO_MINE: prefer dropping on tight inside corner apexes, boost pads/ramps, or when an opponent is drafting behind
+          // - For CRYO_MINE / TRIPLE_CRYO_MINE: prefer dropping on tight inside corner apexes, boost pads/ramps, or when an opponent is drafting behind
           let tailingOpponentBehind = false;
           if (allRacers && allRacers.length > 1) {
             for (const other of allRacers) {
@@ -1395,8 +1522,8 @@ export class KartController implements CollidableKartBody {
             cuttingCorner ||
             nearUpcomingItemBox ||
             this.aiItemUseDelay < -1.8 * patienceScale;
-        } else if (item === "EMP_SHOCKWAVE") {
-          // Trigger global Ion Storm when leaders ahead are at high speed, boosting, or airborne
+        } else if (item === "EMP_SHOCKWAVE" || item === "OIL_SQUALL") {
+          // Trigger global Ion Storm or Slick-Cloud Discharger when leaders ahead are at high speed, cornering, or airborne
           let highValueLeaderTarget =
             this.aiItemUseDelay < -1.6 * patienceScale || nearUpcomingItemBox;
           if (!highValueLeaderTarget && allRacers) {
@@ -1405,6 +1532,7 @@ export class KartController implements CollidableKartBody {
               if (
                 !other.grounded ||
                 other.boostTimer > 0 ||
+                other.driftState === "DRIFT_ACTIVE" ||
                 other.forwardSpeed > other.stats.topSpeed * 0.88
               ) {
                 highValueLeaderTarget = true;
@@ -1420,7 +1548,7 @@ export class KartController implements CollidableKartBody {
             nearUpcomingItemBox ||
             this.aiItemUseDelay < -1.5 * patienceScale;
         } else {
-          // NOVA_OVERDRIVE & LIL_SAUCER
+          // NOVA_OVERDRIVE, WARP_AUTOPILOT & LIL_SAUCER
           useItemJustPressed = true;
         }
       }
@@ -1486,13 +1614,48 @@ export class KartController implements CollidableKartBody {
     }
     if (this.wobbleTimer > 0) this.wobbleTimer = Math.max(0, this.wobbleTimer - dt);
     if (this.padBoostCooldown > 0) this.padBoostCooldown = Math.max(0, this.padBoostCooldown - dt);
+    if (this.oilSquallTimer > 0) {
+      this.oilSquallTimer = Math.max(0, this.oilSquallTimer - dt);
+      if (
+        this.oilSquallTimer <= 0 &&
+        this.activeBoostLabel?.includes("OIL SQUALL")
+      ) {
+        this.activeBoostLabel = null;
+      }
+    }
+    if (this.goldenOverclockTimer > 0) {
+      this.goldenOverclockTimer = Math.max(0, this.goldenOverclockTimer - dt);
+      if (
+        this.goldenOverclockTimer <= 0 &&
+        this.heldItem === "GOLDEN_OVERCLOCK"
+      ) {
+        this.equipPowerUpImmediate(null);
+      }
+    }
+    if (this.warpAutopilotTimer > 0) {
+      this.warpAutopilotTimer = Math.max(0, this.warpAutopilotTimer - dt);
+      if (this.warpAutopilotTimer <= 0) {
+        if (this.activeBoostLabel?.includes("AUTOPILOT")) {
+          this.activeBoostLabel = null;
+        }
+        if (
+          this.boostTimer <= 0 &&
+          this.nitroBoostTimer <= 0 &&
+          this.novaOverdriveTimer <= 0 &&
+          this.phaseCloakTimer <= 0
+        ) {
+          this.prolongedRocketBoostActive = false;
+        }
+      }
+    }
     if (this.phaseCloakTimer > 0) {
       this.phaseCloakTimer = Math.max(0, this.phaseCloakTimer - dt);
       if (
         this.phaseCloakTimer <= 0 &&
         this.boostTimer <= 0 &&
         this.nitroBoostTimer <= 0 &&
-        this.novaOverdriveTimer <= 0
+        this.novaOverdriveTimer <= 0 &&
+        this.warpAutopilotTimer <= 0
       ) {
         this.prolongedRocketBoostActive = false;
         if (this.activeBoostLabel?.includes("PHASE CLOAK")) {
@@ -1511,7 +1674,11 @@ export class KartController implements CollidableKartBody {
     }
     if (this.boostTimer > 0) {
       this.boostTimer = Math.max(0, this.boostTimer - dt);
-      if (this.boostTimer <= 0 && this.novaOverdriveTimer <= 0) {
+      if (
+        this.boostTimer <= 0 &&
+        this.novaOverdriveTimer <= 0 &&
+        this.warpAutopilotTimer <= 0
+      ) {
         this.boostMultiplier = 1.0;
         this.activeBoostLabel = null;
         if (this.nitroBoostTimer <= 0 && this.phaseCloakTimer <= 0) {
@@ -1525,6 +1692,7 @@ export class KartController implements CollidableKartBody {
         this.nitroBoostTimer <= 0 &&
         this.boostTimer <= 0 &&
         this.novaOverdriveTimer <= 0 &&
+        this.warpAutopilotTimer <= 0 &&
         this.phaseCloakTimer <= 0
       ) {
         this.prolongedRocketBoostActive = false;
@@ -1532,7 +1700,11 @@ export class KartController implements CollidableKartBody {
     }
     if (this.novaOverdriveTimer > 0) {
       this.novaOverdriveTimer = Math.max(0, this.novaOverdriveTimer - dt);
-      if (this.novaOverdriveTimer <= 0 && this.boostTimer <= 0) {
+      if (
+        this.novaOverdriveTimer <= 0 &&
+        this.boostTimer <= 0 &&
+        this.warpAutopilotTimer <= 0
+      ) {
         this.activeBoostLabel = null;
         if (this.nitroBoostTimer <= 0 && this.phaseCloakTimer <= 0) {
           this.prolongedRocketBoostActive = false;
@@ -1548,15 +1720,19 @@ export class KartController implements CollidableKartBody {
           ? [
               "NITRO_CORE",
               "TRIPLE_NITRO",
+              "GOLDEN_OVERCLOCK",
               "PULSE_SEEKER",
               "TRIPLE_SEEKER",
               "RICOCHET_DISC",
               "ORBITAL_SHIELD",
               "CRYO_MINE",
+              "TRIPLE_CRYO_MINE",
               "GLITCH_PRISM",
+              "OIL_SQUALL",
               "PHASE_CLOAK",
               "EMP_SHOCKWAVE",
               "NOVA_OVERDRIVE",
+              "WARP_AUTOPILOT",
               "LIL_SAUCER",
             ]
           : [
@@ -1565,6 +1741,7 @@ export class KartController implements CollidableKartBody {
               "RICOCHET_DISC",
               "ORBITAL_SHIELD",
               "CRYO_MINE",
+              "TRIPLE_CRYO_MINE",
               "GLITCH_PRISM",
             ];
       const cycleIdx = Math.floor(this.rouletteTimer * 14) % allItems.length;
@@ -1591,16 +1768,26 @@ export class KartController implements CollidableKartBody {
           this.aiItemUseDelay = 0.65;
         }
         onUseItem?.(this, itemToFire);
+      } else if (itemToFire === "GOLDEN_OVERCLOCK") {
+        if (this.goldenOverclockTimer <= 0) {
+          this.goldenOverclockTimer = 7.5;
+        }
+        if (!this.isPlayer) {
+          this.aiItemUseDelay = 0.38;
+        }
+        onUseItem?.(this, itemToFire);
       } else if (
         itemToFire === "ORBITAL_SHIELD" ||
-        itemToFire === "TRIPLE_SEEKER"
+        itemToFire === "TRIPLE_SEEKER" ||
+        itemToFire === "TRIPLE_CRYO_MINE"
       ) {
-        // ItemManager fires 1 orbiting orb/seeker per press and decrements remaining charges
+        // ItemManager fires 1 orbiting orb/seeker or drops 1 trailing mine per press and decrements remaining charges
         onUseItem?.(this, itemToFire);
         if (
           !this.isPlayer &&
           (this.heldItem === "ORBITAL_SHIELD" ||
-            this.heldItem === "TRIPLE_SEEKER")
+            this.heldItem === "TRIPLE_SEEKER" ||
+            this.heldItem === "TRIPLE_CRYO_MINE")
         ) {
           this.aiItemUseDelay = 0.72;
         }
@@ -1616,15 +1803,19 @@ export class KartController implements CollidableKartBody {
       this.closestTrack?.sampleIndex
     );
     this.distToCenter = this.closestTrack.horizontalDistance;
+    const localRoadHalf =
+      this.closestTrack.localRoadHalfWidth || this.track.roadHalfWidth;
+    const localCurbWidth =
+      this.closestTrack.localCurbWidth || this.track.curbWidth;
 
-    // Terrain classification via horizontal distance d_perp relative to W_road and W_curb
+    // Terrain classification via horizontal distance d_perp relative to local W_road and W_curb
     this.surface = classifyTerrainSurface(
       this.distToCenter,
-      this.track.roadHalfWidth,
-      this.track.curbWidth
+      localRoadHalf,
+      localCurbWidth
     );
 
-    const isOnRoadOrCurb = this.distToCenter <= this.track.curbWidth;
+    const isOnRoadOrCurb = this.distToCenter <= localCurbWidth;
     const rayOrigin = new Vector3(
       this.position.x,
       this.position.y + 4.5,
@@ -1866,31 +2057,103 @@ export class KartController implements CollidableKartBody {
       }
     }
 
-    // Check Custom Placed Track Hazards (Oil Slicks, Barrier Crates, Pylon Cones)
+    // Check Custom Placed Track Hazards (Oil Slicks, Water Puddles, Barrier Crates, Pylon Cones)
     if (this.obstacleHitCooldown <= 0 && this.track.obstacles.length > 0) {
       for (const obs of this.track.obstacles) {
         if (obs.type === "JUMP_RAMP") continue;
         const dx = this.position.x - obs.position.x;
         const dz = this.position.z - obs.position.z;
         if (dx * dx + dz * dz <= obs.radius * obs.radius) {
-          this.obstacleHitCooldown = 0.9;
-          if (this.novaOverdriveTimer <= 0) {
-            if (obs.type === "OIL_SLICK") {
-              this.triggerSpinOut(0.75, 0);
-              this.activeBoostLabel = "OIL SLICK SLIDE!";
-            } else if (obs.type === "BARRIER_CRATE") {
-              this.triggerSpinOut(0.95, 2.5);
-              this.activeBoostLabel = "CRATE IMPACT!";
-            } else if (obs.type === "PYLON_CONE") {
-              this.forwardSpeed *= 0.85;
-              this.velocity.scaleInPlace(0.85);
-              const away = new Vector3(dx, 0, dz);
-              if (away.lengthSquared() > 1e-4) away.normalize();
-              this.knockVelocity.copyFrom(away.scale(14));
-              this.cameraShakeTimer = 0.2;
+          if (obs.type === "WATER_PUDDLE") {
+            if (!this.grounded) continue; // Hopping or jumping clears water puddles!
+            this.obstacleHitCooldown = 0.65;
+            if (
+              this.novaOverdriveTimer <= 0 &&
+              this.warpAutopilotTimer <= 0 &&
+              this.phaseCloakTimer <= 0 &&
+              this.nitroBoostTimer <= 0
+            ) {
+              this.forwardSpeed *= 0.8;
+              this.velocity.scaleInPlace(0.8);
+              this.wobbleTimer = Math.max(this.wobbleTimer, 0.35);
+              this.cameraShakeTimer = Math.max(this.cameraShakeTimer, 0.16);
+              this.activeBoostLabel = "HYDROPLANE PUDDLE (-20% SPD)";
+            }
+          } else {
+            this.obstacleHitCooldown = 0.9;
+            if (
+              this.novaOverdriveTimer <= 0 &&
+              this.warpAutopilotTimer <= 0 &&
+              this.phaseCloakTimer <= 0
+            ) {
+              if (obs.type === "OIL_SLICK") {
+                if (!this.grounded) continue;
+                this.triggerSpinOut(0.75, 0);
+                this.activeBoostLabel = "OIL SLICK SLIDE!";
+              } else if (obs.type === "BARRIER_CRATE") {
+                this.triggerSpinOut(0.95, 2.5);
+                this.activeBoostLabel = "CRATE IMPACT!";
+              } else if (obs.type === "PYLON_CONE") {
+                this.forwardSpeed *= 0.85;
+                this.velocity.scaleInPlace(0.85);
+                const away = new Vector3(dx, 0, dz);
+                if (away.lengthSquared() > 1e-4) away.normalize();
+                this.knockVelocity.copyFrom(away.scale(14));
+                this.cameraShakeTimer = 0.2;
+              }
             }
           }
           break;
+        }
+      }
+    }
+
+    // Check Track Masks (Road Holes / Pit Cutouts & Parallel Split-Lane Medians)
+    if (this.track.trackMasks && this.track.trackMasks.length > 0) {
+      const totalTrackLen = Math.max(100, this.track.totalTrackLength);
+      const currDist = this.closestTrack.distanceAlongTrack;
+      const currLat = this.closestTrack.signedLateralOffset;
+
+      for (const mask of this.track.trackMasks) {
+        const maskCenterDist =
+          (((mask.normT % 1) + 1) % 1) * totalTrackLen;
+        const rawDiff = Math.abs(currDist - maskCenterDist);
+        const longDist = Math.min(rawDiff, totalTrackLen - rawDiff);
+        const halfLen = mask.length * 0.5;
+        const halfW = mask.width * 0.5;
+
+        if (
+          mask.type === "ROAD_HOLE" &&
+          longDist <= halfLen * 0.92 &&
+          Math.abs(currLat - mask.lateral) <= halfW * 0.92
+        ) {
+          // Grounded karts fall into the road hole unless hopping/airborne above the road or in Shuttle/Cloak mode
+          if (
+            this.grounded &&
+            this.warpAutopilotTimer <= 0 &&
+            this.phaseCloakTimer <= 0 &&
+            this.obstacleHitCooldown <= 0
+          ) {
+            this.obstacleHitCooldown = 1.25;
+            this.triggerSpinOut(1.05, 8.2);
+            const escapeSign = currLat >= mask.lateral ? 1 : -1;
+            this.knockVelocity.copyFrom(
+              this.closestTrack.binormal.scale(escapeSign * 14.0)
+            );
+            this.activeBoostLabel = "TRACK PIT HAZARD!";
+          }
+        } else if (
+          mask.type === "SPLIT_MEDIAN" &&
+          longDist <= halfLen &&
+          Math.abs(currLat - mask.lateral) <= halfW + 0.55
+        ) {
+          this.surface = "OFFROAD";
+          if (this.grounded && this.warpAutopilotTimer <= 0) {
+            const pushSign = currLat >= mask.lateral ? 1 : -1;
+            this.knockVelocity.addInPlace(
+              this.closestTrack.binormal.scale(pushSign * 18.0 * dt)
+            );
+          }
         }
       }
     }
@@ -1905,7 +2168,8 @@ export class KartController implements CollidableKartBody {
       const totalLen = Math.max(120, this.track.totalTrackLength);
       const exitT =
         (this.closestTrack.normalizedSplineT + 16 / totalLen) % 1.0;
-      const roadHalf = this.track.roadHalfWidth;
+      const roadHalf =
+        this.closestTrack.localRoadHalfWidth || this.track.roadHalfWidth;
       const safeExitLat = Math.max(
         -roadHalf * 0.4,
         Math.min(roadHalf * 0.4, this.closestTrack.signedLateralOffset * 0.32)
@@ -2141,6 +2405,7 @@ export class KartController implements CollidableKartBody {
       this.boostTimer > 0 ||
       this.nitroBoostTimer > 0 ||
       this.novaOverdriveTimer > 0 ||
+      this.warpAutopilotTimer > 0 ||
       this.phaseCloakTimer > 0 ||
       this.prolongedRocketBoostActive;
 
@@ -2153,6 +2418,7 @@ export class KartController implements CollidableKartBody {
         !input.driftHeld ||
         this.forwardSpeed < minDriftSpeed * 0.72 ||
         this.spinOutTimer > 0 ||
+        this.warpAutopilotTimer > 0 ||
         offRoadWallBreak
       ) {
         // Release drift -> trigger Mini-Turbo speed boost if charged, or convert remaining lateral slip into forward speed
@@ -2224,6 +2490,7 @@ export class KartController implements CollidableKartBody {
       this.boostTimer > 0 ||
       this.nitroBoostTimer > 0 ||
       this.novaOverdriveTimer > 0 ||
+      this.warpAutopilotTimer > 0 ||
       this.phaseCloakTimer > 0 ||
       this.prolongedRocketBoostActive;
 
@@ -2243,6 +2510,11 @@ export class KartController implements CollidableKartBody {
       }
     }
 
+    // Slick-Cloud Discharger (OIL_SQUALL) reduces lateral tire traction by 20% while active
+    if (this.oilSquallTimer > 0 && !hasOffRoadImmunity) {
+      lateralGrip *= 0.8;
+    }
+
     let powerSpeedMult = 1.0;
     // Powersliding preserves 100% of entry top speed around corners (DRIFT_ACTIVE_SPEED_MULT = 1.0)
     if (this.driftState === "DRIFT_ACTIVE" && this.grounded) {
@@ -2260,11 +2532,18 @@ export class KartController implements CollidableKartBody {
     if (this.nitroBoostTimer > 0) {
       powerSpeedMult = Math.max(powerSpeedMult, 1.45);
     }
+    if (this.warpAutopilotTimer > 0) {
+      powerSpeedMult = Math.max(
+        powerSpeedMult,
+        Math.max(2.25, 95.0 / Math.max(25.0, this.stats.topSpeed))
+      );
+    }
     if (this.boostTimer > 0) {
       powerSpeedMult = Math.max(powerSpeedMult, this.boostMultiplier);
     }
 
-    const empShrinkSpeedScale = this.empShrinkTimer > 0 ? 0.75 : 1.0;
+    const empShrinkSpeedScale =
+      this.empShrinkTimer > 0 && this.warpAutopilotTimer <= 0 ? 0.75 : 1.0;
 
     // AI Racers use 100% of their character/kart's true physical topSpeed and acceleration across all difficulties;
     // EASY, MEDIUM, and HARD differ strictly through driving skill, racing line precision, drift mastery, and item aggressiveness.
@@ -2282,9 +2561,15 @@ export class KartController implements CollidableKartBody {
     const isPowerBoosting =
       this.boostTimer > 0 ||
       this.nitroBoostTimer > 0 ||
-      this.novaOverdriveTimer > 0;
+      this.novaOverdriveTimer > 0 ||
+      this.warpAutopilotTimer > 0;
 
-    if (this.spinOutTimer > 0) {
+    if (this.warpAutopilotTimer > 0) {
+      // Hyper-Shuttle Autopilot locks cruise speed to 95 u/s along the track spline
+      this.spinOutTimer = 0;
+      this.spinOutAngle = 0;
+      this.forwardSpeed = 95.0;
+    } else if (this.spinOutTimer > 0) {
       this.spinOutTimer = Math.max(0, this.spinOutTimer - dt);
       this.spinOutAngle += dt * Math.PI * 4; // 720-degree spin-out
       this.forwardSpeed *= Math.max(0, 1 - 2.8 * dt);
@@ -2384,7 +2669,43 @@ export class KartController implements CollidableKartBody {
       (this.stats.handling - 1.75) * 0.14
     );
 
-    if (this.spinOutTimer <= 0) {
+    if (this.warpAutopilotTimer > 0) {
+      // Hyper-Shuttle Autopilot locks heading along the spline lookahead point (steering cleanly around any split median or pit mask)
+      const lookaheadT =
+        (this.closestTrack.normalizedSplineT +
+          28.0 / Math.max(250, this.track.totalTrackLength)) %
+        1.0;
+      const sampleCount = this.track.samples.length;
+      const idx = Math.floor(lookaheadT * sampleCount) % sampleCount;
+      let targetLateral = 0;
+      for (const mask of this.track.trackMasks) {
+        let dtMask = lookaheadT - mask.normT;
+        if (dtMask > 0.5) dtMask -= 1.0;
+        if (dtMask < -0.5) dtMask += 1.0;
+        const longDist = Math.abs(dtMask) * this.track.totalTrackLength;
+        if (longDist < mask.length * 0.5 + 18) {
+          if (mask.type === "SPLIT_MEDIAN") {
+            const side = this.closestTrack.signedLateralOffset >= 0 ? 1 : -1;
+            targetLateral = side * (mask.width * 0.5 + 4.2);
+          } else {
+            const side =
+              this.closestTrack.signedLateralOffset >= mask.lateral ? 1 : -1;
+            targetLateral = mask.lateral + side * (mask.width * 0.5 + 4.0);
+          }
+          break;
+        }
+      }
+      const targetPt = this.track.samples[idx].position.add(
+        this.track.samples[idx].binormal.scale(targetLateral)
+      );
+      const toTargetX = targetPt.x - this.position.x;
+      const toTargetZ = targetPt.z - this.position.z;
+      const targetYaw = Math.atan2(toTargetX, toTargetZ);
+      let yawDiff = targetYaw - this.headingYaw;
+      while (yawDiff > Math.PI) yawDiff -= Math.PI * 2;
+      while (yawDiff < -Math.PI) yawDiff += Math.PI * 2;
+      this.headingYaw += yawDiff * Math.min(1, dt * 14.0);
+    } else if (this.spinOutTimer <= 0) {
       const airSteerFactor = this.grounded ? 1.0 : 0.65;
       const overTopSpeedRatio = Math.max(
         0,
@@ -2458,7 +2779,11 @@ export class KartController implements CollidableKartBody {
     const fwdAfterYaw = this.forwardVector;
     const rightAfterYaw = this.rightVector;
 
-    if (
+    if (this.warpAutopilotTimer > 0) {
+      this.lateralSpeed = 0;
+      this.velocity.x = fwdAfterYaw.x * this.forwardSpeed;
+      this.velocity.z = fwdAfterYaw.z * this.forwardSpeed;
+    } else if (
       this.driftState === "HOPPING" &&
       !this.grounded &&
       this.driftDirection !== 0
@@ -2662,8 +2987,26 @@ export class KartController implements CollidableKartBody {
       postMoveTrack.sampleIndex
     );
 
+    let postIsMaskedOffRoad = false;
+    for (const mask of this.track.trackMasks) {
+      let dtMask = postMoveTrack.normalizedSplineT - mask.normT;
+      if (dtMask > 0.5) dtMask -= 1.0;
+      if (dtMask < -0.5) dtMask += 1.0;
+      const longDist = Math.abs(dtMask) * this.track.totalTrackLength;
+      if (longDist <= mask.length * 0.5) {
+        const maskLat = mask.type === "SPLIT_MEDIAN" ? 0 : mask.lateral;
+        if (
+          Math.abs(postMoveTrack.signedLateralOffset - maskLat) <=
+          mask.width * 0.5
+        ) {
+          postIsMaskedOffRoad = true;
+          break;
+        }
+      }
+    }
     const postOnRoadOrCurb =
-      postMoveTrack.horizontalDistance <= this.track.curbWidth;
+      !postIsMaskedOffRoad &&
+      postMoveTrack.horizontalDistance <= postMoveTrack.localCurbWidth;
     const postNormal = postOnRoadOrCurb ? postMoveTrack.normal : surfaceNormal;
 
     const wheelPitch = -Math.atan2(postFrontSample.y - postRearSample.y, 3.0);
@@ -2776,11 +3119,13 @@ export class KartController implements CollidableKartBody {
 
     this.closestTrack = postMoveTrack;
     this.distToCenter = postMoveTrack.horizontalDistance;
-    this.surface = classifyTerrainSurface(
-      this.distToCenter,
-      this.track.roadHalfWidth,
-      this.track.curbWidth
-    );
+    this.surface = postIsMaskedOffRoad
+      ? "OFFROAD"
+      : classifyTerrainSurface(
+          this.distToCenter,
+          postMoveTrack.localRoadHalfWidth,
+          postMoveTrack.localCurbWidth
+        );
 
     this.assembly.kartRoot.position.copyFrom(this.position);
     this.assembly.kartRoot.rotation.y = this.headingYaw;
@@ -2811,8 +3156,12 @@ export class KartController implements CollidableKartBody {
       steerInput: this.smoothedSteer,
       miniTurboTier: this.miniTurboTier,
       isDrifting: this.driftState === "DRIFT_ACTIVE",
-      isBoosting: this.boostTimer > 0 || this.nitroBoostTimer > 0,
-      novaOverdriveActive: this.novaOverdriveTimer > 0,
+      isBoosting:
+        this.boostTimer > 0 ||
+        this.nitroBoostTimer > 0 ||
+        this.warpAutopilotTimer > 0,
+      novaOverdriveActive:
+        this.novaOverdriveTimer > 0 || this.warpAutopilotTimer > 0,
       surface: this.surface,
       grounded: this.grounded,
       isBurnoutActive: this.burnoutTimer > 0 && this.grounded,
@@ -2838,7 +3187,7 @@ export class KartController implements CollidableKartBody {
         z: this.position.z,
         normT: postMoveTrack.normalizedSplineT,
         signedLat: postMoveTrack.signedLateralOffset,
-        roadHalfWidth: this.track.roadHalfWidth,
+        roadHalfWidth: postMoveTrack.localRoadHalfWidth,
         wallHalfWidth: this.track.wallHalfWidth,
         forwardSpeed: this.forwardSpeed,
         topSpeed: this.stats.topSpeed,
@@ -3045,12 +3394,16 @@ export class KartController implements CollidableKartBody {
       activeBoostLabel: this.activeBoostLabel,
       nitroBoostTimer: Number(this.nitroBoostTimer.toFixed(2)),
       novaOverdriveTimer: Number(this.novaOverdriveTimer.toFixed(2)),
+      goldenOverclockTimer: Number(this.goldenOverclockTimer.toFixed(2)),
+      warpAutopilotTimer: Number(this.warpAutopilotTimer.toFixed(2)),
+      oilSquallTimer: Number(this.oilSquallTimer.toFixed(2)),
       spinOutTimer: Number(this.spinOutTimer.toFixed(2)),
       wobbleTimer: Number(this.wobbleTimer.toFixed(2)),
       heldItem: this.heldItem,
       heldItemCharges: this.heldItemCharges,
       orbitalShieldCharges: this.orbitalShieldCharges,
       tripleSeekerCharges: this.tripleSeekerCharges,
+      tripleCryoMineCharges: this.tripleCryoMineCharges,
       rouletteTimer: Number(this.rouletteTimer.toFixed(2)),
       lap: this.lap,
       maxLapReached: this.maxLapReached,
@@ -3112,6 +3465,9 @@ export class KartController implements CollidableKartBody {
     this.activeBoostLabel = state.activeBoostLabel;
     this.nitroBoostTimer = state.nitroBoostTimer;
     this.novaOverdriveTimer = state.novaOverdriveTimer;
+    this.goldenOverclockTimer = state.goldenOverclockTimer ?? 0;
+    this.warpAutopilotTimer = state.warpAutopilotTimer ?? 0;
+    this.oilSquallTimer = state.oilSquallTimer ?? 0;
     this.spinOutTimer = state.spinOutTimer;
     this.wobbleTimer = state.wobbleTimer;
     this.heldItem = state.heldItem;
@@ -3119,7 +3475,8 @@ export class KartController implements CollidableKartBody {
       state.heldItemCharges ??
       (state.heldItem === "TRIPLE_NITRO" ||
       state.heldItem === "ORBITAL_SHIELD" ||
-      state.heldItem === "TRIPLE_SEEKER"
+      state.heldItem === "TRIPLE_SEEKER" ||
+      state.heldItem === "TRIPLE_CRYO_MINE"
         ? 3
         : state.heldItem
         ? 1
@@ -3130,6 +3487,9 @@ export class KartController implements CollidableKartBody {
     this.tripleSeekerCharges =
       state.tripleSeekerCharges ??
       (state.heldItem === "TRIPLE_SEEKER" ? this.heldItemCharges : 0);
+    this.tripleCryoMineCharges =
+      state.tripleCryoMineCharges ??
+      (state.heldItem === "TRIPLE_CRYO_MINE" ? this.heldItemCharges : 0);
     this.rouletteTimer = state.rouletteTimer;
     this.lap = state.lap;
     this.maxLapReached = state.maxLapReached;
@@ -3215,8 +3575,8 @@ export class KartController implements CollidableKartBody {
     this.distToCenter = this.closestTrack.horizontalDistance;
     this.surface = classifyTerrainSurface(
       this.distToCenter,
-      this.track.roadHalfWidth,
-      this.track.curbWidth
+      this.closestTrack.localRoadHalfWidth,
+      this.closestTrack.localCurbWidth
     );
 
     if (
