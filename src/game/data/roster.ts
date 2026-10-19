@@ -8,9 +8,9 @@ import {
 
 export const ROSTER_BALANCE_PASS = "Pass #18";
 export const BUILD_INFO_STAMP = `Build ${ROSTER_BALANCE_PASS} (${
-  process.env.NEXT_PUBLIC_BUILD_SHA || "7f5fc8b"
+  process.env.NEXT_PUBLIC_BUILD_SHA || "1b96873"
 }) • Built ${
-  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 18, 2026, 08:41 PM CDT"
+  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 19, 2026, 11:00 AM CDT"
 }`;
 
 export const KART_CHASSIS_CATALOG: Record<string, KartChassisConfig> = {

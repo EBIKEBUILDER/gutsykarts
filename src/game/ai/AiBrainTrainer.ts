@@ -68,102 +68,102 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
     ],
   },
   MEDIUM: {
-    lookAheadBase: 20.6,
+    lookAheadBase: 19.8,
     lookAheadCurve: 18.2,
-    lookAheadDrift: 18.8,
-    apexCutRatio: 0.42,
-    driftCutRatio: 0.16,
-    steerGain: 2.38,
-    driftEntryThreshold: 0.155,
-    preferredChargeSec: 2.55,
-    maxHoldChargeSec: 3.55,
-    driftAngleGain: 2.65,
+    lookAheadDrift: 18.0,
+    apexCutRatio: 0.44,
+    driftCutRatio: 0.21,
+    steerGain: 2.55,
+    driftEntryThreshold: 0.16,
+    preferredChargeSec: 2.65,
+    maxHoldChargeSec: 4.15,
+    driftAngleGain: 2.02,
     driftLatGain: 2.48,
-    driftVelDamping: 2.42,
-    insideApexTarget: 0.26,
-    exitTangentAlignBlend: 0.52,
-    padSeekWeight: 0.34,
-    itemSeekWeight: 0.72,
-    juggernautAvoidanceWeight: 0.65,
-    itemHoldPatience: 0.78,
-    preemptiveDriftLeadMeters: 31.0,
-    chainDriftWeight: 0.12,
-    offRoadDriftRecoveryWeight: 0.65,
+    driftVelDamping: 2.55,
+    insideApexTarget: 0.28,
+    exitTangentAlignBlend: 0.51,
+    padSeekWeight: 0.35,
+    itemSeekWeight: 0.42,
+    juggernautAvoidanceWeight: 0.95,
+    itemHoldPatience: 1.15,
+    preemptiveDriftLeadMeters: 22.0,
+    chainDriftWeight: 0.04,
+    offRoadDriftRecoveryWeight: 0.72,
     neuralBias: [
-      -0.3028,
-      0.0668,
-      -0.21,
-      0.1615,
-      -0.2963,
-      -0.1731,
-      0.339,
-      -0.0274,
+      0.2932,
+      -0.2662,
+      -0.3213,
+      0.1241,
+      0.0359,
+      0.2497,
+      0.2759,
+      0.1395,
     ],
   },
   HARD: {
-    lookAheadBase: 21.99,
-    lookAheadCurve: 20.93,
-    lookAheadDrift: 20.59,
-    apexCutRatio: 0.56,
-    driftCutRatio: 0.14,
-    steerGain: 2.406,
-    driftEntryThreshold: 0.128,
-    preferredChargeSec: 2.78,
-    maxHoldChargeSec: 3.73,
-    driftAngleGain: 3.087,
-    driftLatGain: 2.668,
-    driftVelDamping: 2.385,
-    insideApexTarget: 0.289,
-    exitTangentAlignBlend: 0.432,
-    padSeekWeight: 0.363,
-    itemSeekWeight: 0.912,
-    juggernautAvoidanceWeight: 0.611,
-    itemHoldPatience: 0.849,
-    preemptiveDriftLeadMeters: 37.79,
-    chainDriftWeight: 0.198,
-    offRoadDriftRecoveryWeight: 0.735,
+    lookAheadBase: 19.32,
+    lookAheadCurve: 18.44,
+    lookAheadDrift: 18.27,
+    apexCutRatio: 0.551,
+    driftCutRatio: 0.258,
+    steerGain: 2.807,
+    driftEntryThreshold: 0.156,
+    preferredChargeSec: 3.04,
+    maxHoldChargeSec: 5.08,
+    driftAngleGain: 1.964,
+    driftLatGain: 2.544,
+    driftVelDamping: 2.694,
+    insideApexTarget: 0.315,
+    exitTangentAlignBlend: 0.501,
+    padSeekWeight: 0.366,
+    itemSeekWeight: 0.369,
+    juggernautAvoidanceWeight: 1.246,
+    itemHoldPatience: 1.546,
+    preemptiveDriftLeadMeters: 23.58,
+    chainDriftWeight: 0.044,
+    offRoadDriftRecoveryWeight: 0.936,
     neuralBias: [
-      -0.3028,
-      0.0668,
-      -0.21,
-      0.1615,
-      -0.2963,
-      -0.1731,
-      0.339,
-      -0.0274,
+      0.2932,
+      -0.2662,
+      -0.3213,
+      0.1241,
+      0.0359,
+      0.2497,
+      0.2759,
+      0.1395,
     ],
   },
   SELF_LEARNING: {
-    lookAheadBase: 21.99,
-    lookAheadCurve: 20.93,
-    lookAheadDrift: 20.59,
-    apexCutRatio: 0.56,
-    driftCutRatio: 0.14,
-    steerGain: 2.406,
-    driftEntryThreshold: 0.128,
-    preferredChargeSec: 2.78,
-    maxHoldChargeSec: 3.73,
-    driftAngleGain: 3.087,
-    driftLatGain: 2.668,
-    driftVelDamping: 2.385,
-    insideApexTarget: 0.289,
-    exitTangentAlignBlend: 0.432,
-    padSeekWeight: 0.363,
-    itemSeekWeight: 0.912,
-    juggernautAvoidanceWeight: 0.611,
-    itemHoldPatience: 0.849,
-    preemptiveDriftLeadMeters: 37.79,
-    chainDriftWeight: 0.198,
-    offRoadDriftRecoveryWeight: 0.735,
+    lookAheadBase: 19.32,
+    lookAheadCurve: 18.44,
+    lookAheadDrift: 18.27,
+    apexCutRatio: 0.551,
+    driftCutRatio: 0.258,
+    steerGain: 2.807,
+    driftEntryThreshold: 0.156,
+    preferredChargeSec: 3.04,
+    maxHoldChargeSec: 5.08,
+    driftAngleGain: 1.964,
+    driftLatGain: 2.544,
+    driftVelDamping: 2.694,
+    insideApexTarget: 0.315,
+    exitTangentAlignBlend: 0.501,
+    padSeekWeight: 0.366,
+    itemSeekWeight: 0.369,
+    juggernautAvoidanceWeight: 1.246,
+    itemHoldPatience: 1.546,
+    preemptiveDriftLeadMeters: 23.58,
+    chainDriftWeight: 0.044,
+    offRoadDriftRecoveryWeight: 0.936,
     neuralBias: [
-      -0.3028,
-      0.0668,
-      -0.21,
-      0.1615,
-      -0.2963,
-      -0.1731,
-      0.339,
-      -0.0274,
+      0.2932,
+      -0.2662,
+      -0.3213,
+      0.1241,
+      0.0359,
+      0.2497,
+      0.2759,
+      0.1395,
     ],
   },
 };
@@ -175,12 +175,12 @@ function clamp(val: number, min: number, max: number): number {
 function cloneWeights(w: AiPolicyWeights): AiPolicyWeights {
   return {
     ...w,
-    itemSeekWeight: w.itemSeekWeight ?? 0.912,
-    juggernautAvoidanceWeight: w.juggernautAvoidanceWeight ?? 0.611,
-    itemHoldPatience: w.itemHoldPatience ?? 0.849,
-    preemptiveDriftLeadMeters: w.preemptiveDriftLeadMeters ?? 37.79,
-    chainDriftWeight: w.chainDriftWeight ?? 0.198,
-    offRoadDriftRecoveryWeight: w.offRoadDriftRecoveryWeight ?? 0.735,
+    itemSeekWeight: w.itemSeekWeight ?? 0.369,
+    juggernautAvoidanceWeight: w.juggernautAvoidanceWeight ?? 1.246,
+    itemHoldPatience: w.itemHoldPatience ?? 1.546,
+    preemptiveDriftLeadMeters: w.preemptiveDriftLeadMeters ?? 23.58,
+    chainDriftWeight: w.chainDriftWeight ?? 0.044,
+    offRoadDriftRecoveryWeight: w.offRoadDriftRecoveryWeight ?? 0.936,
     neuralBias: Array.isArray(w.neuralBias)
       ? [...w.neuralBias]
       : [0, 0, 0, 0, 0, 0, 0, 0],
@@ -562,8 +562,8 @@ interface PersistedBrainState {
 }
 
 export class AiBrainManager {
-  private generation = 19138;
-  private episodesCompleted = 19137;
+  private generation = 22027;
+  private episodesCompleted = 22026;
   private itemsEnabled = true;
   private autoBalanceRosterEnabled = false;
   private trainingTrackMode: "ROTATE_CUP" | "ALL_CUPS" | "SINGLE_TRACK" =
@@ -599,9 +599,9 @@ export class AiBrainManager {
 
   constructor() {
     this.championGenome = createGenome(
-      "gen19138_champ",
-      "Gen-19138 Seed Ace",
-      19138,
+      "gen22027_champ",
+      "Gen-22027 Seed Ace",
+      22027,
       DEFAULT_POLICY_WEIGHTS.SELF_LEARNING
     );
     this.championGenome.fitness = 100.0;
@@ -609,10 +609,10 @@ export class AiBrainManager {
     this.championGenome.pavementPct = 99.5;
     const seed = DEFAULT_POLICY_WEIGHTS.SELF_LEARNING;
     this.population = [
-      createGenome("g19138_slot0", "Alpha Policy (Apex)", 19138, seed),
-      createGenome("g19138_slot1", "Beta Policy (Smooth)", 19138, seed, "g19138_slot0"),
-      createGenome("g19138_slot2", "Gamma Policy (Charger)", 19138, seed, "g19138_slot0"),
-      createGenome("g19138_slot3", "Delta Policy (Explorer)", 19138, seed, "g19138_slot0"),
+      createGenome("g22027_slot0", "Alpha Policy (Apex)", 22027, seed),
+      createGenome("g22027_slot1", "Beta Policy (Smooth)", 22027, seed, "g22027_slot0"),
+      createGenome("g22027_slot2", "Gamma Policy (Charger)", 22027, seed, "g22027_slot0"),
+      createGenome("g22027_slot3", "Delta Policy (Explorer)", 22027, seed, "g22027_slot0"),
     ];
     this.initDefaultCharacterStats();
   }
@@ -651,27 +651,27 @@ export class AiBrainManager {
   private initDefaultPopulation(): void {
     const seed = DEFAULT_POLICY_WEIGHTS.SELF_LEARNING;
     this.population = [
-      createGenome("g19138_slot0", "Alpha Policy (Apex)", 19138, seed),
+      createGenome("g22027_slot0", "Alpha Policy (Apex)", 22027, seed),
       createGenome(
-        "g19138_slot1",
+        "g22027_slot1",
         "Beta Policy (Smooth)",
-        19138,
+        22027,
         mutatePolicyWeights(seed, 0.45),
-        "g19138_slot0"
+        "g22027_slot0"
       ),
       createGenome(
-        "g19138_slot2",
+        "g22027_slot2",
         "Gamma Policy (Charger)",
-        19138,
+        22027,
         mutatePolicyWeights(seed, 0.55),
-        "g19138_slot0"
+        "g22027_slot0"
       ),
       createGenome(
-        "g19138_slot3",
+        "g22027_slot3",
         "Delta Policy (Explorer)",
-        19138,
+        22027,
         mutatePolicyWeights(seed, 0.7),
-        "g19138_slot0"
+        "g22027_slot0"
       ),
     ];
   }
@@ -725,49 +725,49 @@ export class AiBrainManager {
         this.trainingTrackMode = parsed.trainingTrackMode;
       }
       if (
-        storedGen >= 19138 &&
+        storedGen >= 22027 &&
         parsed.championGenome &&
         parsed.championGenome.weights
       ) {
         const w = parsed.championGenome.weights;
         if (w.preferredChargeSec < 2.55) {
-          w.preferredChargeSec = 2.78;
+          w.preferredChargeSec = 3.04;
         }
         if (w.maxHoldChargeSec < w.preferredChargeSec + 0.45) {
           w.maxHoldChargeSec = Number((w.preferredChargeSec + 0.55).toFixed(2));
         }
-        w.itemSeekWeight = w.itemSeekWeight ?? 0.912;
-        w.juggernautAvoidanceWeight = w.juggernautAvoidanceWeight ?? 0.611;
-        w.itemHoldPatience = w.itemHoldPatience ?? 0.849;
-        w.preemptiveDriftLeadMeters = w.preemptiveDriftLeadMeters ?? 37.79;
-        w.chainDriftWeight = w.chainDriftWeight ?? 0.198;
-        w.offRoadDriftRecoveryWeight = w.offRoadDriftRecoveryWeight ?? 0.735;
+        w.itemSeekWeight = w.itemSeekWeight ?? 0.369;
+        w.juggernautAvoidanceWeight = w.juggernautAvoidanceWeight ?? 1.246;
+        w.itemHoldPatience = w.itemHoldPatience ?? 1.546;
+        w.preemptiveDriftLeadMeters = w.preemptiveDriftLeadMeters ?? 23.58;
+        w.chainDriftWeight = w.chainDriftWeight ?? 0.044;
+        w.offRoadDriftRecoveryWeight = w.offRoadDriftRecoveryWeight ?? 0.936;
         this.championGenome = parsed.championGenome;
       }
       if (
-        storedGen >= 19138 &&
+        storedGen >= 22027 &&
         Array.isArray(parsed.population) &&
         parsed.population.length >= 4
       ) {
         this.population = parsed.population.slice(0, 4).map((g) => {
           if (g?.weights) {
             if (g.weights.preferredChargeSec < 2.45) {
-              g.weights.preferredChargeSec = 2.78;
+              g.weights.preferredChargeSec = 3.04;
             }
             if (g.weights.maxHoldChargeSec < g.weights.preferredChargeSec + 0.45) {
               g.weights.maxHoldChargeSec = Number(
                 (g.weights.preferredChargeSec + 0.55).toFixed(2)
               );
             }
-            g.weights.itemSeekWeight = g.weights.itemSeekWeight ?? 0.912;
+            g.weights.itemSeekWeight = g.weights.itemSeekWeight ?? 0.369;
             g.weights.juggernautAvoidanceWeight =
-              g.weights.juggernautAvoidanceWeight ?? 0.611;
-            g.weights.itemHoldPatience = g.weights.itemHoldPatience ?? 0.849;
+              g.weights.juggernautAvoidanceWeight ?? 1.246;
+            g.weights.itemHoldPatience = g.weights.itemHoldPatience ?? 1.546;
             g.weights.preemptiveDriftLeadMeters =
-              g.weights.preemptiveDriftLeadMeters ?? 37.79;
-            g.weights.chainDriftWeight = g.weights.chainDriftWeight ?? 0.198;
+              g.weights.preemptiveDriftLeadMeters ?? 23.58;
+            g.weights.chainDriftWeight = g.weights.chainDriftWeight ?? 0.044;
             g.weights.offRoadDriftRecoveryWeight =
-              g.weights.offRoadDriftRecoveryWeight ?? 0.735;
+              g.weights.offRoadDriftRecoveryWeight ?? 0.936;
           }
           return g;
         });
@@ -1955,13 +1955,13 @@ export class AiBrainManager {
   }
 
   public resetBrainToSeed(alsoResetBalance = true): void {
-    this.generation = 19138;
-    this.episodesCompleted = 19137;
+    this.generation = 22027;
+    this.episodesCompleted = 22026;
     this.baselineMetrics = null;
     this.championGenome = createGenome(
-      "gen19138_champ",
-      "Gen-19138 Seed Ace",
-      19138,
+      "gen22027_champ",
+      "Gen-22027 Seed Ace",
+      22027,
       DEFAULT_POLICY_WEIGHTS.SELF_LEARNING
     );
     this.championGenome.fitness = 100.0;
