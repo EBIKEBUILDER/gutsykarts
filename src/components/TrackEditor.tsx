@@ -20,6 +20,7 @@ import {
   GrandPrixCupDefinition,
   ObstaclePrefabType,
   SceneryPrefabType,
+  TrackMaskType,
 } from "@/src/types/game";
 import {
   buildProceduralTrack,
@@ -73,7 +74,7 @@ type EditorTool =
   | { kind: "ERASER" }
   | { kind: "BOOST_PAD" }
   | { kind: "ITEM_ROW" }
-  | { kind: "TRACK_MASK"; maskType: "ROAD_HOLE" | "SPLIT_MEDIAN" }
+  | { kind: "TRACK_MASK"; maskType: TrackMaskType }
   | { kind: "OBSTACLE"; prefab: ObstaclePrefabType }
   | { kind: "SCENERY"; prefab: SceneryPrefabType };
 
@@ -2345,13 +2346,14 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     } else if (tool.kind === "TRACK_MASK") {
       const q = spline.queryClosestTrackPoint(new Vector3(worldX, 0, worldZ));
       const localHalfW = q.localRoadHalfWidth || currentDef.roadHalfWidth;
+      const isShortcut =
+        tool.maskType === "BOOST_SHORTCUT" ||
+        tool.maskType === "PAVED_SHORTCUT";
+      const maxLatReach = isShortcut ? localHalfW + 16.0 : localHalfW - 2.0;
       const clampedLat =
         tool.maskType === "SPLIT_MEDIAN"
           ? 0
-          : Math.max(
-              -(localHalfW - 2.0),
-              Math.min(localHalfW - 2.0, q.signedLateralOffset)
-            );
+          : Math.max(-maxLatReach, Math.min(maxLatReach, q.signedLateralOffset));
       commitWorkingEdit(
         syncTracksideSceneryAndClearRoad({
           ...currentDef,
@@ -3933,6 +3935,56 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                       Parallel twin lanes
                     </div>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMaskWidth(10.5);
+                      setMaskLength(54);
+                      setActiveTool({
+                        kind: "TRACK_MASK",
+                        maskType: "BOOST_SHORTCUT",
+                      });
+                    }}
+                    className={`rounded-xl border p-2 text-left transition cursor-pointer ${
+                      activeTool.kind === "TRACK_MASK" &&
+                      activeTool.maskType === "BOOST_SHORTCUT"
+                        ? "border-amber-400 bg-amber-500/20 text-white"
+                        : "border-white/10 bg-slate-900/70 text-slate-300 hover:border-white/25"
+                    }`}
+                  >
+                    <div className="text-[11px] font-black text-amber-300">
+                      BOOST SHORTCUT
+                    </div>
+                    <div className="text-[9px] text-slate-400">
+                      Off-road dirt cut
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMaskWidth(6.8);
+                      setMaskLength(50);
+                      setActiveTool({
+                        kind: "TRACK_MASK",
+                        maskType: "PAVED_SHORTCUT",
+                      });
+                    }}
+                    className={`rounded-xl border p-2 text-left transition cursor-pointer ${
+                      activeTool.kind === "TRACK_MASK" &&
+                      activeTool.maskType === "PAVED_SHORTCUT"
+                        ? "border-cyan-400 bg-cyan-500/20 text-white"
+                        : "border-white/10 bg-slate-900/70 text-slate-300 hover:border-white/25"
+                    }`}
+                  >
+                    <div className="text-[11px] font-black text-cyan-300">
+                      PAVED SHORTCUT
+                    </div>
+                    <div className="text-[9px] text-slate-400">
+                      Technical fast bypass
+                    </div>
+                  </button>
                 </div>
 
                 {activeTool.kind === "TRACK_MASK" && (
@@ -4723,6 +4775,31 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                           stroke="#f43f5e"
                           strokeWidth={1.8}
                           strokeDasharray="3 2"
+                        />
+                      ) : mask.type === "BOOST_SHORTCUT" ? (
+                        <rect
+                          x={-mask.width * 0.5}
+                          y={-mask.length * 0.5}
+                          width={mask.width}
+                          height={mask.length}
+                          rx={Math.min(mask.width * 0.45, 5)}
+                          fill="#b45309"
+                          fillOpacity={0.75}
+                          stroke="#f59e0b"
+                          strokeWidth={1.8}
+                          strokeDasharray="4 2"
+                        />
+                      ) : mask.type === "PAVED_SHORTCUT" ? (
+                        <rect
+                          x={-mask.width * 0.5}
+                          y={-mask.length * 0.5}
+                          width={mask.width}
+                          height={mask.length}
+                          rx={Math.min(mask.width * 0.45, 5)}
+                          fill="#0f172a"
+                          fillOpacity={0.85}
+                          stroke="#06b6d4"
+                          strokeWidth={1.8}
                         />
                       ) : (
                         <rect

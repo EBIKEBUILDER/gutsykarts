@@ -782,6 +782,23 @@ export class ItemManager {
     return active;
   }
 
+  public getActiveGroundTrapPositions(): Vector3[] {
+    const traps: Vector3[] = [];
+    for (let i = 0; i < this.mines.length; i++) {
+      const m = this.mines[i];
+      if (m.lifeTimer > 0) {
+        traps.push(m.lobTargetPos ?? m.position);
+      }
+    }
+    for (let i = 0; i < this.glitchPrisms.length; i++) {
+      const gp = this.glitchPrisms[i];
+      if (gp.lifeTimer > 0) {
+        traps.push(gp.lobTargetPos ?? gp.basePosition);
+      }
+    }
+    return traps;
+  }
+
   public exportBoxRespawnTimers(): Record<string, number> {
     const map: Record<string, number> = {};
     for (const box of this.itemBoxes) {

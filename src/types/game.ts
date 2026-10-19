@@ -199,6 +199,8 @@ export interface AiPolicyWeights {
   preemptiveDriftLeadMeters?: number;
   chainDriftWeight?: number;
   offRoadDriftRecoveryWeight?: number;
+  shortcutSeekWeight?: number;
+  hazardAvoidanceWeight?: number;
   neuralBias: number[];
 }
 
@@ -411,7 +413,11 @@ export type SceneryPrefabType =
   | "SUBURBAN_HOUSE"
   | "LAMP_POST";
 
-export type TrackMaskType = "ROAD_HOLE" | "SPLIT_MEDIAN";
+export type TrackMaskType =
+  | "ROAD_HOLE"
+  | "SPLIT_MEDIAN"
+  | "BOOST_SHORTCUT"
+  | "PAVED_SHORTCUT";
 
 export interface PlacedTrackMask {
   id: string;

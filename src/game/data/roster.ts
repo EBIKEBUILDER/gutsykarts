@@ -6,11 +6,11 @@ import {
   ResolvedRacerStats,
 } from "@/src/types/game";
 
-export const ROSTER_BALANCE_PASS = "Pass #18";
+export const ROSTER_BALANCE_PASS = "Pass #19";
 export const BUILD_INFO_STAMP = `Build ${ROSTER_BALANCE_PASS} (${
-  process.env.NEXT_PUBLIC_BUILD_SHA || "1b96873"
+  process.env.NEXT_PUBLIC_BUILD_SHA || "5207708"
 }) • Built ${
-  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 19, 2026, 11:00 AM CDT"
+  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 19, 2026, 12:02 PM CDT"
 }`;
 
 export const KART_CHASSIS_CATALOG: Record<string, KartChassisConfig> = {

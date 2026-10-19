@@ -42,6 +42,7 @@ export interface TrackSample {
   widthScale: number;
   localRoadHalfWidth: number;
   localCurbWidth: number;
+  localWallHalfWidth: number;
 }
 
 export interface ClosestTrackQuery {
@@ -58,6 +59,7 @@ export interface ClosestTrackQuery {
   widthScale: number;
   localRoadHalfWidth: number;
   localCurbWidth: number;
+  localWallHalfWidth: number;
 }
 
 export interface BoostPadZone {
@@ -440,6 +442,7 @@ export function computeTrackSplineSamples(
       widthScale: wScale,
       localRoadHalfWidth: localHalfW,
       localCurbWidth: localHalfW + 1.5,
+      localWallHalfWidth: Math.max(WALL_HALF_WIDTH, localHalfW + 12.5),
     });
   }
 
@@ -453,36 +456,57 @@ export function computeTrackSplineSamples(
     lastSample.cumulativeDistance + closingStep
   );
 
-  // Automatically flare road width around any SPLIT_MEDIAN masks so left & right parallel lanes remain wide
-  const splitMedians = (trackMasks ?? []).filter(
-    (m) => m.type === "SPLIT_MEDIAN"
+  // Automatically flare road width around SPLIT_MEDIAN masks and carve outer wall boundaries around BOOST_SHORTCUT & PAVED_SHORTCUT zones
+  const corridorMasks = (trackMasks ?? []).filter(
+    (m) =>
+      m.type === "SPLIT_MEDIAN" ||
+      m.type === "BOOST_SHORTCUT" ||
+      m.type === "PAVED_SHORTCUT"
   );
-  if (splitMedians.length > 0) {
+  if (corridorMasks.length > 0) {
     for (let i = 0; i < samples.length; i++) {
       const s = samples[i];
-      for (const mask of splitMedians) {
+      for (const mask of corridorMasks) {
         const maskCenterDist =
           (((mask.normT % 1) + 1) % 1) * totalTrackLength;
         const rawDiff = Math.abs(s.cumulativeDistance - maskCenterDist);
         const longDist = Math.min(rawDiff, totalTrackLength - rawDiff);
         const halfLen = Math.max(8, mask.length * 0.5);
-        const rampLen = 18.0;
+        const rampLen = mask.type === "SPLIT_MEDIAN" ? 18.0 : 24.0;
         if (longDist <= halfLen + rampLen) {
           const flareFactor =
             longDist <= halfLen
               ? 1.0
               : 0.5 *
                 (1 + Math.cos((Math.PI * (longDist - halfLen)) / rampLen));
-          const extraScale = Math.max(
-            0.36,
-            (mask.width * 0.5 + 3.2) / Math.max(8, baseRoadHalfWidth)
-          );
-          s.widthScale = Math.max(
-            s.widthScale,
-            1.0 + flareFactor * extraScale
-          );
-          s.localRoadHalfWidth = baseRoadHalfWidth * s.widthScale;
-          s.localCurbWidth = s.localRoadHalfWidth + 1.5;
+          if (mask.type === "SPLIT_MEDIAN") {
+            const extraScale = Math.max(
+              0.36,
+              (mask.width * 0.5 + 3.2) / Math.max(8, baseRoadHalfWidth)
+            );
+            s.widthScale = Math.max(
+              s.widthScale,
+              1.0 + flareFactor * extraScale
+            );
+            s.localRoadHalfWidth = baseRoadHalfWidth * s.widthScale;
+            s.localCurbWidth = s.localRoadHalfWidth + 1.5;
+            s.localWallHalfWidth = Math.max(
+              s.localWallHalfWidth,
+              s.localRoadHalfWidth + 12.5
+            );
+          } else {
+            // Carve out the perimeter wall collider so karts can drive freely through BOOST_SHORTCUT & PAVED_SHORTCUT corridors
+            const shortcutOuterReach =
+              Math.abs(mask.lateral) + mask.width * 0.5 + 11.5;
+            const targetWallHalf =
+              s.localWallHalfWidth +
+              Math.max(0, shortcutOuterReach - s.localWallHalfWidth) *
+                flareFactor;
+            s.localWallHalfWidth = Math.max(
+              s.localWallHalfWidth,
+              targetWallHalf
+            );
+          }
         }
       }
     }
@@ -626,6 +650,9 @@ export function computeTrackSplineSamples(
       chosenA.widthScale + (chosenB.widthScale - chosenA.widthScale) * tSeg;
     const localRoadHalfWidth = baseRoadHalfWidth * interpWidthScale;
     const localCurbWidth = localRoadHalfWidth + 1.5;
+    const localWallHalfWidth =
+      chosenA.localWallHalfWidth +
+      (chosenB.localWallHalfWidth - chosenA.localWallHalfWidth) * tSeg;
 
     const dx = worldPos.x - closestPt.x;
     const dz = worldPos.z - closestPt.z;
@@ -652,6 +679,7 @@ export function computeTrackSplineSamples(
       widthScale: interpWidthScale,
       localRoadHalfWidth,
       localCurbWidth,
+      localWallHalfWidth,
     };
   };
 
@@ -926,7 +954,9 @@ export function evaluateTerrainHeightAt(
   const dist = query.horizontalDistance;
   const roadY = query.roadY;
   const effectiveCurbWidth = query.localCurbWidth || curbOuterWidth;
-  const effectiveWallHalf = effectiveCurbWidth + 11.0 || wallHalfWidth;
+  const effectiveWallHalf =
+    query.localWallHalfWidth || effectiveCurbWidth + 11.0 || wallHalfWidth;
+  const hasShortcutExpansion = effectiveWallHalf > effectiveCurbWidth + 13.5;
 
   // Deeply recess the coarse ground grid under the asphalt road & curbs (by 4.4u out to effectiveCurbWidth + 1.2)
   // so its ~6.5u square triangles can NEVER poke through the smooth road ribbon on steep hills or curves!
@@ -946,7 +976,16 @@ export function evaluateTerrainHeightAt(
     };
   }
 
-  const offDist = dist - (effectiveCurbWidth + 4.8);
+  // Keep the off-road shortcut corridor level with roadY - 0.22 out to effectiveWallHalf - 5.0
+  // so BOOST_SHORTCUT and PAVED_SHORTCUT lanes never get buried by hillside terrain waves!
+  if (hasShortcutExpansion && dist <= effectiveWallHalf - 5.0) {
+    return { y: roadY - 0.22, dist, roadY };
+  }
+
+  const flatOuterEdge = hasShortcutExpansion
+    ? effectiveWallHalf - 5.0
+    : effectiveCurbWidth + 4.8;
+  const offDist = Math.max(0, dist - flatOuterEdge);
   const blendLinear = Math.min(1, offDist / 16);
   const blend = blendLinear * blendLinear * (3 - 2 * blendLinear);
   const hillWave =
@@ -973,6 +1012,128 @@ export function evaluateTerrainHeightAt(
   return { y, dist, roadY };
 }
 
+/**
+ * Automatically synthesizes signature inside-corner BOOST_SHORTCUT, PAVED_SHORTCUT, and parallel SPLIT_MEDIAN
+ * zones on tracks that do not already define shortcut masks, based on spline curvature analysis.
+ */
+export function synthesizeDefaultShortcutMasks(
+  controlPoints: Array<{ x: number; y: number; z: number; widthScale?: number }>,
+  roadHalfWidth = ROAD_HALF_WIDTH,
+  trackId = "track",
+  existingMasks?: PlacedTrackMask[]
+): PlacedTrackMask[] {
+  const baseMasks = Array.isArray(existingMasks)
+    ? existingMasks.map((m) => ({ ...m }))
+    : [];
+  const hasShortcutAlready = baseMasks.some(
+    (m) => m.type === "BOOST_SHORTCUT" || m.type === "PAVED_SHORTCUT"
+  );
+  if (hasShortcutAlready || controlPoints.length < 4) {
+    return baseMasks;
+  }
+
+  const spline = computeTrackSplineSamples(
+    controlPoints,
+    16,
+    [],
+    roadHalfWidth,
+    baseMasks
+  );
+  const samples = spline.samples;
+  const n = samples.length;
+  if (n < 24) return baseMasks;
+
+  const totalLen = Math.max(100, spline.totalTrackLength);
+  const span = Math.max(4, Math.round(n * 0.035));
+
+  const candidates: Array<{
+    normT: number;
+    absCurv: number;
+    turnSign: -1 | 1;
+  }> = [];
+
+  for (let i = 0; i < n; i++) {
+    const normT = samples[i].cumulativeDistance / totalLen;
+    if (normT < 0.11 || normT > 0.89) continue;
+    // Skip if too close to any existing mask
+    const nearExisting = baseMasks.some((m) => {
+      const d = Math.abs(normT - m.normT);
+      return Math.min(d, 1 - d) < 0.12;
+    });
+    if (nearExisting) continue;
+
+    const prevT = samples[(i - span + n) % n].tangent;
+    const nextT = samples[(i + span) % n].tangent;
+    const crossY = prevT.x * nextT.z - prevT.z * nextT.x;
+    const absCurv = Math.abs(crossY);
+    const turnSign: -1 | 1 = crossY >= 0 ? 1 : -1;
+    candidates.push({ normT, absCurv, turnSign });
+  }
+
+  if (candidates.length === 0) return baseMasks;
+
+  // 1. Sharpest corner apex -> Inside Off-Road BOOST_SHORTCUT (requires Nitro/Overclock/Overdrive/Mini-Turbo)
+  const sortedByCurv = [...candidates].sort((a, b) => b.absCurv - a.absCurv);
+  const primaryCorner = sortedByCurv[0];
+  if (primaryCorner && primaryCorner.absCurv > 0.16) {
+    baseMasks.push({
+      id: `${trackId}_boost_cut_1`,
+      type: "BOOST_SHORTCUT",
+      normT: Number(primaryCorner.normT.toFixed(3)),
+      lateral: Number(
+        (primaryCorner.turnSign * (roadHalfWidth + 5.2)).toFixed(1)
+      ),
+      width: 10.5,
+      length: 56.0,
+    });
+  }
+
+  // 2. Second sharpest distinct corner -> Technical Narrow PAVED_SHORTCUT (100% pavement speed if threaded cleanly)
+  const secondaryCorner = sortedByCurv.find((c) => {
+    if (!primaryCorner) return true;
+    const d = Math.abs(c.normT - primaryCorner.normT);
+    return Math.min(d, 1 - d) >= 0.22 && c.absCurv > 0.14;
+  });
+  if (secondaryCorner) {
+    baseMasks.push({
+      id: `${trackId}_paved_cut_1`,
+      type: "PAVED_SHORTCUT",
+      normT: Number(secondaryCorner.normT.toFixed(3)),
+      lateral: Number(
+        (secondaryCorner.turnSign * (roadHalfWidth + 4.0)).toFixed(1)
+      ),
+      width: 6.8,
+      length: 52.0,
+    });
+  }
+
+  // 3. If no SPLIT_MEDIAN exists yet, add a parallel dual-lane split on a gentle straightaway/sweeper
+  const hasSplitMedian = baseMasks.some((m) => m.type === "SPLIT_MEDIAN");
+  if (!hasSplitMedian) {
+    const straightCandidates = [...candidates]
+      .filter((c) => {
+        return baseMasks.every((m) => {
+          const d = Math.abs(c.normT - m.normT);
+          return Math.min(d, 1 - d) >= 0.18;
+        });
+      })
+      .sort((a, b) => a.absCurv - b.absCurv);
+    const bestStraight = straightCandidates[0];
+    if (bestStraight) {
+      baseMasks.push({
+        id: `${trackId}_split_1`,
+        type: "SPLIT_MEDIAN",
+        normT: Number(bestStraight.normT.toFixed(3)),
+        lateral: 0,
+        width: 6.2,
+        length: 60.0,
+      });
+    }
+  }
+
+  return baseMasks;
+}
+
 export function createDefaultTrackDefinition(): CustomTrackDefinition {
   const controlPoints = DEFAULT_CONTROL_POINTS.map((p) => ({ ...p }));
   const roadHalfWidth = ROAD_HALF_WIDTH;
@@ -997,6 +1158,12 @@ export function createDefaultTrackDefinition(): CustomTrackDefinition {
     { id: "item_row_4", normT: 0.84 },
   ];
 
+  const trackMasks = synthesizeDefaultShortcutMasks(
+    controlPoints,
+    roadHalfWidth,
+    "gutsy_avenue"
+  );
+
   return {
     id: "gutsy_avenue",
     cupId: "cul_de_sac_cup",
@@ -1007,6 +1174,7 @@ export function createDefaultTrackDefinition(): CustomTrackDefinition {
     boostPads,
     itemBoxRows,
     obstacles: [],
+    trackMasks,
     sceneryProps: generateProceduralForestOutsideTrack(
       controlPoints,
       roadHalfWidth,
@@ -1059,6 +1227,12 @@ function buildTrackPreset(params: {
     }
   );
 
+  const trackMasks = synthesizeDefaultShortcutMasks(
+    params.controlPoints,
+    params.roadHalfWidth,
+    params.id
+  );
+
   return {
     id: params.id,
     cupId: params.cupId,
@@ -1069,6 +1243,7 @@ function buildTrackPreset(params: {
     boostPads: params.boostPads,
     itemBoxRows: params.itemBoxRows,
     obstacles,
+    trackMasks,
     sceneryProps: generateProceduralForestOutsideTrack(
       params.controlPoints,
       params.roadHalfWidth,
@@ -1132,6 +1307,18 @@ export function hydrateTrackDefinition(
     sceneryProps = [...generated, ...manualProps];
   }
 
+  const rawMasks = Array.isArray(rawTrack.trackMasks)
+    ? rawTrack.trackMasks.map((m) => ({ ...m }))
+    : undefined;
+  const trackMasks = !rawTrack.isUserModified
+    ? synthesizeDefaultShortcutMasks(
+        controlPoints,
+        roadHalfWidth,
+        rawTrack.id || "track",
+        rawMasks
+      )
+    : rawMasks;
+
   return {
     ...rawTrack,
     roadHalfWidth,
@@ -1139,9 +1326,7 @@ export function hydrateTrackDefinition(
     boostPads: (rawTrack.boostPads ?? []).map((b) => ({ ...b })),
     itemBoxRows: (rawTrack.itemBoxRows ?? []).map((r) => ({ ...r })),
     obstacles: (rawTrack.obstacles ?? []).map((o) => ({ ...o })),
-    trackMasks: Array.isArray(rawTrack.trackMasks)
-      ? rawTrack.trackMasks.map((m) => ({ ...m }))
-      : undefined,
+    trackMasks,
     sceneryProps,
     autoTracksideScenery,
     sceneryDensity,
@@ -1697,7 +1882,12 @@ export function sanitizeCustomTrackDefinition(
     "BARRIER_CRATE",
     "JUMP_RAMP",
   ];
-  const validTrackMasks: TrackMaskType[] = ["ROAD_HOLE", "SPLIT_MEDIAN"];
+  const validTrackMasks: TrackMaskType[] = [
+    "ROAD_HOLE",
+    "SPLIT_MEDIAN",
+    "BOOST_SHORTCUT",
+    "PAVED_SHORTCUT",
+  ];
   const validScenery: SceneryPrefabType[] = [
     "PINE_TREE",
     "OAK_TREE",
@@ -2800,6 +2990,127 @@ function createTrackMasks(
       medianGrass.position.y += 0.02;
       medianGrass.material = medianGrassMat;
       medianGrass.isPickable = false;
+    } else if (
+      mask.type === "BOOST_SHORTCUT" ||
+      mask.type === "PAVED_SHORTCUT"
+    ) {
+      const isPaved = mask.type === "PAVED_SHORTCUT";
+      const steps = 18;
+      const halfSpanT =
+        Math.max(10, mask.length * 0.5) / Math.max(100, totalTrackLength);
+      const halfW = Math.max(2.5, mask.width * 0.5);
+
+      const leftRail: Vector3[] = [];
+      const leftLane: Vector3[] = [];
+      const rightLane: Vector3[] = [];
+      const rightRail: Vector3[] = [];
+
+      const sideSign = mask.lateral >= 0 ? 1 : -1;
+
+      for (let s = 0; s <= steps; s++) {
+        const u = s / steps;
+        const t = mask.normT - halfSpanT + u * (halfSpanT * 2);
+        // Smooth arch curve that peels off the main road edge, reaches mask.lateral at u=0.5, and rejoins cleanly!
+        const archBell = Math.sin(u * Math.PI);
+        const latCenter =
+          sideSign * 8.0 + (mask.lateral - sideSign * 8.0) * archBell;
+        const pt = getPointAtNormalizedT(t, latCenter);
+        const c = pt.position;
+        const b = pt.binormal;
+        const n = pt.normal;
+
+        leftRail.push(c.subtract(b.scale(halfW + 0.55)).add(n.scale(0.14)));
+        leftLane.push(c.subtract(b.scale(halfW)).add(n.scale(0.055)));
+        rightLane.push(c.add(b.scale(halfW)).add(n.scale(0.055)));
+        rightRail.push(c.add(b.scale(halfW + 0.55)).add(n.scale(0.14)));
+      }
+
+      const laneMat = new StandardMaterial(
+        `shortcutLaneMat_${idx}`,
+        scene
+      );
+      if (isPaved) {
+        laneMat.diffuseColor = new Color3(0.14, 0.24, 0.36);
+        laneMat.emissiveColor = new Color3(0.03, 0.1, 0.18);
+        laneMat.specularColor = new Color3(0.2, 0.3, 0.4);
+      } else {
+        laneMat.diffuseColor = new Color3(0.62, 0.44, 0.22);
+        laneMat.emissiveColor = new Color3(0.12, 0.07, 0.02);
+        laneMat.specularColor = new Color3(0.08, 0.06, 0.04);
+      }
+
+      const railMat = new StandardMaterial(
+        `shortcutRailMat_${idx}`,
+        scene
+      );
+      if (isPaved) {
+        railMat.diffuseColor = new Color3(0.06, 0.78, 0.96);
+        railMat.emissiveColor = new Color3(0.04, 0.45, 0.62);
+      } else {
+        railMat.diffuseColor = new Color3(0.98, 0.52, 0.08);
+        railMat.emissiveColor = new Color3(0.38, 0.16, 0.02);
+      }
+
+      const shortcutSurface = MeshBuilder.CreateRibbon(
+        `shortcutLane_${idx}`,
+        {
+          pathArray: [leftLane, rightLane],
+          closePath: false,
+          sideOrientation: Mesh.DOUBLESIDE,
+        },
+        scene
+      );
+      shortcutSurface.parent = parent;
+      shortcutSurface.material = laneMat;
+      shortcutSurface.isPickable = false;
+
+      const leftBorder = MeshBuilder.CreateRibbon(
+        `shortcutLeftRail_${idx}`,
+        {
+          pathArray: [leftRail, leftLane],
+          closePath: false,
+          sideOrientation: Mesh.DOUBLESIDE,
+        },
+        scene
+      );
+      leftBorder.parent = parent;
+      leftBorder.material = railMat;
+      leftBorder.isPickable = false;
+
+      const rightBorder = MeshBuilder.CreateRibbon(
+        `shortcutRightRail_${idx}`,
+        {
+          pathArray: [rightLane, rightRail],
+          closePath: false,
+          sideOrientation: Mesh.DOUBLESIDE,
+        },
+        scene
+      );
+      rightBorder.parent = parent;
+      rightBorder.material = railMat;
+      rightBorder.isPickable = false;
+
+      // Entry & Exit Beacon Gate Posts so players can spot the shortcut from far away
+      for (const gateIdx of [2, steps - 2]) {
+        for (const railArr of [leftRail, rightRail]) {
+          const gatePt = railArr[gateIdx];
+          if (!gatePt) continue;
+          const post = MeshBuilder.CreateCylinder(
+            `shortcutGate_${idx}_${gateIdx}`,
+            {
+              height: 2.2,
+              diameterTop: 0.36,
+              diameterBottom: 0.52,
+              tessellation: 10,
+            },
+            scene
+          );
+          post.parent = parent;
+          post.position = gatePt.add(new Vector3(0, 1.05, 0));
+          post.material = railMat;
+          post.isPickable = false;
+        }
+      }
     }
   });
 }
@@ -3138,11 +3449,12 @@ function populateEnvironmentProps(
     return m;
   });
 
-  // Perimeter guide bollards at wallHalfWidth
+  // Perimeter guide bollards at localWallHalfWidth (automatically carved outward around shortcuts & split medians)
   for (let i = 0; i < samples.length; i += 8) {
     const s = samples[i];
+    const localWall = s.localWallHalfWidth || wallHalfWidth;
     for (const side of [-1, 1]) {
-      const pos = s.position.add(s.binormal.scale(side * wallHalfWidth));
+      const pos = s.position.add(s.binormal.scale(side * localWall));
       const post = MeshBuilder.CreateCylinder(
         `wallPost_${i}_${side}`,
         { height: 1.3, diameterTop: 0.45, diameterBottom: 0.6, tessellation: 8 },
@@ -3157,6 +3469,7 @@ function populateEnvironmentProps(
 
   // Instantiate all Scenery Prefabs from trackDef.sceneryProps sitting on the exact 3D sculpted terrain surface
   sceneryProps.forEach((prop, idx) => {
+    const q = queryClosestTrackPoint(new Vector3(prop.x, 0, prop.z));
     const { y: terrainY, dist } = evaluateTerrainHeightAt(
       prop.x,
       prop.z,
@@ -3166,8 +3479,12 @@ function populateEnvironmentProps(
       terrainHillScale,
       terrainMods
     );
-    // Safety guard: never spawn scenery on the asphalt road or rumble curb!
-    if (dist < curbOuterWidth + 2.5) return;
+    // Safety guard: never spawn scenery on the asphalt road, rumble curb, or inside carved shortcut/split corridors!
+    const minSafePropDist = Math.max(
+      (q.localCurbWidth || curbOuterWidth) + 2.5,
+      (q.localWallHalfWidth || wallHalfWidth) - 8.5
+    );
+    if (dist < minSafePropDist) return;
 
     const scale = prop.scale || 1.0;
     const baseY = terrainY - 0.08;

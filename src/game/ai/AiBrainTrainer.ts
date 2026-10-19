@@ -56,6 +56,8 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
     preemptiveDriftLeadMeters: 20.0,
     chainDriftWeight: 0.0,
     offRoadDriftRecoveryWeight: 0.15,
+    shortcutSeekWeight: 0.0,
+    hazardAvoidanceWeight: 0.35,
     neuralBias: [
       -0.2809,
       0.231,
@@ -89,6 +91,8 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
     preemptiveDriftLeadMeters: 22.0,
     chainDriftWeight: 0.04,
     offRoadDriftRecoveryWeight: 0.72,
+    shortcutSeekWeight: 0.52,
+    hazardAvoidanceWeight: 0.68,
     neuralBias: [
       0.2932,
       -0.2662,
@@ -122,6 +126,8 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
     preemptiveDriftLeadMeters: 23.58,
     chainDriftWeight: 0.044,
     offRoadDriftRecoveryWeight: 0.936,
+    shortcutSeekWeight: 0.86,
+    hazardAvoidanceWeight: 0.92,
     neuralBias: [
       0.2932,
       -0.2662,
@@ -155,6 +161,8 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
     preemptiveDriftLeadMeters: 23.58,
     chainDriftWeight: 0.044,
     offRoadDriftRecoveryWeight: 0.936,
+    shortcutSeekWeight: 0.86,
+    hazardAvoidanceWeight: 0.92,
     neuralBias: [
       0.2932,
       -0.2662,
@@ -165,6 +173,46 @@ export const DEFAULT_POLICY_WEIGHTS: Record<
       0.2759,
       0.1395,
     ],
+  },
+};
+
+/**
+ * Per-Character Specialist Offset Vector:
+ * Biases each character archetype's specialist brain toward its physical strengths while co-evolving
+ * alongside the shared driving trunk.
+ */
+export const ARCHETYPE_SPECIALIST_OFFSETS: Record<
+  string,
+  Partial<AiPolicyWeights>
+> = {
+  rex_ironclad: {
+    // 220 kg Juggernaut: holds the apex without yielding to lighter karts, smooth high-momentum exit alignment
+    juggernautAvoidanceWeight: -0.85,
+    exitTangentAlignBlend: 0.05,
+    preferredChargeSec: 0.12,
+    shortcutSeekWeight: -0.06,
+    hazardAvoidanceWeight: -0.02,
+  },
+  aero_vance: {
+    // 120 kg Balanced All-Rounder: balanced apex aggression and sharp item hunting
+    itemSeekWeight: 0.06,
+    shortcutSeekWeight: 0.0,
+    hazardAvoidanceWeight: 0.0,
+  },
+  nyx_drift: {
+    // 85 kg Technical Cruiser: earlier preemptive drift entry, deeper inside-apex cut, high paved-shortcut precision
+    apexCutRatio: 0.015,
+    preemptiveDriftLeadMeters: 3.0,
+    shortcutSeekWeight: 0.06,
+    hazardAvoidanceWeight: 0.04,
+  },
+  pip_spark: {
+    // 50 kg Featherweight Sprinter: maximum Juggernaut avoidance, rapid Mini-Turbo turnover, aggressive boost shortcuts
+    juggernautAvoidanceWeight: 0.28,
+    preferredChargeSec: -0.18,
+    chainDriftWeight: 0.04,
+    shortcutSeekWeight: 0.09,
+    hazardAvoidanceWeight: 0.05,
   },
 };
 
@@ -181,9 +229,101 @@ function cloneWeights(w: AiPolicyWeights): AiPolicyWeights {
     preemptiveDriftLeadMeters: w.preemptiveDriftLeadMeters ?? 23.58,
     chainDriftWeight: w.chainDriftWeight ?? 0.044,
     offRoadDriftRecoveryWeight: w.offRoadDriftRecoveryWeight ?? 0.936,
+    shortcutSeekWeight: w.shortcutSeekWeight ?? 0.86,
+    hazardAvoidanceWeight: w.hazardAvoidanceWeight ?? 0.92,
     neuralBias: Array.isArray(w.neuralBias)
       ? [...w.neuralBias]
       : [0, 0, 0, 0, 0, 0, 0, 0],
+  };
+}
+
+export function applyArchetypeSpecialistOffsets(
+  base: AiPolicyWeights,
+  characterId?: string
+): AiPolicyWeights {
+  const cloned = cloneWeights(base);
+  if (!characterId || !ARCHETYPE_SPECIALIST_OFFSETS[characterId]) {
+    return cloned;
+  }
+  const off = ARCHETYPE_SPECIALIST_OFFSETS[characterId];
+  return {
+    ...cloned,
+    apexCutRatio: clamp(
+      Number((cloned.apexCutRatio + (off.apexCutRatio ?? 0)).toFixed(3)),
+      0.12,
+      0.58
+    ),
+    preferredChargeSec: clamp(
+      Number(
+        (cloned.preferredChargeSec + (off.preferredChargeSec ?? 0)).toFixed(2)
+      ),
+      2.35,
+      4.1
+    ),
+    exitTangentAlignBlend: clamp(
+      Number(
+        (
+          cloned.exitTangentAlignBlend + (off.exitTangentAlignBlend ?? 0)
+        ).toFixed(3)
+      ),
+      0.38,
+      0.88
+    ),
+    itemSeekWeight: clamp(
+      Number(
+        ((cloned.itemSeekWeight ?? 0.369) + (off.itemSeekWeight ?? 0)).toFixed(3)
+      ),
+      0.18,
+      0.95
+    ),
+    juggernautAvoidanceWeight: clamp(
+      Number(
+        (
+          (cloned.juggernautAvoidanceWeight ?? 1.246) +
+          (off.juggernautAvoidanceWeight ?? 0)
+        ).toFixed(3)
+      ),
+      0.15,
+      1.95
+    ),
+    preemptiveDriftLeadMeters: clamp(
+      Number(
+        (
+          (cloned.preemptiveDriftLeadMeters ?? 23.58) +
+          (off.preemptiveDriftLeadMeters ?? 0)
+        ).toFixed(2)
+      ),
+      18.0,
+      58.0
+    ),
+    chainDriftWeight: clamp(
+      Number(
+        (
+          (cloned.chainDriftWeight ?? 0.044) + (off.chainDriftWeight ?? 0)
+        ).toFixed(3)
+      ),
+      0.0,
+      0.95
+    ),
+    shortcutSeekWeight: clamp(
+      Number(
+        (
+          (cloned.shortcutSeekWeight ?? 0.86) + (off.shortcutSeekWeight ?? 0)
+        ).toFixed(3)
+      ),
+      0.15,
+      1.0
+    ),
+    hazardAvoidanceWeight: clamp(
+      Number(
+        (
+          (cloned.hazardAvoidanceWeight ?? 0.92) +
+          (off.hazardAvoidanceWeight ?? 0)
+        ).toFixed(3)
+      ),
+      0.2,
+      1.0
+    ),
   };
 }
 
@@ -303,39 +443,49 @@ export function mutatePolicyWeights(
       0.92
     ),
     itemSeekWeight: clamp(
-      Number(((base.itemSeekWeight ?? 0.54) + n() * 0.05).toFixed(3)),
+      Number(((base.itemSeekWeight ?? 0.369) + n() * 0.05).toFixed(3)),
       0.2,
       0.92
     ),
     juggernautAvoidanceWeight: clamp(
       Number(
-        ((base.juggernautAvoidanceWeight ?? 1.05) + n() * 0.08).toFixed(3)
+        ((base.juggernautAvoidanceWeight ?? 1.246) + n() * 0.08).toFixed(3)
       ),
-      0.35,
+      0.15,
       1.85
     ),
     itemHoldPatience: clamp(
-      Number(((base.itemHoldPatience ?? 0.425) + n() * 0.06).toFixed(3)),
+      Number(((base.itemHoldPatience ?? 1.546) + n() * 0.06).toFixed(3)),
       0.32,
       1.65
     ),
     preemptiveDriftLeadMeters: clamp(
       Number(
-        ((base.preemptiveDriftLeadMeters ?? 38.0) + n() * 2.2).toFixed(2)
+        ((base.preemptiveDriftLeadMeters ?? 23.58) + n() * 2.2).toFixed(2)
       ),
       18.0,
       58.0
     ),
     chainDriftWeight: clamp(
-      Number(((base.chainDriftWeight ?? 0.45) + n() * 0.065).toFixed(3)),
+      Number(((base.chainDriftWeight ?? 0.044) + n() * 0.065).toFixed(3)),
       0.0,
       0.95
     ),
     offRoadDriftRecoveryWeight: clamp(
       Number(
-        ((base.offRoadDriftRecoveryWeight ?? 0.88) + n() * 0.05).toFixed(3)
+        ((base.offRoadDriftRecoveryWeight ?? 0.936) + n() * 0.05).toFixed(3)
       ),
       0.15,
+      1.0
+    ),
+    shortcutSeekWeight: clamp(
+      Number(((base.shortcutSeekWeight ?? 0.86) + n() * 0.055).toFixed(3)),
+      0.15,
+      1.0
+    ),
+    hazardAvoidanceWeight: clamp(
+      Number(((base.hazardAvoidanceWeight ?? 0.92) + n() * 0.045).toFixed(3)),
+      0.25,
       1.0
     ),
     neuralBias: bias,
@@ -376,28 +526,36 @@ export function crossoverPolicyWeights(
     ),
     padSeekWeight: pick(parentA.padSeekWeight, parentB.padSeekWeight),
     itemSeekWeight: pick(
-      parentA.itemSeekWeight ?? 0.793,
-      parentB.itemSeekWeight ?? 0.793
+      parentA.itemSeekWeight ?? 0.369,
+      parentB.itemSeekWeight ?? 0.369
     ),
     juggernautAvoidanceWeight: pick(
-      parentA.juggernautAvoidanceWeight ?? 0.746,
-      parentB.juggernautAvoidanceWeight ?? 0.746
+      parentA.juggernautAvoidanceWeight ?? 1.246,
+      parentB.juggernautAvoidanceWeight ?? 1.246
     ),
     itemHoldPatience: pick(
-      parentA.itemHoldPatience ?? 0.425,
-      parentB.itemHoldPatience ?? 0.425
+      parentA.itemHoldPatience ?? 1.546,
+      parentB.itemHoldPatience ?? 1.546
     ),
     preemptiveDriftLeadMeters: pick(
-      parentA.preemptiveDriftLeadMeters ?? 38.0,
-      parentB.preemptiveDriftLeadMeters ?? 38.0
+      parentA.preemptiveDriftLeadMeters ?? 23.58,
+      parentB.preemptiveDriftLeadMeters ?? 23.58
     ),
     chainDriftWeight: pick(
-      parentA.chainDriftWeight ?? 0.45,
-      parentB.chainDriftWeight ?? 0.45
+      parentA.chainDriftWeight ?? 0.044,
+      parentB.chainDriftWeight ?? 0.044
     ),
     offRoadDriftRecoveryWeight: pick(
-      parentA.offRoadDriftRecoveryWeight ?? 0.88,
-      parentB.offRoadDriftRecoveryWeight ?? 0.88
+      parentA.offRoadDriftRecoveryWeight ?? 0.936,
+      parentB.offRoadDriftRecoveryWeight ?? 0.936
+    ),
+    shortcutSeekWeight: pick(
+      parentA.shortcutSeekWeight ?? 0.86,
+      parentB.shortcutSeekWeight ?? 0.86
+    ),
+    hazardAvoidanceWeight: pick(
+      parentA.hazardAvoidanceWeight ?? 0.92,
+      parentB.hazardAvoidanceWeight ?? 0.92
     ),
     neuralBias: biasA.map((val, i) => pick(val, biasB[i] ?? 0)),
   };
@@ -559,6 +717,98 @@ interface PersistedBrainState {
   savedPresets: Record<"EASY" | "MEDIUM" | "HARD", AiPolicyGenome | null>;
   useTrainedPresets: Record<"EASY" | "MEDIUM" | "HARD", boolean>;
   characterStats?: Record<string, PersistentCharacterBalance>;
+  archetypeGenomes?: Record<string, AiPolicyGenome>;
+}
+
+function blendPolicyWeights(
+  trunk: AiPolicyWeights,
+  specialist: AiPolicyWeights,
+  specialistRatio: number
+): AiPolicyWeights {
+  const t = clamp(specialistRatio, 0, 1);
+  const lerp = (a: number, b: number, digits = 3) =>
+    Number((a * (1 - t) + b * t).toFixed(digits));
+  const preferredChargeSec = lerp(
+    trunk.preferredChargeSec,
+    specialist.preferredChargeSec,
+    2
+  );
+  const maxHoldChargeSec = Math.max(
+    Number((preferredChargeSec + 0.45).toFixed(2)),
+    lerp(trunk.maxHoldChargeSec, specialist.maxHoldChargeSec, 2)
+  );
+  const biasA = trunk.neuralBias ?? [0, 0, 0, 0, 0, 0, 0, 0];
+  const biasB = specialist.neuralBias ?? [0, 0, 0, 0, 0, 0, 0, 0];
+  return {
+    lookAheadBase: lerp(trunk.lookAheadBase, specialist.lookAheadBase, 2),
+    lookAheadCurve: lerp(trunk.lookAheadCurve, specialist.lookAheadCurve, 2),
+    lookAheadDrift: lerp(trunk.lookAheadDrift, specialist.lookAheadDrift, 2),
+    apexCutRatio: lerp(trunk.apexCutRatio, specialist.apexCutRatio, 3),
+    driftCutRatio: lerp(trunk.driftCutRatio, specialist.driftCutRatio, 3),
+    steerGain: lerp(trunk.steerGain, specialist.steerGain, 2),
+    driftEntryThreshold: lerp(
+      trunk.driftEntryThreshold,
+      specialist.driftEntryThreshold,
+      3
+    ),
+    preferredChargeSec,
+    maxHoldChargeSec,
+    driftAngleGain: lerp(trunk.driftAngleGain, specialist.driftAngleGain, 2),
+    driftLatGain: lerp(trunk.driftLatGain, specialist.driftLatGain, 2),
+    driftVelDamping: lerp(trunk.driftVelDamping, specialist.driftVelDamping, 2),
+    insideApexTarget: lerp(
+      trunk.insideApexTarget,
+      specialist.insideApexTarget,
+      3
+    ),
+    exitTangentAlignBlend: lerp(
+      trunk.exitTangentAlignBlend,
+      specialist.exitTangentAlignBlend,
+      3
+    ),
+    padSeekWeight: lerp(trunk.padSeekWeight, specialist.padSeekWeight, 3),
+    itemSeekWeight: lerp(
+      trunk.itemSeekWeight ?? 0.369,
+      specialist.itemSeekWeight ?? 0.369,
+      3
+    ),
+    juggernautAvoidanceWeight: lerp(
+      trunk.juggernautAvoidanceWeight ?? 1.246,
+      specialist.juggernautAvoidanceWeight ?? 1.246,
+      3
+    ),
+    itemHoldPatience: lerp(
+      trunk.itemHoldPatience ?? 1.546,
+      specialist.itemHoldPatience ?? 1.546,
+      3
+    ),
+    preemptiveDriftLeadMeters: lerp(
+      trunk.preemptiveDriftLeadMeters ?? 23.58,
+      specialist.preemptiveDriftLeadMeters ?? 23.58,
+      2
+    ),
+    chainDriftWeight: lerp(
+      trunk.chainDriftWeight ?? 0.044,
+      specialist.chainDriftWeight ?? 0.044,
+      3
+    ),
+    offRoadDriftRecoveryWeight: lerp(
+      trunk.offRoadDriftRecoveryWeight ?? 0.936,
+      specialist.offRoadDriftRecoveryWeight ?? 0.936,
+      3
+    ),
+    shortcutSeekWeight: lerp(
+      trunk.shortcutSeekWeight ?? 0.86,
+      specialist.shortcutSeekWeight ?? 0.86,
+      3
+    ),
+    hazardAvoidanceWeight: lerp(
+      trunk.hazardAvoidanceWeight ?? 0.92,
+      specialist.hazardAvoidanceWeight ?? 0.92,
+      3
+    ),
+    neuralBias: biasA.map((val, i) => lerp(val, biasB[i] ?? 0, 3)),
+  };
 }
 
 export class AiBrainManager {
@@ -570,6 +820,7 @@ export class AiBrainManager {
     "ALL_CUPS";
   private championGenome: AiPolicyGenome;
   private population: AiPolicyGenome[] = [];
+  private archetypeGenomes: Record<string, AiPolicyGenome> = {};
   private baselineMetrics: {
     fitness: number;
     pavementPct: number;
@@ -615,6 +866,30 @@ export class AiBrainManager {
       createGenome("g22027_slot3", "Delta Policy (Explorer)", 22027, seed, "g22027_slot0"),
     ];
     this.initDefaultCharacterStats();
+    this.initDefaultArchetypeGenomes();
+  }
+
+  private initDefaultArchetypeGenomes(): void {
+    this.archetypeGenomes = {};
+    const trunkWeights =
+      this.championGenome?.weights ?? DEFAULT_POLICY_WEIGHTS.SELF_LEARNING;
+    for (const meta of DEFAULT_CHARACTER_META) {
+      const specWeights = applyArchetypeSpecialistOffsets(
+        trunkWeights,
+        meta.characterId
+      );
+      const specGenome = createGenome(
+        `spec_${meta.characterId}_g${this.generation}`,
+        `${meta.characterName} Specialist`,
+        this.generation,
+        specWeights,
+        this.championGenome?.id
+      );
+      specGenome.fitness = this.championGenome?.fitness ?? 100.0;
+      specGenome.bestLapMs = this.championGenome?.bestLapMs ?? 16580;
+      specGenome.pavementPct = this.championGenome?.pavementPct ?? 99.5;
+      this.archetypeGenomes[meta.characterId] = specGenome;
+    }
   }
 
   private initDefaultCharacterStats(): void {
@@ -681,6 +956,7 @@ export class AiBrainManager {
     if (!this.hydrated) {
       this.hydrated = true;
       this.initDefaultPopulation();
+      this.initDefaultArchetypeGenomes();
     }
     try {
       const rawTraces = window.localStorage.getItem(TRACES_STORAGE_KEY);
@@ -742,6 +1018,8 @@ export class AiBrainManager {
         w.preemptiveDriftLeadMeters = w.preemptiveDriftLeadMeters ?? 23.58;
         w.chainDriftWeight = w.chainDriftWeight ?? 0.044;
         w.offRoadDriftRecoveryWeight = w.offRoadDriftRecoveryWeight ?? 0.936;
+        w.shortcutSeekWeight = w.shortcutSeekWeight ?? 0.92;
+        w.hazardAvoidanceWeight = w.hazardAvoidanceWeight ?? 1.08;
         this.championGenome = parsed.championGenome;
       }
       if (
@@ -768,9 +1046,26 @@ export class AiBrainManager {
             g.weights.chainDriftWeight = g.weights.chainDriftWeight ?? 0.044;
             g.weights.offRoadDriftRecoveryWeight =
               g.weights.offRoadDriftRecoveryWeight ?? 0.936;
+            g.weights.shortcutSeekWeight = g.weights.shortcutSeekWeight ?? 0.92;
+            g.weights.hazardAvoidanceWeight =
+              g.weights.hazardAvoidanceWeight ?? 1.08;
           }
           return g;
         });
+      }
+      if (parsed.archetypeGenomes && typeof parsed.archetypeGenomes === "object") {
+        for (const meta of DEFAULT_CHARACTER_META) {
+          const savedSpec = parsed.archetypeGenomes[meta.characterId];
+          if (savedSpec && savedSpec.weights) {
+            savedSpec.weights.shortcutSeekWeight =
+              savedSpec.weights.shortcutSeekWeight ?? 0.92;
+            savedSpec.weights.hazardAvoidanceWeight =
+              savedSpec.weights.hazardAvoidanceWeight ?? 1.08;
+            this.archetypeGenomes[meta.characterId] = savedSpec;
+          }
+        }
+      } else {
+        this.initDefaultArchetypeGenomes();
       }
       if (parsed.baselineMetrics) {
         this.baselineMetrics = parsed.baselineMetrics;
@@ -824,6 +1119,7 @@ export class AiBrainManager {
         trainingTrackMode: this.trainingTrackMode,
         championGenome: this.championGenome,
         population: this.population,
+        archetypeGenomes: this.archetypeGenomes,
         baselineMetrics: this.baselineMetrics,
         savedPresets: this.savedPresets,
         useTrainedPresets: this.useTrainedPresets,
@@ -932,39 +1228,72 @@ export class AiBrainManager {
   }
 
   /**
-   * Returns the active policy genome for a given AI difficulty and slot index.
-   * Rotates genome assignment across slots each episode so character stats or grid position never bias evolution.
+   * Returns the active policy genome for a given AI difficulty, slot index, and optional characterId.
+   * Combines the shared driving trunk (rotated across slots via Latin Square) with both:
+   *  1) The per-character specialist offset vector (`ARCHETYPE_SPECIALIST_OFFSETS`), and
+   *  2) The character's co-evolving Specialist Brain (`archetypeGenomes[characterId]`).
    */
   public getGenomeForSlot(
     difficulty: AiDifficulty,
-    slotIndex: number
+    slotIndex: number,
+    characterId?: string
   ): AiPolicyGenome {
     // Orthogonal Latin-Square rotation with RaceGame grid rotation ((slotIndex + episodesCompleted) % 4):
     // ensures every character drives all 4 genomes AND starts in all 4 grid slots once per 4-episode block!
     const safeSlot =
       (Math.abs(slotIndex) + Math.floor(this.episodesCompleted / 4)) % 4;
+    let baseGenome: AiPolicyGenome;
     if (difficulty === "SELF_LEARNING") {
-      return (
+      baseGenome =
         this.population[safeSlot] ??
         this.population[0] ??
-        this.championGenome
-      );
-    }
-    if (
+        this.championGenome;
+    } else if (
       (difficulty === "EASY" ||
         difficulty === "MEDIUM" ||
         difficulty === "HARD") &&
       this.useTrainedPresets[difficulty] &&
       this.savedPresets[difficulty]
     ) {
-      return this.savedPresets[difficulty]!;
+      baseGenome = this.savedPresets[difficulty]!;
+    } else {
+      baseGenome = createGenome(
+        `builtin_${difficulty.toLowerCase()}`,
+        `${difficulty} Heuristic`,
+        this.generation,
+        DEFAULT_POLICY_WEIGHTS[difficulty]
+      );
     }
-    return createGenome(
-      `builtin_${difficulty.toLowerCase()}`,
-      `${difficulty} Heuristic`,
-      this.generation,
-      DEFAULT_POLICY_WEIGHTS[difficulty]
+
+    if (!characterId) {
+      return baseGenome;
+    }
+
+    // Apply character-specific offset vector to the trunk/slot genome
+    const offsetTrunkWeights = applyArchetypeSpecialistOffsets(
+      baseGenome.weights,
+      characterId
     );
+    const specialistGenome = this.archetypeGenomes[characterId];
+    if (
+      specialistGenome &&
+      (difficulty === "SELF_LEARNING" || difficulty === "HARD")
+    ) {
+      const blendedWeights = blendPolicyWeights(
+        offsetTrunkWeights,
+        specialistGenome.weights,
+        0.35
+      );
+      return {
+        ...baseGenome,
+        weights: blendedWeights,
+      };
+    }
+
+    return {
+      ...baseGenome,
+      weights: offsetTrunkWeights,
+    };
   }
 
   public resetEpisodeTelemetry(nextTrackId?: string): void {
@@ -984,7 +1313,11 @@ export class AiBrainManager {
     difficulty: AiDifficulty;
   }): RacerTelemetryAccumulator {
     let acc = this.accumulators.get(params.racerId);
-    const genome = this.getGenomeForSlot(params.difficulty, params.slotIndex);
+    const genome = this.getGenomeForSlot(
+      params.difficulty,
+      params.slotIndex,
+      params.characterId
+    );
     if (!acc) {
       acc = {
         racerId: params.racerId,
@@ -1877,6 +2210,81 @@ export class AiBrainManager {
           ? 0.48
           : 0.68;
 
+      // Co-evolve the 4 character-specific Specialist Brains (`archetypeGenomes`) alongside the shared trunk!
+      for (const r of racers) {
+        const charId = r.characterId;
+        if (!charId) continue;
+        const rank =
+          finishRanksByRacerId?.[r.racerId] ??
+          fallbackRanked.findIndex((fr) => fr.racerId === r.racerId) + 1;
+        const slotGenome =
+          this.population.find((popG) => popG.id === r.genomeId) ??
+          this.population[r.slotIndex % 4] ??
+          parent1;
+        const candidateSpecWeights = applyArchetypeSpecialistOffsets(
+          slotGenome.weights,
+          charId
+        );
+        const existingSpec =
+          this.archetypeGenomes[charId] ??
+          createGenome(
+            `spec_${charId}_g${nextGen}`,
+            `${r.racerName} Specialist`,
+            nextGen,
+            applyArchetypeSpecialistOffsets(parent1.weights, charId),
+            parent1.id
+          );
+
+        const beatMeanLap =
+          episodeMeanBestLapMs !== null &&
+          r.bestLapMs !== null &&
+          r.bestLapMs <= episodeMeanBestLapMs;
+        const strongRun =
+          r.pavementPct + r.curbPct >= 94.0 &&
+          (rank === 1 || (rank <= 2 && beatMeanLap));
+
+        if (strongRun) {
+          // Blend the winning episode's specialized policy into this character's specialist genome
+          // plus a micro-exploratory mutation when rank === 1
+          const evolvedSpecWeights = blendPolicyWeights(
+            existingSpec.weights,
+            candidateSpecWeights,
+            rank === 1 ? 0.32 : 0.18
+          );
+          this.archetypeGenomes[charId] = {
+            ...existingSpec,
+            id: `spec_${charId}_g${nextGen}`,
+            generation: nextGen,
+            weights: evolvedSpecWeights,
+            fitness: Math.max(existingSpec.fitness, r.fitnessScore),
+            bestLapMs:
+              r.bestLapMs !== null &&
+              (existingSpec.bestLapMs === null ||
+                r.bestLapMs < existingSpec.bestLapMs)
+                ? r.bestLapMs
+                : existingSpec.bestLapMs,
+            pavementPct: r.pavementPct + r.curbPct,
+            updatedAt: Date.now(),
+          };
+        } else {
+          // Gently anchor toward the latest trunk Champion + character offset so no specialist brain stagnates
+          const trunkAnchored = applyArchetypeSpecialistOffsets(
+            parent1.weights,
+            charId
+          );
+          this.archetypeGenomes[charId] = {
+            ...existingSpec,
+            generation: nextGen,
+            weights: blendPolicyWeights(
+              existingSpec.weights,
+              trunkAnchored,
+              0.08
+            ),
+            updatedAt: Date.now(),
+          };
+        }
+      }
+
       this.population = [
         // Slot 0: Elitist Champion (unmutated so we never regress!)
         {
@@ -1968,6 +2376,7 @@ export class AiBrainManager {
     this.championGenome.bestLapMs = 16580;
     this.championGenome.pavementPct = 99.5;
     this.initDefaultPopulation();
+    this.initDefaultArchetypeGenomes();
     if (alsoResetBalance) {
       this.initDefaultCharacterStats();
     }
@@ -2027,6 +2436,14 @@ export class AiBrainManager {
       );
     }
 
+    const archetypeWeights: Record<string, AiPolicyWeights> = {};
+    for (const meta of DEFAULT_CHARACTER_META) {
+      const spec = this.archetypeGenomes[meta.characterId];
+      if (spec) {
+        archetypeWeights[meta.characterId] = spec.weights;
+      }
+    }
+
     lines.push(
       ``,
       `#### Suggested Stat Deltas (JSON)`,
@@ -2061,6 +2478,7 @@ export class AiBrainManager {
             recommendation: cb.recommendation,
           })),
           championWeights: this.championGenome.weights,
+          archetypeWeights,
         },
         null,
         2
@@ -2082,6 +2500,7 @@ export class AiBrainManager {
         trainingTrackMode: this.trainingTrackMode,
         championGenome: this.championGenome,
         population: this.population,
+        archetypeGenomes: this.archetypeGenomes,
         savedPresets: this.savedPresets,
         useTrainedPresets: this.useTrainedPresets,
         characterBalance: this.getCharacterBalanceSummaries(),

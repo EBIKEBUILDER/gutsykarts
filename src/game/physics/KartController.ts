@@ -448,10 +448,53 @@ export class KartController implements CollidableKartBody {
     return true;
   }
 
+  private evaluateShortcutCorridor(
+    normT: number,
+    signedLat: number,
+    roadHalfWidth: number
+  ): { onPavedShortcut: boolean; onBoostShortcut: boolean } {
+    let onPavedShortcut = false;
+    let onBoostShortcut = false;
+    if (!this.track.trackMasks || this.track.trackMasks.length === 0) {
+      return { onPavedShortcut, onBoostShortcut };
+    }
+    const totalLen = Math.max(100, this.track.totalTrackLength);
+    for (const mask of this.track.trackMasks) {
+      if (mask.type !== "PAVED_SHORTCUT" && mask.type !== "BOOST_SHORTCUT") {
+        continue;
+      }
+      let dtMask = normT - mask.normT;
+      if (dtMask > 0.5) dtMask -= 1.0;
+      if (dtMask < -0.5) dtMask += 1.0;
+      const longOffset = dtMask * totalLen;
+      const halfLen = mask.length * 0.5;
+      if (Math.abs(longOffset) <= halfLen) {
+        const u = Math.max(
+          0,
+          Math.min(1, (longOffset + halfLen) / Math.max(1, mask.length))
+        );
+        const sideSign = mask.lateral >= 0 ? 1 : -1;
+        const edgeAnchor = sideSign * Math.max(6.5, roadHalfWidth - 1.0);
+        const archLatCenter =
+          edgeAnchor + (mask.lateral - edgeAnchor) * Math.sin(u * Math.PI);
+        const halfW = mask.width * 0.5 + 1.05;
+        if (Math.abs(signedLat - archLatCenter) <= halfW) {
+          if (mask.type === "PAVED_SHORTCUT") {
+            onPavedShortcut = true;
+          } else {
+            onBoostShortcut = true;
+          }
+        }
+      }
+    }
+    return { onPavedShortcut, onBoostShortcut };
+  }
+
   public computeAiInputs(
     dt: number,
     activeItemBoxPositions?: Vector3[],
-    allRacers?: KartController[]
+    allRacers?: KartController[],
+    activeTrapPositions?: Vector3[]
   ): ControlInputState {
     this.aiSteerNoisePhase += dt * 1.15;
     if (this.aiDriftCooldown > 0) {
@@ -461,12 +504,15 @@ export class KartController implements CollidableKartBody {
     const isProOrLearning = diff === "HARD" || diff === "SELF_LEARNING";
     const policy = globalAiBrain.getGenomeForSlot(
       diff,
-      this.aiSlotIndex
+      this.aiSlotIndex,
+      this.stats.character.id
     ).weights;
     const totalLen = Math.max(120, this.track.totalTrackLength);
     const baseT = this.closestTrack.normalizedSplineT;
     const roadHalf =
       this.closestTrack.localRoadHalfWidth || this.track.roadHalfWidth;
+    const localWallHalf =
+      this.closestTrack.localWallHalfWidth || this.track.wallHalfWidth;
 
     const hasReadyBoostItem =
       (this.heldItem === "NITRO_CORE" ||
@@ -487,8 +533,15 @@ export class KartController implements CollidableKartBody {
       this.phaseCloakTimer > 0 ||
       this.prolongedRocketBoostActive;
 
+    const hasSustainedShortcutImmunity =
+      this.boostTimer > 0.75 ||
+      this.nitroBoostTimer > 0.55 ||
+      this.novaOverdriveTimer > 0.55 ||
+      this.warpAutopilotTimer > 0.55 ||
+      this.phaseCloakTimer > 0.55;
+
     if (
-      this.distToCenter > this.track.wallHalfWidth - 2.2 ||
+      this.distToCenter > localWallHalf - 2.2 ||
       this.spinOutTimer > 0
     ) {
       this.aiDriftCooldown = Math.max(this.aiDriftCooldown, 0.45);
@@ -806,7 +859,32 @@ export class KartController implements CollidableKartBody {
       ? jumpTargetWorldPos
       : baseTargetSample.position.clone();
 
-    // 5. Active Speed Booster Pad & Item Box Seeking (only when grounded, settled on straightaways/gentle curves, and not drifting)
+    // Helper to check if an item box crystal is booby-trapped by a nearby Cryo Mine, Glitch Prism, or Obstacle
+    const isPositionBoobyTrapped = (pos: Vector3): boolean => {
+      if (diff === "EASY") return false;
+      const trapCheckRadiusSq = 3.8 * 3.8;
+      if (activeTrapPositions && activeTrapPositions.length > 0) {
+        for (const trapPos of activeTrapPositions) {
+          const dx = pos.x - trapPos.x;
+          const dz = pos.z - trapPos.z;
+          if (dx * dx + dz * dz <= trapCheckRadiusSq) {
+            return true;
+          }
+        }
+      }
+      for (const obs of this.track.obstacles) {
+        if (obs.type === "JUMP_RAMP") continue;
+        const dx = pos.x - obs.position.x;
+        const dz = pos.z - obs.position.z;
+        const r = obs.radius + 2.2;
+        if (dx * dx + dz * dz <= r * r) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // 5. Active Speed Booster Pad & Trap-Aware Item Box Seeking (only when grounded, settled on straightaways/gentle curves, and not drifting)
     if (
       this.grounded &&
       !isAligningForJump &&
@@ -838,6 +916,7 @@ export class KartController implements CollidableKartBody {
 
         const latDiff = Math.abs(Vector3.Dot(toPad, this.closestTrack.binormal));
         if (latDiff > maxPadLateralReach) continue;
+        if (isPositionBoobyTrapped(pad.position)) continue;
 
         // Check curvature 20m and 38m past the boost pad so AI doesn't hit a +38% boost straight into a hairpin wall
         const padTrack = this.track.queryClosestTrackPoint(
@@ -877,6 +956,7 @@ export class KartController implements CollidableKartBody {
       }
 
       // Active Item Box Hunting when empty-handed (MEDIUM, HARD, SELF_LEARNING)
+      // Automatically inspects item box crystals for nearby Cryo Mines / Glitch Prisms and selects a clean crystal!
       let isSeekingItemBox = false;
       if (
         !chosenPadPos &&
@@ -903,6 +983,9 @@ export class KartController implements CollidableKartBody {
           );
           if (latDiff > maxBoxLateral) continue;
 
+          // Skip booby-trapped item box crystals so AI steers to an adjacent clean crystal in the row
+          if (isPositionBoobyTrapped(boxPos)) continue;
+
           const score = fwdDist + latDiff * 1.3;
           if (score < bestBoxScore) {
             bestBoxScore = score;
@@ -924,33 +1007,12 @@ export class KartController implements CollidableKartBody {
       }
     }
 
-    // 6. Hazard & Track Mask Avoidance (Oil Slicks, Water Puddles, Barrier Crates, Pylon Cones, Road Holes & Split Medians)
+    // 5b. Track Masks: Shortcut Discovery (`PAVED_SHORTCUT` & `BOOST_SHORTCUT`), Split Medians (`SPLIT_MEDIAN`), & Road Holes (`ROAD_HOLE`)
     let emergencyHoleHop = false;
-    if (
-      this.grounded &&
-      !isAligningForJump &&
-      diff !== "EASY" &&
-      this.track.obstacles.length > 0
-    ) {
-      for (const obs of this.track.obstacles) {
-        if (obs.type === "JUMP_RAMP") continue;
-        const toObs = obs.position.subtract(this.position);
-        toObs.y = 0;
-        const fwdDist = Vector3.Dot(toObs, this.closestTrack.tangent);
-        if (fwdDist > 2.0 && fwdDist < 34.0) {
-          const obsToLine = targetWorldPos.subtract(obs.position);
-          obsToLine.y = 0;
-          const safeClearance = obs.radius + 3.2;
-          if (obsToLine.lengthSquared() < safeClearance * safeClearance) {
-            const sideSign =
-              Vector3.Dot(toObs, this.closestTrack.binormal) >= 0 ? -1 : 1;
-            targetWorldPos.addInPlace(
-              this.closestTrack.binormal.scale(sideSign * safeClearance)
-            );
-          }
-        }
-      }
-    }
+    let activeBoostShortcutTrigger = false;
+    let isRidingShortcutCorridor = false;
+    const shortcutSeekWeight =
+      diff === "EASY" ? 0 : policy.shortcutSeekWeight ?? 0.85;
 
     if (
       this.grounded &&
@@ -958,38 +1020,242 @@ export class KartController implements CollidableKartBody {
       this.track.trackMasks &&
       this.track.trackMasks.length > 0
     ) {
+      const currentLat = this.closestTrack.signedLateralOffset;
       for (const mask of this.track.trackMasks) {
-        const maskCenterSample = this.track.getPointAtNormalizedT(
-          mask.normT,
-          mask.lateral
-        );
-        const toMask = maskCenterSample.position.subtract(this.position);
-        toMask.y = 0;
-        const fwdDist = Vector3.Dot(toMask, this.closestTrack.tangent);
+        let dtMask = baseT - mask.normT;
+        if (dtMask > 0.5) dtMask -= 1.0;
+        if (dtMask < -0.5) dtMask += 1.0;
+        const longOffset = dtMask * totalLen; // negative = approaching mask center, positive = past mask center
         const halfLen = mask.length * 0.5;
-        if (fwdDist > -halfLen && fwdDist < halfLen + 36.0) {
-          const currentLat = this.closestTrack.signedLateralOffset;
-          const sideSign =
-            currentLat >= mask.lateral ? 1 : -1;
-          const laneOffset =
-            mask.lateral + sideSign * (mask.width * 0.5 + 3.8);
-          const safeLanePt = this.track.getPointAtNormalizedT(
-            lookAheadT,
-            laneOffset
-          );
-          targetWorldPos = Vector3.Lerp(
-            targetWorldPos,
-            safeLanePt.position,
-            0.85
-          );
-          if (
-            mask.type === "ROAD_HOLE" &&
-            fwdDist > -2.0 &&
-            fwdDist < halfLen + 7.5 &&
-            Math.abs(currentLat - mask.lateral) < mask.width * 0.5 + 1.2
-          ) {
-            emergencyHoleHop = true;
+
+        if (mask.type === "ROAD_HOLE") {
+          if (longOffset > -(halfLen + 36.0) && longOffset < halfLen) {
+            const sideSign = currentLat >= mask.lateral ? 1 : -1;
+            const laneOffset =
+              mask.lateral + sideSign * (mask.width * 0.5 + 3.8);
+            const safeLanePt = this.track.getPointAtNormalizedT(
+              lookAheadT,
+              laneOffset
+            );
+            targetWorldPos = Vector3.Lerp(
+              targetWorldPos,
+              safeLanePt.position,
+              0.85
+            );
+            if (
+              longOffset > -(halfLen + 7.5) &&
+              longOffset < halfLen + 2.0 &&
+              Math.abs(currentLat - mask.lateral) < mask.width * 0.5 + 1.2
+            ) {
+              emergencyHoleHop = true;
+            }
           }
+        } else if (mask.type === "SPLIT_MEDIAN") {
+          // Parallel Split Route: choose the cleaner/inside branch early (-halfLen - 40m) and hold that route smoothly
+          if (longOffset > -(halfLen + 40.0) && longOffset < halfLen + 6.0) {
+            const sideSign =
+              Math.abs(currentLat - mask.lateral) > 1.2
+                ? currentLat >= mask.lateral
+                  ? 1
+                  : -1
+                : cornerTurnDir !== 0
+                ? cornerTurnDir
+                : this.aiSlotIndex % 2 === 0
+                ? 1
+                : -1;
+            const branchCenterOffset =
+              mask.lateral + sideSign * (mask.width * 0.5 + 4.2);
+            const safeLanePt = this.track.getPointAtNormalizedT(
+              lookAheadT,
+              branchCenterOffset
+            );
+            targetWorldPos = Vector3.Lerp(
+              targetWorldPos,
+              safeLanePt.position,
+              0.88
+            );
+          }
+        } else if (
+          mask.type === "PAVED_SHORTCUT" &&
+          shortcutSeekWeight > 0.32
+        ) {
+          // Technical Paved Shortcut Bypass: requires precision steering, no boost item needed!
+          if (longOffset > -(halfLen + 26.0) && longOffset < halfLen - 2.0) {
+            const sideSign = mask.lateral >= 0 ? 1 : -1;
+            const edgeAnchor = sideSign * Math.max(6.5, roadHalf - 1.0);
+            const uNow = Math.max(
+              0,
+              Math.min(1, (longOffset + halfLen) / Math.max(1, mask.length))
+            );
+            const archLatNow =
+              edgeAnchor + (mask.lateral - edgeAnchor) * Math.sin(uNow * Math.PI);
+            const alreadyInCorridor =
+              longOffset >= -halfLen &&
+              Math.abs(currentLat - archLatNow) <= mask.width * 0.5 + 3.2;
+            const canEnterCleanly =
+              longOffset < -halfLen + 10.0 &&
+              sideSign * currentLat > -roadHalf * 0.35;
+
+            if (alreadyInCorridor || canEnterCleanly) {
+              isRidingShortcutCorridor = true;
+              const uLook = Math.max(
+                0,
+                Math.min(
+                  1,
+                  (longOffset + 15.0 + halfLen) / Math.max(1, mask.length)
+                )
+              );
+              const archLatLook =
+                edgeAnchor +
+                (mask.lateral - edgeAnchor) * Math.sin(uLook * Math.PI);
+              const lookShortcutT =
+                (mask.normT +
+                  ((uLook - 0.5) * mask.length) / totalLen +
+                  1.0) %
+                1.0;
+              const shortcutPt = this.track.getPointAtNormalizedT(
+                lookShortcutT,
+                archLatLook
+              );
+              targetWorldPos = Vector3.Lerp(
+                targetWorldPos,
+                shortcutPt.position,
+                Math.min(0.95, 0.55 + shortcutSeekWeight * 0.38)
+              );
+            }
+          }
+        } else if (
+          mask.type === "BOOST_SHORTCUT" &&
+          shortcutSeekWeight > 0.38
+        ) {
+          // Boosted Off-Road Shortcut Zone: only commit if carrying a ready boost item, already boost-immune, or already inside the shortcut!
+          if (longOffset > -(halfLen + 24.0) && longOffset < halfLen - 2.0) {
+            const sideSign = mask.lateral >= 0 ? 1 : -1;
+            const edgeAnchor = sideSign * Math.max(6.5, roadHalf - 1.0);
+            const uNow = Math.max(
+              0,
+              Math.min(1, (longOffset + halfLen) / Math.max(1, mask.length))
+            );
+            const archLatNow =
+              edgeAnchor + (mask.lateral - edgeAnchor) * Math.sin(uNow * Math.PI);
+            const alreadyInCorridor =
+              longOffset >= -halfLen &&
+              Math.abs(currentLat - archLatNow) <= mask.width * 0.5 + 2.8;
+            const canCommitWithBoost =
+              (hasSustainedShortcutImmunity || hasReadyBoostItem) &&
+              sideSign * currentLat > -roadHalf * 0.3;
+
+            if (alreadyInCorridor || canCommitWithBoost) {
+              isRidingShortcutCorridor = true;
+              const uLook = Math.max(
+                0,
+                Math.min(
+                  1,
+                  (longOffset + 16.0 + halfLen) / Math.max(1, mask.length)
+                )
+              );
+              const archLatLook =
+                edgeAnchor +
+                (mask.lateral - edgeAnchor) * Math.sin(uLook * Math.PI);
+              const lookShortcutT =
+                (mask.normT +
+                  ((uLook - 0.5) * mask.length) / totalLen +
+                  1.0) %
+                1.0;
+              const shortcutPt = this.track.getPointAtNormalizedT(
+                lookShortcutT,
+                archLatLook
+              );
+              targetWorldPos = Vector3.Lerp(
+                targetWorldPos,
+                shortcutPt.position,
+                Math.min(0.95, 0.58 + shortcutSeekWeight * 0.35)
+              );
+
+              // Trigger held boost item as soon as wheels enter or approach the off-road shortcut cut!
+              if (
+                longOffset >= -halfLen - 4.0 &&
+                !hasActiveOffRoadImmunity &&
+                hasReadyBoostItem
+              ) {
+                activeBoostShortcutTrigger = true;
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 6. Curved-Spline Track-Hazard & Deployed Trap Avoidance (Oil Slicks, Water Puddles, Crates, Cones, Cryo Mines & Glitch Prisms)
+    const hazardAvoidWeight =
+      diff === "EASY" ? 0 : policy.hazardAvoidanceWeight ?? 1.0;
+    if (
+      this.grounded &&
+      !isAligningForJump &&
+      hazardAvoidWeight > 0.1 &&
+      !hasActiveOffRoadImmunity
+    ) {
+      const maxHazardLookAhead = Math.min(
+        46.0,
+        28.0 + hazardAvoidWeight * 12.0
+      );
+      const avoidHazardAt = (obsPos: Vector3, radius: number) => {
+        const toObs = obsPos.subtract(this.position);
+        toObs.y = 0;
+        const approxDistSq = toObs.lengthSquared();
+        if (
+          approxDistSq < 1.5 ||
+          approxDistSq > (maxHazardLookAhead + 6) * (maxHazardLookAhead + 6)
+        ) {
+          return;
+        }
+        // Project hazard into curved-spline coordinates so we detect traps around curved corners!
+        const obsTrack = this.track.queryClosestTrackPoint(
+          obsPos,
+          this.closestTrack.sampleIndex
+        );
+        let dT = obsTrack.normalizedSplineT - baseT;
+        if (dT > 0.5) dT -= 1.0;
+        if (dT < -0.5) dT += 1.0;
+        const fwdArcDist = dT * totalLen;
+        if (fwdArcDist < 1.8 || fwdArcDist > maxHazardLookAhead) return;
+
+        const obsLat = obsTrack.signedLateralOffset;
+        const plannedLatAtObs =
+          this.closestTrack.signedLateralOffset *
+            Math.max(0, 1 - fwdArcDist / Math.max(15, lookAheadMeters)) +
+          desiredLateral *
+            Math.min(1, fwdArcDist / Math.max(15, lookAheadMeters));
+        const safeClearance =
+          (radius + 2.8) * Math.min(1.25, 0.75 + hazardAvoidWeight * 0.35);
+        const latDelta = plannedLatAtObs - obsLat;
+
+        if (Math.abs(latDelta) < safeClearance) {
+          // Pick the side with more room on the road so avoiding a trap never pushes us into an outer wall
+          const roomRight = roadHalf * 0.78 - obsLat;
+          const roomLeft = roadHalf * 0.78 + obsLat;
+          let evadeSign: -1 | 1 = latDelta >= 0 ? 1 : -1;
+          if (evadeSign === 1 && roomRight < 2.2) evadeSign = -1;
+          if (evadeSign === -1 && roomLeft < 2.2) evadeSign = 1;
+
+          const urgency =
+            (1 - fwdArcDist / maxHazardLookAhead) *
+            (1 - Math.abs(latDelta) / safeClearance);
+          const shiftMeters =
+            evadeSign * safeClearance * (0.65 + urgency * 0.55);
+          targetWorldPos.addInPlace(
+            this.closestTrack.binormal.scale(shiftMeters)
+          );
+        }
+      };
+
+      for (const obs of this.track.obstacles) {
+        if (obs.type === "JUMP_RAMP") continue;
+        avoidHazardAt(obs.position, obs.radius);
+      }
+      if (activeTrapPositions && activeTrapPositions.length > 0) {
+        for (const trapPos of activeTrapPositions) {
+          avoidHazardAt(trapPos, 1.55);
         }
       }
     }
@@ -1087,6 +1353,8 @@ export class KartController implements CollidableKartBody {
       predPos,
       this.closestTrack.sampleIndex
     );
+    const predWallHalf =
+      predTrack.localWallHalfWidth || this.track.wallHalfWidth;
 
     const preferredCharge = policy.preferredChargeSec;
     const maxHoldCharge = policy.maxHoldChargeSec;
@@ -1094,7 +1362,11 @@ export class KartController implements CollidableKartBody {
     let wantDrift = false;
     let hopSwitchDrift = false;
 
-    if (this.spinOutTimer <= 0 && !isAligningForJump) {
+    if (
+      this.spinOutTimer <= 0 &&
+      !isAligningForJump &&
+      !isRidingShortcutCorridor
+    ) {
       if (this.driftState === "HOPPING") {
         // Always hold drift throughout the entire airborne entry hop so landing locks cleanly into DRIFT_ACTIVE!
         const hopDir =
@@ -1103,7 +1375,7 @@ export class KartController implements CollidableKartBody {
             : cornerTurnDir !== 0
             ? cornerTurnDir
             : (Math.sign(steer) as -1 | 1) || 1;
-        if (this.distToCenter <= this.track.wallHalfWidth - 2.0) {
+        if (this.distToCenter <= localWallHalf - 2.0) {
           wantDrift = true;
           steer = hopDir * Math.max(0.76, Math.abs(steer));
         } else {
@@ -1120,8 +1392,8 @@ export class KartController implements CollidableKartBody {
         // Abort drift if approaching outer wall OR if heading has rotated > 48 deg away from the track tangent toward the edge
         const tangentAlignDot = Vector3.Dot(fwd, this.closestTrack.tangent);
         const hittingOuterWall =
-          this.distToCenter > this.track.wallHalfWidth - 2.6 ||
-          predTrack.horizontalDistance > this.track.wallHalfWidth - 2.0 ||
+          this.distToCenter > localWallHalf - 2.6 ||
+          predTrack.horizontalDistance > predWallHalf - 2.0 ||
           (tangentAlignDot < 0.55 && this.distToCenter > roadHalf * 0.85);
 
         // Off-Road Grass Boost Strategy:
@@ -1242,7 +1514,7 @@ export class KartController implements CollidableKartBody {
         // Initiate a new hop-drift via three learned pathways:
         // (A) Preemptive Corner Drift (35m-50m before corners to charge Mini-Turbo early and carve the inside apex)
         // (B) Off-Road Grass Drift-Boost Escape (hop-drift on grass to charge a 1.0s Blue Spark and boost back onto the road)
-        // (C) Chained Opposite-Direction Powerslide ("Snaking" experimentation on wide sections when chainDriftWeight > 0; locked off on EASY)
+        // (C) Chained Opposite-Direction Powerslide (experimentation on wide sections when chainDriftWeight > 0; locked off on EASY)
         const entryTurnThreshold = policy.driftEntryThreshold;
         const localCurbW =
           this.closestTrack.localCurbWidth || this.track.curbWidth;
@@ -1252,11 +1524,11 @@ export class KartController implements CollidableKartBody {
           this.surface === "OFFROAD" &&
           !hasActiveOffRoadImmunity &&
           offRoadRecoveryWeight > 0.25 &&
-          this.distToCenter < this.track.wallHalfWidth - 2.4 &&
+          this.distToCenter < localWallHalf - 2.4 &&
           this.forwardSpeed > this.stats.topSpeed * 0.38;
 
         const maxEntryDist = canOffRoadDriftEscape
-          ? this.track.wallHalfWidth - 2.4
+          ? localWallHalf - 2.4
           : hasActiveOffRoadImmunity
           ? localCurbW + 4.5
           : localCurbW + 2.4;
@@ -1274,7 +1546,7 @@ export class KartController implements CollidableKartBody {
             cornerTurnDir * midTurnRight >= entryTurnThreshold * 0.72 ||
             cornerTurnDir * leadTurnRight >= entryTurnThreshold * 0.72);
 
-        // Chained opposite-direction drift ("snaking") experimentation on wide sections (disabled on EASY)
+        // Chained opposite-direction powerslide experimentation on wide sections (disabled on EASY)
         const chainWeight =
           diff === "EASY" ? 0 : policy.chainDriftWeight ?? 0.42;
         const canChainStraightDrift =
@@ -1304,7 +1576,7 @@ export class KartController implements CollidableKartBody {
           easySectorAllowed &&
           notCrossingTrackWildly &&
           this.distToCenter < maxEntryDist &&
-          predTrack.horizontalDistance < this.track.wallHalfWidth - 3.6 &&
+          predTrack.horizontalDistance < predWallHalf - 3.6 &&
           forwardDot > 0.62 &&
           this.forwardSpeed > minEntrySpeed
         ) {
@@ -1374,6 +1646,7 @@ export class KartController implements CollidableKartBody {
     if (
       this.grounded &&
       !isAligningForJump &&
+      !isRidingShortcutCorridor &&
       !hasActiveOffRoadImmunity &&
       this.forwardSpeed > this.stats.topSpeed * 0.68
     ) {
@@ -1412,7 +1685,7 @@ export class KartController implements CollidableKartBody {
       }
     }
 
-    // 9. Tactical AI Power-Up Brain (Context-Aware Utility across all 16 Power-Ups + Forward/Backward Aiming)
+    // 9. Tactical AI Power-Up Brain (Context-Aware Utility across all 16 Power-Ups + Forward/Backward Aiming & Item-Box Booby-Trapping)
     let useItemJustPressed = false;
     let itemAimDirection: -1 | 0 | 1 = 0;
     const patienceScale = policy.itemHoldPatience ?? 0.85;
@@ -1422,14 +1695,18 @@ export class KartController implements CollidableKartBody {
       // Emergency defensive override: if an incoming seeker/saucer is locked on, react immediately on MEDIUM/HARD/SELF_LEARNING
       const urgentThreat = this.incomingThreatCount > 0 && diff !== "EASY";
 
-      // Check if an active Item Box Row is just ahead (within 22m) so we cash in our held item before picking up a new one!
+      // Check if an active Item Box Row is just ahead (within 22m) so we cash in our held item before picking up a new one,
+      // OR if we are passing directly over an Item Box crystal (< 5.2m) so HARD/SELF_LEARNING can booby-trap it with a mine/prism!
       let nearUpcomingItemBox = false;
+      let passingOverItemBoxForTrap = false;
       if (activeItemBoxPositions && activeItemBoxPositions.length > 0 && diff !== "EASY") {
         for (const boxPos of activeItemBoxPositions) {
           const toBox = boxPos.subtract(this.position);
           toBox.y = 0;
           const distSq = toBox.lengthSquared();
-          if (distSq > 9 && distSq < 22 * 22) {
+          if (distSq <= 5.2 * 5.2 && isProOrLearning) {
+            passingOverItemBoxForTrap = true;
+          } else if (distSq > 9 && distSq < 22 * 22) {
             const d = Math.sqrt(distSq);
             if (Vector3.Dot(fwd, toBox.scale(1 / d)) > 0.72) {
               nearUpcomingItemBox = true;
@@ -1439,7 +1716,11 @@ export class KartController implements CollidableKartBody {
         }
       }
 
-      if (this.aiItemUseDelay <= 0 || urgentThreat) {
+      if (
+        this.aiItemUseDelay <= 0 ||
+        urgentThreat ||
+        activeBoostShortcutTrigger
+      ) {
         const item = this.heldItem;
 
         if (diff === "EASY") {
@@ -1451,13 +1732,14 @@ export class KartController implements CollidableKartBody {
         ) {
           // Tactical Boost Timing:
           // 1. Immediate recovery if slowed down (< 78% top speed)
-          // 2. Immediate off-road grass/curb shortcut cut when not already boost-immune
+          // 2. Immediate off-road grass/curb shortcut cut (`BOOST_SHORTCUT` or shoulder cut) when not already boost-immune
           // 3. Corner exit onto straightaway (curveDot >= 0.85 & not already boosting)
           // 4. Rapid-fire surges during GOLDEN_OVERCLOCK
           const recoveringSpeed = speedRatio < 0.78;
           const cuttingOffRoad =
-            (this.surface === "OFFROAD" || this.distToCenter > roadHalf * 0.76) &&
-            this.nitroBoostTimer <= 0.15;
+            activeBoostShortcutTrigger ||
+            ((this.surface === "OFFROAD" || this.distToCenter > roadHalf * 0.76) &&
+              this.nitroBoostTimer <= 0.15);
           const cleanStraightOrExit =
             curveDot >= 0.85 &&
             worstLookAheadDot >= 0.78 &&
@@ -1577,6 +1859,7 @@ export class KartController implements CollidableKartBody {
         ) {
           // Tactical Trap Placement (Scaled by Difficulty & AI Brain itemAggressionWeight):
           // - Drop backward immediately if an incoming seeker is chasing us (tail block)
+          // - Drop backward right on top of an Item Box crystal (`passingOverItemBoxForTrap`) or inside shortcut apex to booby-trap it!
           // - Lob FORWARD (+1) if a rival is in our forward lob window (12-24m on MEDIUM, up to 40m with predictive lead on HARD/SELF_LEARNING)
           // - Drop BACKWARD (-1) on tight inside corner apexes, boost pads/ramps, or when an opponent is drafting behind
           const aggressionScale = policy.itemSeekWeight ?? 0.65;
@@ -1608,10 +1891,16 @@ export class KartController implements CollidableKartBody {
             }
           }
           const onTightApexLine =
-            turnStrength > 0.22 && Math.abs(signedLatRatio) < 0.52;
+            (turnStrength > 0.22 && Math.abs(signedLatRatio) < 0.52) ||
+            isRidingShortcutCorridor;
           const patienceExpired = this.aiItemUseDelay < -2.4 * patienceScale;
 
-          if (targetAheadForLob && !urgentThreat && !tailingOpponentBehind) {
+          if (
+            targetAheadForLob &&
+            !urgentThreat &&
+            !tailingOpponentBehind &&
+            !passingOverItemBoxForTrap
+          ) {
             itemAimDirection = 1;
           } else {
             itemAimDirection = -1;
@@ -1619,13 +1908,14 @@ export class KartController implements CollidableKartBody {
 
           useItemJustPressed =
             urgentThreat ||
+            passingOverItemBoxForTrap ||
             targetAheadForLob ||
             nearUpcomingItemBox ||
             tailingOpponentBehind ||
             onTightApexLine ||
             patienceExpired;
         } else if (item === "PHASE_CLOAK") {
-          // Activate Phase Cloak to dodge incoming threats, steal an item from a racer ahead, or power through an off-road cut
+          // Activate Phase Cloak to dodge incoming threats, steal an item from a racer ahead, or power through a BOOST_SHORTCUT / off-road cut
           let opponentAheadHasItem = false;
           if (allRacers && allRacers.length > 1) {
             for (const other of allRacers) {
@@ -1637,6 +1927,7 @@ export class KartController implements CollidableKartBody {
             }
           }
           const cuttingCorner =
+            activeBoostShortcutTrigger ||
             this.surface === "OFFROAD" ||
             (turnStrength > 0.26 && Math.abs(signedLatRatio) > 0.35);
           useItemJustPressed =
@@ -1935,15 +2226,28 @@ export class KartController implements CollidableKartBody {
       this.closestTrack.localRoadHalfWidth || this.track.roadHalfWidth;
     const localCurbWidth =
       this.closestTrack.localCurbWidth || this.track.curbWidth;
+    const localWallHalf =
+      this.closestTrack.localWallHalfWidth || this.track.wallHalfWidth;
 
-    // Terrain classification via horizontal distance d_perp relative to local W_road and W_curb
-    this.surface = classifyTerrainSurface(
-      this.distToCenter,
-      localRoadHalf,
-      localCurbWidth
+    const preShortcut = this.evaluateShortcutCorridor(
+      this.closestTrack.normalizedSplineT,
+      this.closestTrack.signedLateralOffset,
+      localRoadHalf
     );
 
-    const isOnRoadOrCurb = this.distToCenter <= localCurbWidth;
+    // Terrain classification via horizontal distance d_perp relative to local W_road and W_curb (or technical PAVED_SHORTCUT ribbon)
+    this.surface = preShortcut.onPavedShortcut
+      ? "PAVEMENT"
+      : classifyTerrainSurface(
+          this.distToCenter,
+          localRoadHalf,
+          localCurbWidth
+        );
+
+    const isOnRoadOrCurb =
+      this.distToCenter <= localCurbWidth ||
+      preShortcut.onPavedShortcut ||
+      preShortcut.onBoostShortcut;
     const rayOrigin = new Vector3(
       this.position.x,
       this.position.y + 4.5,
@@ -2353,7 +2657,8 @@ export class KartController implements CollidableKartBody {
       if (!this.isPlayer) {
         const policy = globalAiBrain.getGenomeForSlot(
           this.aiDifficulty,
-          this.aiSlotIndex
+          this.aiSlotIndex,
+          this.stats.character.id
         ).weights;
         const edgeBonus =
           this.distToCenter > this.track.roadHalfWidth * 0.65 ? 0.14 : 0;
@@ -2558,7 +2863,7 @@ export class KartController implements CollidableKartBody {
       const offRoadWallBreak =
         this.surface === "OFFROAD" &&
         !hasOffRoadImmunity &&
-        this.distToCenter > this.track.wallHalfWidth - 1.8;
+        this.distToCenter > localWallHalf - 1.8;
       if (
         !input.driftHeld ||
         this.forwardSpeed < minDriftSpeed * 0.72 ||
@@ -2618,7 +2923,8 @@ export class KartController implements CollidableKartBody {
             ? 0
             : globalAiBrain.getGenomeForSlot(
                 this.aiDifficulty,
-                this.aiSlotIndex
+                this.aiSlotIndex,
+                this.stats.character.id
               ).weights.chainDriftWeight ?? 0.42;
         const minAiCooldown =
           chainWeight > 0.35 && firedBoost ? 0.14 : firedBoost ? 0.36 : 0.28;
@@ -3059,14 +3365,17 @@ export class KartController implements CollidableKartBody {
     this.position.x += (this.velocity.x + this.knockVelocity.x) * dt;
     this.position.z += (this.velocity.z + this.knockVelocity.z) * dt;
 
-    // Keep kart inside outer perimeter wall and smoothly deflect heading along track tangent on wall contact
+    // Keep kart inside outer perimeter wall (expanding around SPLIT_MEDIAN, BOOST_SHORTCUT, and PAVED_SHORTCUT corridors)
+    // and smoothly deflect heading along track tangent on wall contact
     const postMoveTrack = this.track.queryClosestTrackPoint(
       this.position,
       this.closestTrack.sampleIndex
     );
-    if (postMoveTrack.horizontalDistance > this.track.wallHalfWidth - 0.8) {
+    const postWallHalf =
+      postMoveTrack.localWallHalfWidth || this.track.wallHalfWidth;
+    if (postMoveTrack.horizontalDistance > postWallHalf - 0.8) {
       const sign = postMoveTrack.signedLateralOffset >= 0 ? 1 : -1;
-      const clampedLateral = sign * (this.track.wallHalfWidth - 0.85);
+      const clampedLateral = sign * (postWallHalf - 0.85);
       const clampedPos = postMoveTrack.closestPoint.add(
         postMoveTrack.binormal.scale(clampedLateral)
       );
@@ -3101,11 +3410,11 @@ export class KartController implements CollidableKartBody {
       this.headingYaw += yawDiff * Math.min(1, dt * 9.5);
     }
 
-    // AI outer-wall & wrong-way recovery failsafe (allows off-road drift-boost charging across grass!)
+    // AI outer-wall & wrong-way recovery failsafe (allows off-road drift-boost charging across grass & shortcut corridors!)
     if (!this.isPlayer && this.spinOutTimer <= 0 && this.grounded) {
       const alignDot = Vector3.Dot(this.forwardVector, postMoveTrack.tangent);
       const isAtOuterWall =
-        postMoveTrack.horizontalDistance > this.track.wallHalfWidth - 2.2 &&
+        postMoveTrack.horizontalDistance > postWallHalf - 2.2 &&
         !hasOffRoadImmunity;
       if (isAtOuterWall || alignDot < 0.05) {
         this.aiOffTrackTimer += dt;
@@ -3193,8 +3502,15 @@ export class KartController implements CollidableKartBody {
       postMoveTrack.sampleIndex
     );
 
+    const postShortcut = this.evaluateShortcutCorridor(
+      postMoveTrack.normalizedSplineT,
+      postMoveTrack.signedLateralOffset,
+      postMoveTrack.localRoadHalfWidth || this.track.roadHalfWidth
+    );
+
     let postIsMaskedOffRoad = false;
     for (const mask of this.track.trackMasks) {
+      if (mask.type !== "ROAD_HOLE" && mask.type !== "SPLIT_MEDIAN") continue;
       let dtMask = postMoveTrack.normalizedSplineT - mask.normT;
       if (dtMask > 0.5) dtMask -= 1.0;
       if (dtMask < -0.5) dtMask += 1.0;
@@ -3211,8 +3527,10 @@ export class KartController implements CollidableKartBody {
       }
     }
     const postOnRoadOrCurb =
-      !postIsMaskedOffRoad &&
-      postMoveTrack.horizontalDistance <= postMoveTrack.localCurbWidth;
+      postShortcut.onPavedShortcut ||
+      postShortcut.onBoostShortcut ||
+      (!postIsMaskedOffRoad &&
+        postMoveTrack.horizontalDistance <= postMoveTrack.localCurbWidth);
     const postNormal = postOnRoadOrCurb ? postMoveTrack.normal : surfaceNormal;
 
     const wheelPitch = -Math.atan2(postFrontSample.y - postRearSample.y, 3.0);
@@ -3325,7 +3643,9 @@ export class KartController implements CollidableKartBody {
 
     this.closestTrack = postMoveTrack;
     this.distToCenter = postMoveTrack.horizontalDistance;
-    this.surface = postIsMaskedOffRoad
+    this.surface = postShortcut.onPavedShortcut
+      ? "PAVEMENT"
+      : postIsMaskedOffRoad
       ? "OFFROAD"
       : classifyTerrainSurface(
           this.distToCenter,
@@ -3394,7 +3714,7 @@ export class KartController implements CollidableKartBody {
         normT: postMoveTrack.normalizedSplineT,
         signedLat: postMoveTrack.signedLateralOffset,
         roadHalfWidth: postMoveTrack.localRoadHalfWidth,
-        wallHalfWidth: this.track.wallHalfWidth,
+        wallHalfWidth: postWallHalf,
         forwardSpeed: this.forwardSpeed,
         topSpeed: this.stats.topSpeed,
         surface: this.surface,

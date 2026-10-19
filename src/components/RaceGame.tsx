@@ -2409,6 +2409,9 @@ export const RaceGame: React.FC = () => {
       const activeBoxes = itemsActiveForRace
         ? itemManager.getActiveItemBoxPositions()
         : [];
+      const activeTraps = itemsActiveForRace
+        ? itemManager.getActiveGroundTrapPositions()
+        : [];
 
       const resolvedItemAimDir: -1 | 0 | 1 =
         pendingEdgesRef.current.itemAimOverride !== 0
@@ -2424,7 +2427,12 @@ export const RaceGame: React.FC = () => {
             throttle: localPlayerKart.finished ? 0.85 : combinedThrottle,
             brake: localPlayerKart.finished ? 0 : combinedBrake,
             steer: localPlayerKart.finished
-              ? localPlayerKart.computeAiInputs(dt, activeBoxes, racers).steer
+              ? localPlayerKart.computeAiInputs(
+                  dt,
+                  activeBoxes,
+                  racers,
+                  activeTraps
+                ).steer
               : combinedSteer,
             driftHeld: localPlayerKart.finished ? false : combinedDriftHeld,
             hopJustPressed: pendingEdgesRef.current.hopJustPressed,
@@ -2462,7 +2470,7 @@ export const RaceGame: React.FC = () => {
         if (racer.controlMode === "LOCAL_HUMAN") {
           const input = !racer.finished
             ? playerInput
-            : racer.computeAiInputs(dt, activeBoxes, racers);
+            : racer.computeAiInputs(dt, activeBoxes, racers, activeTraps);
 
           racer.update(
             dt,
@@ -2483,7 +2491,12 @@ export const RaceGame: React.FC = () => {
           );
         } else if (racer.controlMode === "AI" && isLocalHost) {
           // Host (Single-Player, Normal Host, or Dedicated Server) runs full 60Hz AI thinking & physics
-          const aiInput = racer.computeAiInputs(dt, activeBoxes, racers);
+          const aiInput = racer.computeAiInputs(
+            dt,
+            activeBoxes,
+            racers,
+            activeTraps
+          );
           racer.update(
             dt,
             aiInput,
