@@ -394,6 +394,12 @@ export interface HudTelemetry {
   lastItemBanner: string | null;
   wrongWay: boolean;
   spinOutActive?: boolean;
+  activeHazards?: Array<{
+    id: string;
+    type: "CRYO_MINE" | "GLITCH_PRISM";
+    x: number;
+    z: number;
+  }>;
   multiplayer?: HudMultiplayerStatus;
   aiLab?: AiTrainingLabTelemetry;
 }

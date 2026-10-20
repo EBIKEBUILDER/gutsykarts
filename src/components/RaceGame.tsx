@@ -91,6 +91,10 @@ import {
   VirtualJoystick,
 } from "@/src/components/VirtualJoystick";
 import { TrackEditor } from "@/src/components/TrackEditor";
+import {
+  AiTraceColorMode,
+  UnifiedTrackMap,
+} from "@/src/components/UnifiedTrackMap";
 import { SoundtrackManager } from "@/src/game/audio/SoundtrackManager";
 import { MultiplayerManager } from "@/src/game/network/MultiplayerManager";
 
@@ -841,6 +845,11 @@ export const RaceGame: React.FC = () => {
   }, []);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fpsValueRef = useRef<HTMLSpanElement | null>(null);
+  const frameTimeValueRef = useRef<HTMLSpanElement | null>(null);
+  const fpsDotRef = useRef<HTMLSpanElement | null>(null);
+  const [aiTraceColorMode, setAiTraceColorMode] =
+    useState<AiTraceColorMode>("SURFACE");
   const [miniMapMeta, setMiniMapMeta] = useState<{
     svgPath: string;
     viewBox: string;
@@ -1338,6 +1347,16 @@ export const RaceGame: React.FC = () => {
     const initialFocusKart = getFocusKart(initialSortedRacers);
 
     // Snap camera immediately behind initial focus kart on spawn / spectate
+    let smoothedCamYaw = initialFocusKart.headingYaw;
+    let smoothedCamDistBack = 8.8;
+    let smoothedCamHeightOffset = 3.9;
+    let smoothedSlopeLookOffsetY = 0;
+    let lastFocusRacerId = initialFocusKart.racerId;
+    let smoothedRenderDt = 1 / 60;
+    let emaFrameMs = 16.67;
+    let worstFrameMsWindow = 16.67;
+    let lastFpsDomUpdateTime = 0;
+
     camera.position.copyFrom(
       initialFocusKart.position
         .subtract(initialFocusKart.forwardVector.scale(8.8))
@@ -2342,12 +2361,50 @@ export const RaceGame: React.FC = () => {
     };
 
     const stepSimulationFrame = (overrideDt?: number) => {
-      lastSimStepPerfTime = performance.now();
+      const nowFramePerf = performance.now();
+      lastSimStepPerfTime = nowFramePerf;
       // Clamped delta time per AGENTS.md invariant: dt = Math.min(engine.getDeltaTime() / 1000, 0.05)
+      const rawEngineMs = Math.max(1, engine.getDeltaTime());
+      const rawClampedDt = Math.min(
+        rawEngineMs / 1000,
+        PHYSICS_CONSTANTS.MAX_DT
+      );
+      if (overrideDt === undefined) {
+        // Filter out sub-frame browser rAF timestamp micro-jitter (±3ms around VSync) so 1x high-speed motion is butter-smooth
+        const blend =
+          Math.abs(rawClampedDt - smoothedRenderDt) < 0.012 ? 0.18 : 0.65;
+        smoothedRenderDt += (rawClampedDt - smoothedRenderDt) * blend;
+        emaFrameMs += (rawEngineMs - emaFrameMs) * 0.12;
+        if (rawEngineMs > worstFrameMsWindow) {
+          worstFrameMsWindow = rawEngineMs;
+        }
+        if (nowFramePerf - lastFpsDomUpdateTime >= 180) {
+          lastFpsDomUpdateTime = nowFramePerf;
+          const liveFps = Math.max(
+            1,
+            Math.min(240, Math.round(1000 / Math.max(1, emaFrameMs)))
+          );
+          if (fpsValueRef.current) {
+            fpsValueRef.current.textContent = `${liveFps} FPS`;
+          }
+          if (frameTimeValueRef.current) {
+            frameTimeValueRef.current.textContent = `${emaFrameMs.toFixed(1)}ms (max ${Math.min(99, Math.round(worstFrameMsWindow))}ms)`;
+          }
+          if (fpsDotRef.current) {
+            fpsDotRef.current.className =
+              liveFps >= 52
+                ? "h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]"
+                : liveFps >= 35
+                ? "h-2 w-2 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.9)]"
+                : "h-2 w-2 rounded-full bg-rose-500 animate-pulse";
+          }
+          worstFrameMsWindow = emaFrameMs;
+        }
+      }
       const dt =
         overrideDt !== undefined
           ? Math.min(overrideDt, PHYSICS_CONSTANTS.MAX_DT)
-          : Math.min(engine.getDeltaTime() / 1000, PHYSICS_CONSTANTS.MAX_DT);
+          : Math.min(smoothedRenderDt, PHYSICS_CONSTANTS.MAX_DT);
 
       if (racePhase === "COUNTDOWN") {
         let waitingForRemotePeers = false;
@@ -3007,62 +3064,117 @@ export const RaceGame: React.FC = () => {
       }
 
       // Update Follow Camera around focusKart (Player Kart OR Spectated Racer)
+      // Uses a kart-locked boom-arm coordinate frame (smoothing camera yaw, boom distance, and local height offset)
+      // rather than lerping camera.position in world space, eliminating longitudinal camera-to-kart rubberbanding at max speed!
       const camMode = cameraModeRef.current;
       const fwd = focusKart.forwardVector;
-      const distBack =
+      const targetDistBack =
         camMode === "HOOD" ? -0.9 : camMode === "DYNAMIC_WIDE" ? 12.2 : 8.8;
-      const heightUp =
+      const baseHeightUp =
         camMode === "HOOD" ? 2.1 : camMode === "DYNAMIC_WIDE" ? 5.6 : 3.9;
+
+      if (focusKart.racerId !== lastFocusRacerId) {
+        lastFocusRacerId = focusKart.racerId;
+        smoothedCamYaw = focusKart.headingYaw;
+        smoothedCamDistBack = targetDistBack;
+        smoothedCamHeightOffset = baseHeightUp;
+      }
+
+      let camYawDiff = focusKart.headingYaw - smoothedCamYaw;
+      while (camYawDiff > Math.PI) camYawDiff -= Math.PI * 2;
+      while (camYawDiff < -Math.PI) camYawDiff += Math.PI * 2;
+      const yawBlend = camMode === "HOOD" ? 1.0 : 1 - Math.exp(-10.5 * dt);
+      smoothedCamYaw += camYawDiff * yawBlend;
+
+      const distBlend = camMode === "HOOD" ? 1.0 : 1 - Math.exp(-14.0 * dt);
+      smoothedCamDistBack +=
+        (targetDistBack - smoothedCamDistBack) * distBlend;
+
+      const camFwdX = Math.sin(smoothedCamYaw);
+      const camFwdZ = Math.cos(smoothedCamYaw);
+      const camRightX = Math.cos(smoothedCamYaw);
+      const camRightZ = -Math.sin(smoothedCamYaw);
 
       const shakeAmp =
         focusKart.cameraShakeTimer > 0
-          ? (focusKart.surface === "CURB" ? 0.08 : 0.22) *
+          ? (focusKart.surface === "CURB" ? 0.05 : 0.16) *
             Math.min(1, focusKart.cameraShakeTimer * 3)
           : 0;
       const shakeY =
         shakeAmp > 0 ? Math.sin(elapsedRaceMs * 0.09) * shakeAmp : 0;
-      const shakeX =
+      const shakeLateral =
         shakeAmp > 0 ? Math.cos(elapsedRaceMs * 0.075) * shakeAmp : 0;
 
       const kartPitch = focusKart.assembly.kartRoot.rotation.x;
-      const slopeLookOffsetY =
+      const rawSlopeLookOffsetY =
         -Math.sin(kartPitch) * (camMode === "HOOD" ? 10.0 : 4.2);
+      smoothedSlopeLookOffsetY +=
+        (rawSlopeLookOffsetY - smoothedSlopeLookOffsetY) *
+        (1 - Math.exp(-18.0 * dt));
 
-      const desiredCamPos = focusKart.position
-        .subtract(fwd.scale(distBack))
-        .add(new Vector3(shakeX, heightUp + shakeY, 0));
-
+      let targetHeightOffset = baseHeightUp;
       if (camMode !== "HOOD") {
+        const approxCamX = focusKart.position.x - camFwdX * smoothedCamDistBack;
+        const approxCamZ = focusKart.position.z - camFwdZ * smoothedCamDistBack;
         const camBackTrack = track.queryClosestTrackPoint(
-          desiredCamPos,
+          new Vector3(approxCamX, focusKart.position.y, approxCamZ),
           focusKart.closestTrack.sampleIndex
         );
-        desiredCamPos.y = Math.max(
-          desiredCamPos.y,
-          camBackTrack.roadY + heightUp * 0.72 + shakeY
+        const minWorldCamY = camBackTrack.roadY + baseHeightUp * 0.72;
+        targetHeightOffset = Math.max(
+          baseHeightUp,
+          minWorldCamY - focusKart.position.y
         );
       }
+      const heightBlend = camMode === "HOOD" ? 1.0 : 1 - Math.exp(-16.0 * dt);
+      smoothedCamHeightOffset +=
+        (targetHeightOffset - smoothedCamHeightOffset) * heightBlend;
 
-      if (camMode === "HOOD") {
-        camera.position.copyFrom(desiredCamPos);
-      } else {
-        const horizBlend = Math.min(1, dt * 11);
-        const vertBlend = Math.min(1, dt * 24);
-        camera.position.x += (desiredCamPos.x - camera.position.x) * horizBlend;
-        camera.position.z += (desiredCamPos.z - camera.position.z) * horizBlend;
-        camera.position.y += (desiredCamPos.y - camera.position.y) * vertBlend;
-      }
+      camera.position.x =
+        focusKart.position.x -
+        camFwdX * smoothedCamDistBack +
+        camRightX * shakeLateral;
+      camera.position.z =
+        focusKart.position.z -
+        camFwdZ * smoothedCamDistBack +
+        camRightZ * shakeLateral;
+      camera.position.y =
+        focusKart.position.y + smoothedCamHeightOffset + shakeY;
 
-      const lookTarget = focusKart.position
-        .add(fwd.scale(camMode === "HOOD" ? 18 : 7.5))
-        .add(new Vector3(0, 1.35 + slopeLookOffsetY + shakeY * 0.5, 0));
+      const lookAheadDist = camMode === "HOOD" ? 18 : 7.5;
+      const lookDirX =
+        camMode === "HOOD" ? fwd.x : camFwdX * 0.65 + fwd.x * 0.35;
+      const lookDirZ =
+        camMode === "HOOD" ? fwd.z : camFwdZ * 0.65 + fwd.z * 0.35;
+      const lookTarget = new Vector3(
+        focusKart.position.x +
+          lookDirX * lookAheadDist +
+          camRightX * (shakeLateral * 0.35),
+        focusKart.position.y +
+          1.35 +
+          smoothedSlopeLookOffsetY +
+          shakeY * 0.5,
+        focusKart.position.z +
+          lookDirZ * lookAheadDist +
+          camRightZ * (shakeLateral * 0.35)
+      );
       camera.setTarget(lookTarget);
 
+      const normSpeedRatio = Math.max(
+        0,
+        Math.min(
+          1.5,
+          focusKart.forwardSpeed / Math.max(1, focusKart.stats.topSpeed)
+        )
+      );
+      const isBoostFov =
+        focusKart.boostTimer > 0 ||
+        focusKart.nitroBoostTimer > 0 ||
+        focusKart.novaOverdriveTimer > 0 ||
+        focusKart.warpAutopilotTimer > 0;
       const targetFov =
-        focusKart.boostTimer > 0 || focusKart.novaOverdriveTimer > 0
-          ? 1.02
-          : 0.88 + Math.max(0, focusKart.forwardSpeed / 180);
-      camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 8);
+        0.86 + normSpeedRatio * 0.08 + (isBoostFov ? 0.045 : 0);
+      camera.fov += (targetFov - camera.fov) * (1 - Math.exp(-7.0 * dt));
 
       // Throttled React HUD state update (~12.5 Hz / every 80ms)
       if (now - lastHudSyncTime >= 80) {
@@ -3160,6 +3272,7 @@ export const RaceGame: React.FC = () => {
           lastItemBanner: itemBanner,
           wrongWay: focusKart.wrongWay,
           spinOutActive: focusKart.spinOutTimer > 0,
+          activeHazards: itemManager.getActiveGroundTrapTelemetry(),
           aiLab: globalAiBrain.getTelemetrySnapshot(aiDifficultyRef.current),
           multiplayer:
             isOnlineSession && mp && mp.activeRoomId
@@ -3220,11 +3333,10 @@ export const RaceGame: React.FC = () => {
       Boolean(mp?.activeRoomId && mp.isHost && mp.isDedicatedServer);
 
     const bgServerKeepAliveInterval = setInterval(() => {
+      if (document.visibilityState !== "hidden" && !isDedicatedServerHost()) {
+        return;
+      }
       const nowPerf = performance.now();
-      const hiddenAllowed =
-        document.visibilityState !== "hidden" || isDedicatedServerHost();
-      if (!hiddenAllowed) return;
-
       if (
         document.visibilityState === "hidden" ||
         nowPerf - lastSimStepPerfTime > 95
@@ -3357,6 +3469,252 @@ export const RaceGame: React.FC = () => {
       />
     );
   }
+
+  const balanceGuideModal = showBalanceGuide ? (
+    <div
+      data-testid="balance-guide-modal"
+      onClick={() => setShowBalanceGuide(false)}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 overflow-y-auto"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-4xl rounded-3xl border border-cyan-400/35 bg-slate-900/95 p-5 sm:p-6 text-white shadow-[0_0_50px_rgba(34,211,238,0.2)] max-h-[90vh] overflow-y-auto"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-white/10 pb-3.5">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/40 bg-cyan-500/15 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-cyan-200">
+              <span>ASYMMETRIC ARCHETYPE DESIGN PHILOSOPHY</span>
+              <span>•</span>
+              <span>TARGET: 25% WIN RATE EACH</span>
+            </div>
+            <h2 className="mt-1.5 text-lg sm:text-xl font-black tracking-tight text-white">
+              Distinct Identities, Equal Full-Lap Pace
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-300">
+              Every character wins races in a completely different way—trading off{" "}
+              <span className="font-bold text-amber-300">Cubic Mass (γ=3)</span>,{" "}
+              <span className="font-bold text-cyan-300">Top Speed</span>,{" "}
+              <span className="font-bold text-emerald-300">Launch Acceleration</span>,{" "}
+              <span className="font-bold text-fuchsia-300">Cornering Grip</span>, and{" "}
+              <span className="font-bold text-indigo-300">Mini-Turbo Boost</span> so their average lap times converge within milliseconds.
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="close-balance-guide-btn"
+            onClick={() => setShowBalanceGuide(false)}
+            className="rounded-xl border border-white/20 bg-slate-800 px-3 py-1.5 text-xs font-black uppercase text-slate-200 hover:bg-slate-700 hover:text-white transition cursor-pointer shrink-0"
+          >
+            CLOSE ✕
+          </button>
+        </div>
+
+        {/* 4 Character Archetype Breakdown */}
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {CHARACTER_ROSTER.map((char) => {
+            const stats = resolveRacerStats(char.id, char.defaultKartId);
+            const roleNotes: Record<
+              string,
+              { style: string; strength: string; tradeoff: string }
+            > = {
+              rex_ironclad: {
+                style: "Straightaway Momentum & Pack Enforcer",
+                strength:
+                  "Highest Top Speed & 220 kg Juggernaut mass (<3% speed loss on bumps; knocks light karts wide in traffic).",
+                tradeoff:
+                  "Slowest launch acceleration & shortest Mini-Turbo bonus (+2% spd); must protect momentum.",
+              },
+              aero_vance: {
+                style: "Precision Racing-Line All-Rounder",
+                strength:
+                  "Zero weaknesses—strong straightaway speed paired with crisp 80% drift grip and 120 kg stability.",
+                tradeoff:
+                  "Out-muscled by Rex in head-on shoves and out-boosted by Nyx/Pip exiting tight hairpins.",
+              },
+              nyx_drift: {
+                style: "Apex Chain-Drifter & Mini-Turbo Specialist",
+                strength:
+                  "Highest Drift Grip (83%) and longest Mini-Turbo surge (+14% boost ceiling • 0.51s duration).",
+                tradeoff:
+                  "Lower raw straightaway ceiling; relies on chaining Blue/Orange/Purple drift sparks out of corners.",
+              },
+              pip_spark: {
+                style: "Explosive Hole-Shot & Recovery Sprinter",
+                strength: `Fastest acceleration (${stats.acceleration} u/s²) & sharpest turn-in (${stats.handling} rad/s)—instantly recovers from grass or bumps.`,
+                tradeoff:
+                  "50 kg Featherweight chassis gets bullied in heavy pack traffic; must use agility to slip around heavyweights.",
+              },
+            };
+            const note = roleNotes[char.id] ?? {
+              style: char.title,
+              strength: char.bio,
+              tradeoff: "",
+            };
+
+            return (
+              <div
+                key={char.id}
+                className="rounded-2xl border border-white/10 bg-slate-950/75 p-3.5 flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      style={{ backgroundColor: char.colors.badge }}
+                      className="rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-slate-950"
+                    >
+                      {char.archetypeClass.replace("_", " ")}
+                    </span>
+                    <span className="text-[11px] font-extrabold text-amber-300">
+                      {stats.baseMass} kg • {stats.topSpeed} u/s • +{Math.round(stats.miniTurboDurationBonus * 100)}% MT
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex items-baseline justify-between gap-2">
+                    <h3 className="text-sm font-black text-white">
+                      {char.name}
+                    </h3>
+                    <span className="text-[10px] font-bold text-cyan-300">
+                      {note.style}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-emerald-200/95 leading-snug">
+                    <span className="font-black uppercase text-emerald-400">
+                      Win Condition:{" "}
+                    </span>
+                    {note.strength}
+                  </p>
+                  <p className="mt-1 text-[11px] text-rose-200/90 leading-snug">
+                    <span className="font-black uppercase text-rose-400">
+                      Counterplay:{" "}
+                    </span>
+                    {note.tradeoff}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* 3 Race Phases + Juggernaut Law Summary */}
+        <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-2.5 text-[11px]">
+          <div className="rounded-2xl border border-emerald-400/25 bg-emerald-950/25 p-3">
+            <div className="font-black uppercase text-emerald-300">
+              1. Launch &amp; Hairpins
+            </div>
+            <p className="mt-1 text-slate-300 leading-snug">
+              <span className="font-bold text-white">Pip Spark</span> &amp;{" "}
+              <span className="font-bold text-white">Nyx Veloce</span> jump ahead off the starting line and slingshot out of tight corners using high acceleration and extended Mini-Turbo boosts.
+            </p>
+          </div>
+          <div className="rounded-2xl border border-cyan-400/25 bg-cyan-950/25 p-3">
+            <div className="font-black uppercase text-cyan-300">
+              2. Straightaways &amp; Sweepers
+            </div>
+            <p className="mt-1 text-slate-300 leading-snug">
+              <span className="font-bold text-white">Rex Ironclad</span> &amp;{" "}
+              <span className="font-bold text-white">Aero Vance</span> reel the leaders back in on long straights and high-speed sweepers thanks to superior unboosted cruising speed.
+            </p>
+          </div>
+          <div className="rounded-2xl border border-amber-400/25 bg-amber-950/25 p-3">
+            <div className="font-black uppercase text-amber-300">
+              3. The Juggernaut Law (γ=3)
+            </div>
+            <p className="mt-1 text-slate-300 leading-snug">
+              When karts collide with a ≥40 kg mass gap, cubic mass dominance makes the heavier kart an{" "}
+              <span className="font-bold text-amber-200">Unbudgeable Juggernaut</span> while lighter karts must use superior handling or grass-cut boosts to evade contact.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  const aiArchitectureGuideModal = showAiArchitectureGuide ? (
+    <div
+      data-testid="ai-architecture-guide-modal"
+      onClick={() => setShowAiArchitectureGuide(false)}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-4 overflow-y-auto"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-4xl rounded-3xl border border-fuchsia-400/40 bg-slate-900/95 p-5 sm:p-6 text-white shadow-[0_0_50px_rgba(217,70,239,0.22)] max-h-[90vh] overflow-y-auto"
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-white/10 pb-3.5">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full border border-fuchsia-400/45 bg-fuchsia-500/15 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-fuchsia-200">
+              <span>HYBRID PARAMETRIC + NEURO-EVOLUTIONARY ARCHITECTURE</span>
+              <span>•</span>
+              <span>(1+3) ELITIST ES</span>
+            </div>
+            <h2 className="mt-1.5 text-lg sm:text-xl font-black tracking-tight text-white">
+              How the AI Self-Learning Brain Works Under the Hood
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-300">
+              Instead of a black-box neural network learning to steer from scratch, each AI racer runs a{" "}
+              <span className="font-bold text-fuchsia-300">two-layer hybrid controller</span>: an analytical spline &amp; closed-loop drift PD controller paired with a{" "}
+              <span className="font-bold text-cyan-300">tanh-activated Neural Residual Perceptron</span>, evolved across episodes via a{" "}
+              <span className="font-bold text-emerald-300">(1+3) Elitist Evolution Strategy</span>.
+            </p>
+          </div>
+          <button
+            type="button"
+            data-testid="close-ai-architecture-guide-btn"
+            onClick={() => setShowAiArchitectureGuide(false)}
+            className="rounded-xl border border-white/20 bg-slate-800 px-3 py-1.5 text-xs font-black uppercase text-slate-200 hover:bg-slate-700 hover:text-white transition cursor-pointer shrink-0"
+          >
+            CLOSE ✕
+          </button>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+          <div className="rounded-2xl border border-fuchsia-400/25 bg-slate-950/80 p-3.5">
+            <div className="text-[11px] font-black uppercase text-fuchsia-300">
+              1. 23-Parameter Hybrid Policy Genome
+            </div>
+            <p className="mt-1.5 text-[11px] text-slate-300 leading-relaxed">
+              Each genome (<code className="text-fuchsia-200">AiPolicyGenome</code>) encodes{" "}
+              <span className="font-bold text-white">15 continuous vehicle-dynamics &amp; drift-PD weights</span>{" "}
+              (look-ahead horizons on straights/curves/drifts, inside apex cut ratios, hop-drift entry threshold, Mini-Turbo charge hold times, and lateral slip damping) plus an{" "}
+              <span className="font-bold text-cyan-300">8-weight tanh Neural Residual Perceptron</span>{" "}
+              (<code className="text-cyan-200">Δu = 0.22 · tanh(∑ wᵢ · sᵢ)</code>) evaluated at 60Hz from 8 normalized track &amp; slip sensors.
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-emerald-400/25 bg-slate-950/80 p-3.5">
+            <div className="text-[11px] font-black uppercase text-emerald-300">
+              2. Multi-Objective 60Hz Telemetry Fitness (0–100)
+            </div>
+            <p className="mt-1.5 text-[11px] text-slate-300 leading-relaxed">
+              Every tick records surface state, lateral offset, drift conversions, and speed ratio normalized by the kart&apos;s own top speed (<code className="text-emerald-200">v / v_top</code>). Fitness rewards{" "}
+              <span className="font-bold text-white">clean asphalt/curb adherence, boosted off-road shortcut cuts, and Tier 1/2/3 Mini-Turbo releases</span>, while penalizing unboosted grass drag (<code className="text-rose-300">-1.15×</code>), cross-track ping-pongs (<code className="text-rose-300">-2.8</code>), and wall hits (<code className="text-rose-300">-3.5</code>).
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-cyan-400/25 bg-slate-950/80 p-3.5">
+            <div className="text-[11px] font-black uppercase text-cyan-300">
+              3. (1+3) Elitist Evolution &amp; Simulated Annealing
+            </div>
+            <p className="mt-1.5 text-[11px] text-slate-300 leading-relaxed">
+              After each 3-lap episode, the top-scoring genome (with a fastest-lap tiebreaker at 100/100 fitness) is promoted to{" "}
+              <span className="font-bold text-white">All-Time Champion</span>. The next generation spawns 4 parallel slots:{" "}
+              <span className="font-bold text-emerald-300">Slot 0 (Unmutated Elitist Champion)</span>,{" "}
+              <span className="font-bold text-cyan-300">Slot 1 (Fine-Tuned Gaussian Mutant)</span>,{" "}
+              <span className="font-bold text-amber-300">Slot 2 (Champion × Runner-Up Genetic Crossover)</span>, and{" "}
+              <span className="font-bold text-fuchsia-300">Slot 3 (Wide Explorer)</span>, with mutation scale annealing from <code className="text-cyan-200">0.68</code> down to <code className="text-cyan-200">0.22</code>.
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-amber-400/25 bg-slate-950/80 p-3.5">
+            <div className="text-[11px] font-black uppercase text-amber-300">
+              4. Orthogonal Latin-Square De-Biasing (16-Race Cycle)
+            </div>
+            <p className="mt-1.5 text-[11px] text-slate-300 leading-relaxed">
+              To benchmark character balance without AI-brain or starting-grid bias, starting grid positions rotate every race (<code className="text-amber-200">episodes % 4</code>) while AI genome slots rotate orthogonally every 4-race block (<code className="text-amber-200">(slot + ⌊episodes/4⌋) % 4</code>). Every 16 episodes, all 4 characters drive every AI genome from every starting position.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
 
   // SCREEN 1: GRAND PRIX CUP, CIRCUIT, CHARACTER & KART SELECTOR
   if (screen === "SELECT") {
@@ -3803,6 +4161,24 @@ export const RaceGame: React.FC = () => {
                             {t.description}
                           </p>
                         )}
+                        <div className="mt-2 relative rounded-xl border border-white/10 bg-slate-950/95 p-1.5 overflow-hidden">
+                          <UnifiedTrackMap
+                            trackDef={t}
+                            variant="PREVIEW"
+                            className="h-24 w-full rounded-lg bg-slate-950"
+                          />
+                          <div className="mt-1 flex flex-wrap items-center justify-between gap-1 px-1 text-[8px] font-bold uppercase text-slate-400">
+                            <span className="inline-flex items-center gap-1 text-emerald-300">
+                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Split Route
+                            </span>
+                            <span className="inline-flex items-center gap-1 text-cyan-300">
+                              <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" /> Paved Cut
+                            </span>
+                            <span className="inline-flex items-center gap-1 text-amber-300">
+                              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" /> Boost Cut
+                            </span>
+                          </div>
+                        </div>
                         {savedRec && (
                           <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-amber-400/25 bg-slate-900/90 px-2 py-1 text-[10px] font-mono">
                             <span className="text-amber-300 font-bold">
@@ -4217,6 +4593,8 @@ export const RaceGame: React.FC = () => {
             </div>
           </div>
         </div>
+        {balanceGuideModal}
+        {aiArchitectureGuideModal}
       </div>
     );
   }
@@ -4735,30 +5113,9 @@ export const RaceGame: React.FC = () => {
 
             {/* 2D Recorded Path & Telemetry Map + Per-Racer Table */}
             <div className="mt-2.5 grid grid-cols-1 md:grid-cols-12 gap-3 items-start">
-              {/* 2D SVG Path Trace Visualizer */}
+              {/* 2D SVG Path Trace Visualizer (Unified High-Detail Track Map) */}
               <div className="md:col-span-5 rounded-xl border border-white/10 bg-slate-900/95 p-2.5">
                 {(() => {
-                  const pts = trackDef.controlPoints;
-                  let minX = -120,
-                    maxX = 120,
-                    minZ = -120,
-                    maxZ = 120;
-                  if (pts.length > 0) {
-                    minX = Math.min(...pts.map((p) => p.x)) - 28;
-                    maxX = Math.max(...pts.map((p) => p.x)) + 28;
-                    minZ = Math.min(...pts.map((p) => p.z)) - 28;
-                    maxZ = Math.max(...pts.map((p) => p.z)) + 28;
-                  }
-                  const spanX = Math.max(60, maxX - minX);
-                  const spanZ = Math.max(60, maxZ - minZ);
-                  const toSvgX = (wx: number) =>
-                    ((wx - minX) / spanX) * 220 + 10;
-                  const toSvgY = (wz: number) =>
-                    ((maxZ - wz) / spanZ) * 150 + 10;
-                  const trackPoly = pts
-                    .map((p) => `${toSvgX(p.x).toFixed(1)},${toSvgY(p.z).toFixed(1)}`)
-                    .join(" ");
-
                   // Spatial bottleneck clustering: group unboosted off-road scrub or true corner deceleration points
                   const bottleneckZones: { x: number; z: number; hits: number }[] = [];
                   for (const r of telemetry.aiLab.racers) {
@@ -4806,9 +5163,21 @@ export const RaceGame: React.FC = () => {
 
                   return (
                     <>
-                      <div className="flex items-center justify-between text-[10px] font-black uppercase text-slate-300 mb-1.5 gap-1">
+                      <div className="flex flex-wrap items-center justify-between text-[10px] font-black uppercase text-slate-300 mb-1.5 gap-1">
                         <span>RECORDED AI RACING PATHS (2D TRACE)</span>
                         <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setAiTraceColorMode((m) =>
+                                m === "SURFACE" ? "SPEED" : "SURFACE"
+                              )
+                            }
+                            className="rounded bg-fuchsia-500/20 border border-fuchsia-400/50 px-1.5 py-0.5 font-mono text-[8px] font-black uppercase text-fuchsia-200 hover:bg-fuchsia-500/35 cursor-pointer"
+                            title="Toggle AI trace coloring between Surface/Drift mode and Speed/Apex Lock mode"
+                          >
+                            MODE: {aiTraceColorMode}
+                          </button>
                           <span
                             className={`rounded px-1.5 py-0.5 font-mono text-[8px] font-black uppercase ${
                               majorBottlenecks.length === 0
@@ -4823,105 +5192,61 @@ export const RaceGame: React.FC = () => {
                                   majorBottlenecks.length > 1 ? "S" : ""
                                 }`}
                           </span>
-                          <span className="font-mono text-[9px] text-slate-400 truncate max-w-[110px]">
+                          <span className="font-mono text-[9px] text-slate-400 truncate max-w-[95px]">
                             {trackDef.name}
                           </span>
                         </div>
                       </div>
-                      <svg
-                        viewBox="0 0 240 170"
-                        className="w-full h-36 rounded-lg bg-slate-950 border border-white/10"
-                      >
-                        {/* Track Road Ribbon */}
-                        {pts.length > 2 && (
-                          <>
-                            <polygon
-                              points={trackPoly}
-                              fill="none"
-                              stroke="rgba(148,163,184,0.28)"
-                              strokeWidth="12"
-                              strokeLinejoin="round"
-                            />
-                            <polygon
-                              points={trackPoly}
-                              fill="none"
-                              stroke="rgba(255,255,255,0.18)"
-                              strokeWidth="1"
-                              strokeDasharray="3 3"
-                            />
-                          </>
-                        )}
-
-                        {/* Recorded AI Racer Path Samples */}
-                        {telemetry.aiLab.racers.map((racerSummary) => {
-                          const samples = racerSummary.pathSamples;
-                          if (samples.length < 2) return null;
-                          return (
-                            <g key={racerSummary.racerId}>
-                              {samples.map((s, idx) => {
-                                if (idx === 0) return null;
-                                const prev = samples[idx - 1];
-                                const strokeColor =
-                                  s.surface === "OFFROAD"
-                                    ? s.boosting
-                                      ? "#38bdf8" // Cyan = Boosted Grass Shortcut!
-                                      : "#f43f5e" // Rose = Unboosted Grass Drag
-                                    : s.driftState === "DRIFT_ACTIVE"
-                                    ? "#fbbf24" // Amber = Drifting on Pavement/Curb
-                                    : "#34d399"; // Emerald = Clean Pavement
-                                return (
-                                  <line
-                                    key={idx}
-                                    x1={toSvgX(prev.x)}
-                                    y1={toSvgY(prev.z)}
-                                    x2={toSvgX(s.x)}
-                                    y2={toSvgY(s.z)}
-                                    stroke={strokeColor}
-                                    strokeWidth="1.6"
-                                    strokeOpacity="0.85"
-                                  />
-                                );
-                              })}
-                            </g>
-                          );
-                        })}
-
-                        {/* Bottleneck / Unboosted Scrub Warning Markers */}
-                        {majorBottlenecks.map((bz, idx) => {
-                          const cx = toSvgX(bz.x);
-                          const cy = toSvgY(bz.z);
-                          return (
-                            <g key={`bz-${idx}`}>
-                              <circle
-                                cx={cx}
-                                cy={cy}
-                                r={Math.min(9, 4.5 + bz.hits * 0.5)}
-                                fill="rgba(244,63,94,0.22)"
-                                stroke="#fb7185"
-                                strokeWidth="1.2"
-                                strokeDasharray="2 1.5"
-                              />
-                              <circle cx={cx} cy={cy} r="2" fill="#f43f5e" />
-                            </g>
-                          );
-                        })}
-                      </svg>
+                      <UnifiedTrackMap
+                        trackDef={trackDef}
+                        variant="AI_TRACE"
+                        className="w-full h-44 rounded-lg bg-slate-950 border border-white/10"
+                        aiTraces={telemetry.aiLab.racers.map((r) => ({
+                          racerId: r.racerId,
+                          racerName: r.racerName,
+                          color: r.color,
+                          pathSamples: r.pathSamples,
+                        }))}
+                        traceColorMode={aiTraceColorMode}
+                        bottleneckZones={majorBottlenecks}
+                        activeHazards={telemetry.activeHazards}
+                        racers={telemetry.standings}
+                      />
                     </>
                   );
                 })()}
                 <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 text-[9px] font-bold">
-                  <span className="inline-flex items-center gap-1 text-emerald-300">
-                    <span className="h-2 w-2 rounded-full bg-emerald-400" /> On-Track
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-amber-300">
-                    <span className="h-2 w-2 rounded-full bg-amber-400" /> Drifting
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-cyan-300">
-                    <span className="h-2 w-2 rounded-full bg-cyan-400" /> Boosted Cut
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-rose-300">
-                    <span className="h-2 w-2 rounded-full border border-rose-300 bg-rose-500/40" /> Bottleneck Scrub
-                  </span>
+                  {aiTraceColorMode === "SPEED" ? (
+                    <>
+                      <span className="inline-flex items-center gap-1 text-emerald-300">
+                        <span className="h-2 w-2 rounded-full bg-emerald-400" /> &gt;88% Apex
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-amber-300">
+                        <span className="h-2 w-2 rounded-full bg-amber-400" /> 65–88% Load
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-cyan-300">
+                        <span className="h-2 w-2 rounded-full bg-cyan-400" /> Boost/MT
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-rose-300">
+                        <span className="h-2 w-2 rounded-full bg-rose-500" /> &lt;65% Scrub
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="inline-flex items-center gap-1 text-emerald-300">
+                        <span className="h-2 w-2 rounded-full bg-emerald-400" /> On-Track
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-amber-300">
+                        <span className="h-2 w-2 rounded-full bg-amber-400" /> Drifting
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-cyan-300">
+                        <span className="h-2 w-2 rounded-full bg-cyan-400" /> Boosted Cut
+                      </span>
+                      <span className="inline-flex items-center gap-1 text-rose-300">
+                        <span className="h-2 w-2 rounded-full border border-rose-300 bg-rose-500/40" /> Bottleneck Scrub
+                      </span>
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -5538,117 +5863,42 @@ export const RaceGame: React.FC = () => {
         )}
       </div>
 
-      {/* TOP-RIGHT / RIGHT HUD: 2D SVG Mini-Map + Speedometer, Surface & Drift Charge Meter */}
-      <div className="pointer-events-none fixed top-3 right-3 sm:top-5 sm:right-5 z-20 flex flex-col items-end gap-2.5">
-        {/* 2D SVG Mini-Map plotting spline & all 4 racers (Human callsigns vs AI highlighted) */}
-        <div className="rounded-2xl border border-white/20 bg-slate-950/80 p-2.5 backdrop-blur-md shadow-xl">
+      {/* TOP-RIGHT / RIGHT HUD: Live FPS Counter + 2D SVG Mini-Map + Speedometer, Surface & Drift Charge Meter */}
+      <div className="pointer-events-none fixed top-3 right-3 sm:top-5 sm:right-5 z-20 flex flex-col items-end gap-2">
+        {/* Live Zero-Overhead DOM FPS & Frame-Time Telemetry Pill */}
+        <div
+          data-testid="hud-fps-counter"
+          className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-slate-950/90 px-3 py-1 text-[11px] font-mono font-bold text-white shadow-lg backdrop-blur-md"
+        >
+          <span
+            ref={fpsDotRef}
+            className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]"
+          />
+          <span ref={fpsValueRef} className="text-emerald-300 font-black">
+            60 FPS
+          </span>
+          <span className="text-slate-600">•</span>
+          <span ref={frameTimeValueRef} className="text-slate-300 text-[10px]">
+            16.7ms (max 17ms)
+          </span>
+        </div>
+
+        {/* 2D SVG Mini-Map plotting spline, split routes, shortcuts, hazards & all 4 racers */}
+        <div className="rounded-2xl border border-white/20 bg-slate-950/85 p-2.5 backdrop-blur-md shadow-xl">
           <div className="mb-1 flex items-center justify-between text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
             <span className="inline-flex items-center gap-1">
               <Compass className="w-3 h-3 text-cyan-400" /> CIRCUIT RADAR
             </span>
             <span className="text-amber-300">4 KARTS</span>
           </div>
-          <svg
-            data-testid="hud-minimap"
-            viewBox={miniMapMeta.viewBox}
-            className="h-28 w-28 sm:h-36 sm:w-36 rounded-xl bg-slate-900/90 border border-white/10"
-          >
-            {/* Outer Curb Glow */}
-            <path
-              d={miniMapMeta.svgPath}
-              fill="none"
-              stroke="#ef4444"
-              strokeWidth="22"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              opacity="0.35"
-            />
-            {/* Main Road Spline */}
-            <path
-              d={miniMapMeta.svgPath}
-              fill="none"
-              stroke="#334155"
-              strokeWidth="15"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
-            <path
-              d={miniMapMeta.svgPath}
-              fill="none"
-              stroke="#94a3b8"
-              strokeWidth="2.8"
-              strokeDasharray="9 9"
-            />
-            {/* Checkered Start/Finish Line Strip */}
-            <g
-              data-testid="minimap-finish-line"
-              transform={`translate(${miniMapMeta.finishX.toFixed(1)}, ${miniMapMeta.finishY.toFixed(1)}) rotate(${miniMapMeta.finishAngleDeg.toFixed(1)})`}
-            >
-              <rect
-                x={-13}
-                y={-5.5}
-                width={26}
-                height={11}
-                rx={1.5}
-                fill="#0f172a"
-                stroke="#f8fafc"
-                strokeWidth={1.2}
-              />
-              {[0, 1].map((row) =>
-                [0, 1, 2, 3, 4, 5].map((col) => (
-                  <rect
-                    key={`${row}-${col}`}
-                    x={-12 + col * 4}
-                    y={-4.5 + row * 4.5}
-                    width={4}
-                    height={4.5}
-                    fill={(row + col) % 2 === 0 ? "#f8fafc" : "#0f172a"}
-                  />
-                ))
-              )}
-            </g>
-
-            {/* 4 Racers */}
-            {telemetry.standings.map((r) => {
-              const isHeavy = r.mass >= 200 || r.effectiveMass >= 9999;
-              const isFeather = r.mass <= 60;
-              const isHuman = Boolean(r.isPlayer || r.isRemoteHuman);
-              const radius = r.isPlayer ? 13.5 : isHeavy ? 12.0 : isFeather ? 8.8 : 10.2;
-              return (
-                <g key={r.racerId}>
-                  <circle
-                    cx={r.worldX}
-                    cy={-r.worldZ}
-                    r={radius}
-                    fill={r.color}
-                    stroke={
-                      r.isPlayer
-                        ? "#ffffff"
-                        : r.isRemoteHuman
-                        ? "#22d3ee"
-                        : "#0f172a"
-                    }
-                    strokeWidth={isHuman ? 4.2 : 2.5}
-                  />
-                  {isHuman && (
-                    <text
-                      x={r.worldX}
-                      y={-r.worldZ - radius - 5}
-                      textAnchor="middle"
-                      fill={r.isPlayer ? "#fde047" : "#67e8f9"}
-                      stroke="#020617"
-                      strokeWidth="3.2"
-                      paintOrder="stroke"
-                      fontSize="15"
-                      fontWeight="900"
-                    >
-                      {r.name.slice(0, 10)}
-                    </text>
-                  )}
-                </g>
-              );
-            })}
-          </svg>
+          <UnifiedTrackMap
+            trackDef={trackDef}
+            variant="RADAR"
+            testId="hud-minimap"
+            className="h-32 w-32 sm:h-40 sm:w-40 rounded-xl bg-slate-900/95 border border-white/10"
+            activeHazards={telemetry.activeHazards}
+            racers={telemetry.standings}
+          />
         </div>
 
         {/* Digital Speedometer + Terrain Surface + 3-Stage Drift Charge Meter */}
@@ -6674,254 +6924,8 @@ export const RaceGame: React.FC = () => {
         );
       })()}
 
-      {/* Dismissible Asymmetric Archetype & Balance Philosophy Modal */}
-      {showBalanceGuide && (
-        <div
-          data-testid="balance-guide-modal"
-          onClick={() => setShowBalanceGuide(false)}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 overflow-y-auto"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-4xl rounded-3xl border border-cyan-400/35 bg-slate-900/95 p-5 sm:p-6 text-white shadow-[0_0_50px_rgba(34,211,238,0.2)] max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-start justify-between gap-4 border-b border-white/10 pb-3.5">
-              <div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-cyan-400/40 bg-cyan-500/15 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-cyan-200">
-                  <span>ASYMMETRIC ARCHETYPE DESIGN PHILOSOPHY</span>
-                  <span>•</span>
-                  <span>TARGET: 25% WIN RATE EACH</span>
-                </div>
-                <h2 className="mt-1.5 text-lg sm:text-xl font-black tracking-tight text-white">
-                  Distinct Identities, Equal Full-Lap Pace
-                </h2>
-                <p className="mt-0.5 text-xs text-slate-300">
-                  Every character wins races in a completely different way—trading off{" "}
-                  <span className="font-bold text-amber-300">Cubic Mass (γ=3)</span>,{" "}
-                  <span className="font-bold text-cyan-300">Top Speed</span>,{" "}
-                  <span className="font-bold text-emerald-300">Launch Acceleration</span>,{" "}
-                  <span className="font-bold text-fuchsia-300">Cornering Grip</span>, and{" "}
-                  <span className="font-bold text-indigo-300">Mini-Turbo Boost</span> so their average lap times converge within milliseconds.
-                </p>
-              </div>
-              <button
-                type="button"
-                data-testid="close-balance-guide-btn"
-                onClick={() => setShowBalanceGuide(false)}
-                className="rounded-xl border border-white/20 bg-slate-800 px-3 py-1.5 text-xs font-black uppercase text-slate-200 hover:bg-slate-700 hover:text-white transition cursor-pointer shrink-0"
-              >
-                CLOSE ✕
-              </button>
-            </div>
-
-            {/* 4 Character Archetype Breakdown */}
-            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
-              {CHARACTER_ROSTER.map((char) => {
-                const stats = resolveRacerStats(char.id, char.defaultKartId);
-                const roleNotes: Record<
-                  string,
-                  { style: string; strength: string; tradeoff: string }
-                > = {
-                  rex_ironclad: {
-                    style: "Straightaway Momentum & Pack Enforcer",
-                    strength:
-                      "Highest Top Speed & 220 kg Juggernaut mass (<3% speed loss on bumps; knocks light karts wide in traffic).",
-                    tradeoff:
-                      "Slowest launch acceleration & shortest Mini-Turbo bonus (+2% spd); must protect momentum.",
-                  },
-                  aero_vance: {
-                    style: "Precision Racing-Line All-Rounder",
-                    strength:
-                      "Zero weaknesses—strong straightaway speed paired with crisp 80% drift grip and 120 kg stability.",
-                    tradeoff:
-                      "Out-muscled by Rex in head-on shoves and out-boosted by Nyx/Pip exiting tight hairpins.",
-                  },
-                  nyx_drift: {
-                    style: "Apex Chain-Drifter & Mini-Turbo Specialist",
-                    strength:
-                      "Highest Drift Grip (83%) and longest Mini-Turbo surge (+14% boost ceiling • 0.51s duration).",
-                    tradeoff:
-                      "Lower raw straightaway ceiling; relies on chaining Blue/Orange/Purple drift sparks out of corners.",
-                  },
-                  pip_spark: {
-                    style: "Explosive Hole-Shot & Recovery Sprinter",
-                    strength: `Fastest acceleration (${stats.acceleration} u/s²) & sharpest turn-in (${stats.handling} rad/s)—instantly recovers from grass or bumps.`,
-                    tradeoff:
-                      "50 kg Featherweight chassis gets bullied in heavy pack traffic; must use agility to slip around heavyweights.",
-                  },
-                };
-                const note = roleNotes[char.id] ?? {
-                  style: char.title,
-                  strength: char.bio,
-                  tradeoff: "",
-                };
-
-                return (
-                  <div
-                    key={char.id}
-                    className="rounded-2xl border border-white/10 bg-slate-950/75 p-3.5 flex flex-col justify-between"
-                  >
-                    <div>
-                      <div className="flex items-center justify-between gap-2">
-                        <span
-                          style={{ backgroundColor: char.colors.badge }}
-                          className="rounded-full px-2 py-0.5 text-[9px] font-black uppercase tracking-widest text-slate-950"
-                        >
-                          {char.archetypeClass.replace("_", " ")}
-                        </span>
-                        <span className="text-[11px] font-extrabold text-amber-300">
-                          {stats.baseMass} kg • {stats.topSpeed} u/s • +{Math.round(stats.miniTurboDurationBonus * 100)}% MT
-                        </span>
-                      </div>
-                      <div className="mt-1.5 flex items-baseline justify-between gap-2">
-                        <h3 className="text-sm font-black text-white">
-                          {char.name}
-                        </h3>
-                        <span className="text-[10px] font-bold text-cyan-300">
-                          {note.style}
-                        </span>
-                      </div>
-                      <p className="mt-1.5 text-[11px] text-emerald-200/95 leading-snug">
-                        <span className="font-black uppercase text-emerald-400">
-                          Win Condition:{" "}
-                        </span>
-                        {note.strength}
-                      </p>
-                      <p className="mt-1 text-[11px] text-rose-200/90 leading-snug">
-                        <span className="font-black uppercase text-rose-400">
-                          Counterplay:{" "}
-                        </span>
-                        {note.tradeoff}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            {/* 3 Race Phases + Juggernaut Law Summary */}
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-2.5 text-[11px]">
-              <div className="rounded-2xl border border-emerald-400/25 bg-emerald-950/25 p-3">
-                <div className="font-black uppercase text-emerald-300">
-                  1. Launch &amp; Hairpins
-                </div>
-                <p className="mt-1 text-slate-300 leading-snug">
-                  <span className="font-bold text-white">Pip Spark</span> &amp;{" "}
-                  <span className="font-bold text-white">Nyx Veloce</span> jump ahead off the starting line and slingshot out of tight corners using high acceleration and extended Mini-Turbo boosts.
-                </p>
-              </div>
-              <div className="rounded-2xl border border-cyan-400/25 bg-cyan-950/25 p-3">
-                <div className="font-black uppercase text-cyan-300">
-                  2. Straightaways &amp; Sweepers
-                </div>
-                <p className="mt-1 text-slate-300 leading-snug">
-                  <span className="font-bold text-white">Rex Ironclad</span> &amp;{" "}
-                  <span className="font-bold text-white">Aero Vance</span> reel the leaders back in on long straights and high-speed sweepers thanks to superior unboosted cruising speed.
-                </p>
-              </div>
-              <div className="rounded-2xl border border-amber-400/25 bg-amber-950/25 p-3">
-                <div className="font-black uppercase text-amber-300">
-                  3. The Juggernaut Law (γ=3)
-                </div>
-                <p className="mt-1 text-slate-300 leading-snug">
-                  When karts collide with a ≥40 kg mass gap, cubic mass dominance makes the heavier kart an{" "}
-                  <span className="font-bold text-amber-200">Unbudgeable Juggernaut</span> while lighter karts must use superior handling or grass-cut boosts to evade contact.
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Dismissible AI Self-Learning Technical Architecture Modal */}
-      {showAiArchitectureGuide && (
-        <div
-          data-testid="ai-architecture-guide-modal"
-          onClick={() => setShowAiArchitectureGuide(false)}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-md p-4 overflow-y-auto"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-4xl rounded-3xl border border-fuchsia-400/40 bg-slate-900/95 p-5 sm:p-6 text-white shadow-[0_0_50px_rgba(217,70,239,0.22)] max-h-[90vh] overflow-y-auto"
-          >
-            <div className="flex items-start justify-between gap-4 border-b border-white/10 pb-3.5">
-              <div>
-                <div className="inline-flex items-center gap-2 rounded-full border border-fuchsia-400/45 bg-fuchsia-500/15 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-fuchsia-200">
-                  <span>HYBRID PARAMETRIC + NEURO-EVOLUTIONARY ARCHITECTURE</span>
-                  <span>•</span>
-                  <span>(1+3) ELITIST ES</span>
-                </div>
-                <h2 className="mt-1.5 text-lg sm:text-xl font-black tracking-tight text-white">
-                  How the AI Self-Learning Brain Works Under the Hood
-                </h2>
-                <p className="mt-0.5 text-xs text-slate-300">
-                  Instead of a black-box neural network learning to steer from scratch, each AI racer runs a{" "}
-                  <span className="font-bold text-fuchsia-300">two-layer hybrid controller</span>: an analytical spline &amp; closed-loop drift PD controller paired with a{" "}
-                  <span className="font-bold text-cyan-300">tanh-activated Neural Residual Perceptron</span>, evolved across episodes via a{" "}
-                  <span className="font-bold text-emerald-300">(1+3) Elitist Evolution Strategy</span>.
-                </p>
-              </div>
-              <button
-                type="button"
-                data-testid="close-ai-architecture-guide-btn"
-                onClick={() => setShowAiArchitectureGuide(false)}
-                className="rounded-xl border border-white/20 bg-slate-800 px-3 py-1.5 text-xs font-black uppercase text-slate-200 hover:bg-slate-700 hover:text-white transition cursor-pointer shrink-0"
-              >
-                CLOSE ✕
-              </button>
-            </div>
-
-            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-              <div className="rounded-2xl border border-fuchsia-400/25 bg-slate-950/80 p-3.5">
-                <div className="text-[11px] font-black uppercase text-fuchsia-300">
-                  1. 23-Parameter Hybrid Policy Genome
-                </div>
-                <p className="mt-1.5 text-[11px] text-slate-300 leading-relaxed">
-                  Each genome (<code className="text-fuchsia-200">AiPolicyGenome</code>) encodes{" "}
-                  <span className="font-bold text-white">15 continuous vehicle-dynamics &amp; drift-PD weights</span>{" "}
-                  (look-ahead horizons on straights/curves/drifts, inside apex cut ratios, hop-drift entry threshold, Mini-Turbo charge hold times, and lateral slip damping) plus an{" "}
-                  <span className="font-bold text-cyan-300">8-weight tanh Neural Residual Perceptron</span>{" "}
-                  (<code className="text-cyan-200">Δu = 0.22 · tanh(∑ wᵢ · sᵢ)</code>) evaluated at 60Hz from 8 normalized track &amp; slip sensors.
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-emerald-400/25 bg-slate-950/80 p-3.5">
-                <div className="text-[11px] font-black uppercase text-emerald-300">
-                  2. Multi-Objective 60Hz Telemetry Fitness (0–100)
-                </div>
-                <p className="mt-1.5 text-[11px] text-slate-300 leading-relaxed">
-                  Every tick records surface state, lateral offset, drift conversions, and speed ratio normalized by the kart&apos;s own top speed (<code className="text-emerald-200">v / v_top</code>). Fitness rewards{" "}
-                  <span className="font-bold text-white">clean asphalt/curb adherence, boosted off-road shortcut cuts, and Tier 1/2/3 Mini-Turbo releases</span>, while penalizing unboosted grass drag (<code className="text-rose-300">-1.15×</code>), cross-track ping-pongs (<code className="text-rose-300">-2.8</code>), and wall hits (<code className="text-rose-300">-3.5</code>).
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-cyan-400/25 bg-slate-950/80 p-3.5">
-                <div className="text-[11px] font-black uppercase text-cyan-300">
-                  3. (1+3) Elitist Evolution &amp; Simulated Annealing
-                </div>
-                <p className="mt-1.5 text-[11px] text-slate-300 leading-relaxed">
-                  After each 3-lap episode, the top-scoring genome (with a fastest-lap tiebreaker at 100/100 fitness) is promoted to{" "}
-                  <span className="font-bold text-white">All-Time Champion</span>. The next generation spawns 4 parallel slots:{" "}
-                  <span className="font-bold text-emerald-300">Slot 0 (Unmutated Elitist Champion)</span>,{" "}
-                  <span className="font-bold text-cyan-300">Slot 1 (Fine-Tuned Gaussian Mutant)</span>,{" "}
-                  <span className="font-bold text-amber-300">Slot 2 (Champion × Runner-Up Genetic Crossover)</span>, and{" "}
-                  <span className="font-bold text-fuchsia-300">Slot 3 (Wide Explorer)</span>, with mutation scale annealing from <code className="text-cyan-200">0.68</code> down to <code className="text-cyan-200">0.22</code>.
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-amber-400/25 bg-slate-950/80 p-3.5">
-                <div className="text-[11px] font-black uppercase text-amber-300">
-                  4. Orthogonal Latin-Square De-Biasing (16-Race Cycle)
-                </div>
-                <p className="mt-1.5 text-[11px] text-slate-300 leading-relaxed">
-                  To benchmark character balance without AI-brain or starting-grid bias, starting grid positions rotate every race (<code className="text-amber-200">episodes % 4</code>) while AI genome slots rotate orthogonally every 4-race block (<code className="text-amber-200">(slot + ⌊episodes/4⌋) % 4</code>). Every 16 episodes, all 4 characters drive every AI genome from every starting position.
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
+      {balanceGuideModal}
+      {aiArchitectureGuideModal}
     </div>
   );
 };

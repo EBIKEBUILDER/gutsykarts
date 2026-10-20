@@ -6,11 +6,11 @@ import {
   ResolvedRacerStats,
 } from "@/src/types/game";
 
-export const ROSTER_BALANCE_PASS = "Pass #19";
+export const ROSTER_BALANCE_PASS = "Pass #20";
 export const BUILD_INFO_STAMP = `Build ${ROSTER_BALANCE_PASS} (${
-  process.env.NEXT_PUBLIC_BUILD_SHA || "5207708"
+  process.env.NEXT_PUBLIC_BUILD_SHA || "c186d26"
 }) • Built ${
-  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 19, 2026, 12:02 PM CDT"
+  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 20, 2026, 06:01 AM CDT"
 }`;
 
 export const KART_CHASSIS_CATALOG: Record<string, KartChassisConfig> = {
@@ -151,9 +151,9 @@ export const CHARACTER_ROSTER: CharacterProfile[] = [
     archetypeClass: "SUPER_HEAVY",
     bio: "Neighborhood scrapyard titan. At 220 kg, Rex shrugs off lightweight rammers like mosquitoes and dominates straightaways.",
     mass: 220,
-    topSpeed: 47.33,
-    offRoadTopSpeed: 26.03,
-    acceleration: 23.52,
+    topSpeed: 47.28,
+    offRoadTopSpeed: 26.0,
+    acceleration: 23.42,
     handling: 1.77,
     driftGrip: 0.76,
     miniTurboDurationBonus: 0.02,

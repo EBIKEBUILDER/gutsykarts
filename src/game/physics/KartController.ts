@@ -2248,44 +2248,38 @@ export class KartController implements CollidableKartBody {
       this.distToCenter <= localCurbWidth ||
       preShortcut.onPavedShortcut ||
       preShortcut.onBoostShortcut;
-    const rayOrigin = new Vector3(
-      this.position.x,
-      this.position.y + 4.5,
-      this.position.z
-    );
-    const downwardRay = new Ray(
-      rayOrigin,
-      new Vector3(0, -1, 0),
-      PHYSICS_CONSTANTS.RAY_LENGTH
-    );
-    const pickInfo = this.scene.pickWithRay(
-      downwardRay,
-      (mesh) =>
-        mesh === this.track.pavementMesh ||
-        mesh === this.track.leftCurbMesh ||
-        mesh === this.track.rightCurbMesh ||
-        (!isOnRoadOrCurb && mesh === this.track.groundMesh)
-    );
-
     let targetGroundY = this.closestTrack.roadY;
     let surfaceNormal = this.closestTrack.normal.clone();
 
-    if (pickInfo?.hit && pickInfo.pickedPoint) {
-      if (!isOnRoadOrCurb) {
+    if (!isOnRoadOrCurb) {
+      const rayOrigin = new Vector3(
+        this.position.x,
+        this.position.y + 4.5,
+        this.position.z
+      );
+      const downwardRay = new Ray(
+        rayOrigin,
+        new Vector3(0, -1, 0),
+        PHYSICS_CONSTANTS.RAY_LENGTH
+      );
+      const pickInfo = this.scene.pickWithRay(
+        downwardRay,
+        (mesh) => mesh === this.track.groundMesh
+      );
+
+      if (pickInfo?.hit && pickInfo.pickedPoint) {
         targetGroundY = Math.max(
           this.closestTrack.roadY - 3.5,
           pickInfo.pickedPoint.y
         );
-      }
-      const pickedNormal = pickInfo.getNormal(true);
-      if (pickedNormal) {
-        if (pickedNormal.y < 0) {
-          pickedNormal.scaleInPlace(-1);
-        }
-        if (pickedNormal.y > 0.35) {
-          surfaceNormal = isOnRoadOrCurb
-            ? Vector3.Lerp(this.closestTrack.normal, pickedNormal, 0.25).normalize()
-            : pickedNormal;
+        const pickedNormal = pickInfo.getNormal(true);
+        if (pickedNormal) {
+          if (pickedNormal.y < 0) {
+            pickedNormal.scaleInPlace(-1);
+          }
+          if (pickedNormal.y > 0.35) {
+            surfaceNormal = pickedNormal;
+          }
         }
       }
     }
@@ -3064,7 +3058,18 @@ export class KartController implements CollidableKartBody {
           ? Math.max(0.95, input.throttle)
           : input.throttle;
 
-      if (effectiveThrottle > 0) {
+      // Normal-Turning Speed Bleed:
+      // Executing sharp turns without drifting slightly trims the non-drift ceiling (~2.5% at full lock), whereas DRIFT_ACTIVE preserves 100% speed!
+      const nonDriftTurnTrim =
+        this.grounded &&
+        this.driftState === "NONE" &&
+        !isPowerBoosting &&
+        Math.abs(this.smoothedSteer) > 0.35
+          ? 1.0 - (Math.abs(this.smoothedSteer) - 0.35) * 0.038
+          : 1.0;
+      const targetCruiseSpeed = effectiveMaxSpeed * nonDriftTurnTrim;
+
+      if (effectiveThrottle > 0 && this.forwardSpeed < targetCruiseSpeed) {
         // Non-linear acceleration curve: high initial punch (+55% off-the-line), tapering near top speed
         const lowSpeedProgress = Math.min(
           1,
@@ -3078,13 +3083,16 @@ export class KartController implements CollidableKartBody {
           : this.driftState === "DRIFT_ACTIVE" && this.grounded
           ? PHYSICS_CONSTANTS.DRIFT_ACTIVE_ACCEL_MULT
           : 1.0;
-        this.forwardSpeed +=
-          this.stats.acceleration *
-          aiAccelScale *
-          launchTorque *
-          accelBoost *
-          effectiveThrottle *
-          dt;
+        this.forwardSpeed = Math.min(
+          targetCruiseSpeed,
+          this.forwardSpeed +
+            this.stats.acceleration *
+              aiAccelScale *
+              launchTorque *
+              accelBoost *
+              effectiveThrottle *
+              dt
+        );
       }
 
       // While a drift booster / power boost is active, maintain full boosted speed right through off-road grass and dirt!
@@ -3108,39 +3116,25 @@ export class KartController implements CollidableKartBody {
         this.forwardSpeed *= Math.max(0, 1 - 1.15 * dt);
       }
 
-      // Normal-Turning Speed Bleed (turnSpeedDrag = 0.985 at 60Hz):
-      // Executing sharp turns without drifting induces a small speed bleed, whereas DRIFT_ACTIVE preserves 100% speed!
-      if (
-        this.grounded &&
-        this.driftState === "NONE" &&
-        !isPowerBoosting &&
-        Math.abs(this.smoothedSteer) > 0.35 &&
-        this.forwardSpeed > this.stats.topSpeed * 0.65
-      ) {
-        const turnDragPerFrame =
-          1 -
-          (1 - PHYSICS_CONSTANTS.NORMAL_TURN_SPEED_DRAG_60HZ) *
-            Math.abs(this.smoothedSteer) *
-            0.4;
-        this.forwardSpeed *= Math.pow(turnDragPerFrame, dt * 60);
-      }
-
       // Off-Road Linear Damping (lambda_drag = 4.5 s^-1) rapidly bleeds excess speed down to 55% cap while wheels are on off-road terrain
       if (
         this.grounded &&
         this.surface === "OFFROAD" &&
         !hasOffRoadImmunity &&
-        this.forwardSpeed > effectiveMaxSpeed
+        this.forwardSpeed > targetCruiseSpeed
       ) {
-        const excess = this.forwardSpeed - effectiveMaxSpeed;
+        const excess = this.forwardSpeed - targetCruiseSpeed;
         this.forwardSpeed -=
           excess * Math.min(1, PHYSICS_CONSTANTS.OFFROAD_LINEAR_DRAG * dt);
       }
 
-      // Clamp to effective max speed & reverse limit
-      if (this.forwardSpeed > effectiveMaxSpeed) {
+      // Smoothly decay any leftover post-boost overspeed down to targetCruiseSpeed
+      if (this.forwardSpeed > targetCruiseSpeed) {
         this.forwardSpeed +=
-          (effectiveMaxSpeed - this.forwardSpeed) * Math.min(1, dt * 5.5);
+          (targetCruiseSpeed - this.forwardSpeed) * (1 - Math.exp(-5.5 * dt));
+        if (this.forwardSpeed - targetCruiseSpeed < 0.02) {
+          this.forwardSpeed = targetCruiseSpeed;
+        }
       }
       const maxReverse = -this.stats.topSpeed * 0.35;
       if (this.forwardSpeed < maxReverse) {

@@ -34,6 +34,10 @@ import {
 } from "@/src/game/world/TrackBuilder";
 import { globalAiBrain } from "@/src/game/ai/AiBrainTrainer";
 import {
+  computeUnifiedMapGeometry,
+  UnifiedTrackMapLayers,
+} from "@/src/components/UnifiedTrackMap";
+import {
   Activity,
   ArrowLeft,
   ArrowUpDown,
@@ -2204,6 +2208,11 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
   }, []);
 
   // Compute live Catmull-Rom spline & Frenet frames whenever controlPoints, roadHalfWidth, trackMasks, or terrainMods change
+  const unifiedMapGeo = useMemo(
+    () => computeUnifiedMapGeometry(trackDef),
+    [trackDef]
+  );
+
   const splineData = useMemo(
     () =>
       computeTrackSplineSamples(
@@ -2211,13 +2220,13 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
         28,
         trackDef.terrainMods ?? [],
         trackDef.roadHalfWidth,
-        trackDef.trackMasks ?? []
+        unifiedMapGeo.effectiveMasks
       ),
     [
       trackDef.controlPoints,
       trackDef.terrainMods,
       trackDef.roadHalfWidth,
-      trackDef.trackMasks,
+      unifiedMapGeo.effectiveMasks,
     ]
   );
 
@@ -4620,426 +4629,84 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                   fill="url(#editorGrid)"
                 />
 
-                {/* Sculpted Terrain Hill / Valley Contour Rings */}
-                {(trackDef.terrainMods ?? []).map((mod) => (
-                  <circle
-                    key={mod.id}
-                    cx={mod.x}
-                    cy={-mod.z}
-                    r={mod.radius}
-                    fill={
-                      mod.deltaY >= 0
-                        ? "rgba(52, 211, 153, 0.16)"
-                        : "rgba(251, 191, 36, 0.16)"
+                <UnifiedTrackMapLayers
+                  trackDef={trackDef}
+                  geometry={unifiedMapGeo}
+                  variant="EDITOR"
+                  showScenery={true}
+                  showWallBoundary={true}
+                  showItemBoxes={true}
+                  showObstacles={true}
+                  showBoostPads={true}
+                  aiTraces={
+                    showAiTraces
+                      ? recordedAiTraces.map((rt) => ({
+                          racerId: rt.racerId,
+                          racerName: rt.racerName,
+                          color: rt.color,
+                          pathSamples: rt.pathSamples,
+                        }))
+                      : undefined
+                  }
+                  traceColorMode={traceColorMode}
+                  onClickMask={(mask, e) => {
+                    if (activeTool.kind === "ERASER") {
+                      e.stopPropagation();
+                      commitWorkingEdit(
+                        syncTracksideSceneryAndClearRoad({
+                          ...trackDef,
+                          trackMasks: unifiedMapGeo.effectiveMasks.filter(
+                            (m) => m.id !== mask.id
+                          ),
+                        })
+                      );
                     }
-                    stroke={mod.deltaY >= 0 ? "#34d399" : "#fbbf24"}
-                    strokeWidth={1.2}
-                    strokeDasharray="6 4"
-                  />
-                ))}
-
-                {/* 1. Outer Grass/Dirt Runoff Perimeter Zone */}
-                <path
-                  d={svgPathString}
-                  fill="none"
-                  stroke="#3f2e1e"
-                  strokeWidth={(trackDef.roadHalfWidth + 12.5) * 2}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  opacity={0.55}
+                  }}
+                  onClickBoostPad={(pad, e) => {
+                    if (activeTool.kind === "ERASER") {
+                      e.stopPropagation();
+                      commitWorkingEdit({
+                        ...trackDef,
+                        boostPads: trackDef.boostPads.filter(
+                          (b) => b.id !== pad.id
+                        ),
+                      });
+                    }
+                  }}
+                  onClickItemBoxRow={(row, e) => {
+                    if (activeTool.kind === "ERASER") {
+                      e.stopPropagation();
+                      commitWorkingEdit({
+                        ...trackDef,
+                        itemBoxRows: trackDef.itemBoxRows.filter(
+                          (r) => r.id !== row.id
+                        ),
+                      });
+                    }
+                  }}
+                  onClickObstacle={(obs, e) => {
+                    if (activeTool.kind === "ERASER") {
+                      e.stopPropagation();
+                      commitWorkingEdit({
+                        ...trackDef,
+                        obstacles: trackDef.obstacles.filter(
+                          (o) => o.id !== obs.id
+                        ),
+                      });
+                    }
+                  }}
+                  onClickSceneryProp={(prop, e) => {
+                    if (activeTool.kind === "ERASER") {
+                      e.stopPropagation();
+                      commitWorkingEdit({
+                        ...trackDef,
+                        sceneryProps: trackDef.sceneryProps.filter(
+                          (p) => p.id !== prop.id
+                        ),
+                      });
+                    }
+                  }}
                 />
-
-                {/* 2 & 3. Rumble Strip Curb Outline & Asphalt Road Ribbon (supports per-node variable width & split-lane flaring) */}
-                {trackDef.controlPoints.some(
-                  (pt) =>
-                    pt.widthScale !== undefined &&
-                    Math.abs(pt.widthScale - 1.0) > 0.01
-                ) || (trackDef.trackMasks?.length ?? 0) > 0 ? (
-                  <g className="pointer-events-none">
-                    {splineData.samples.map((s, idx) => {
-                      if (idx % 2 !== 0) return null;
-                      const next =
-                        splineData.samples[
-                          (idx + 2) % splineData.samples.length
-                        ];
-                      const halfW =
-                        ((s.localRoadHalfWidth || trackDef.roadHalfWidth) +
-                          (next.localRoadHalfWidth || trackDef.roadHalfWidth)) *
-                        0.5;
-                      return (
-                        <line
-                          key={`curb_seg_${idx}`}
-                          x1={s.position.x}
-                          y1={-s.position.z}
-                          x2={next.position.x}
-                          y2={-next.position.z}
-                          stroke="#ef4444"
-                          strokeWidth={(halfW + 1.6) * 2}
-                          strokeLinecap="round"
-                          opacity={0.85}
-                        />
-                      );
-                    })}
-                    {splineData.samples.map((s, idx) => {
-                      if (idx % 2 !== 0) return null;
-                      const next =
-                        splineData.samples[
-                          (idx + 2) % splineData.samples.length
-                        ];
-                      const halfW =
-                        ((s.localRoadHalfWidth || trackDef.roadHalfWidth) +
-                          (next.localRoadHalfWidth || trackDef.roadHalfWidth)) *
-                        0.5;
-                      return (
-                        <line
-                          key={`road_seg_${idx}`}
-                          x1={s.position.x}
-                          y1={-s.position.z}
-                          x2={next.position.x}
-                          y2={-next.position.z}
-                          stroke="#1e293b"
-                          strokeWidth={halfW * 2}
-                          strokeLinecap="round"
-                        />
-                      );
-                    })}
-                  </g>
-                ) : (
-                  <>
-                    <path
-                      d={svgPathString}
-                      fill="none"
-                      stroke="#ef4444"
-                      strokeWidth={(trackDef.roadHalfWidth + 1.6) * 2}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      opacity={0.85}
-                    />
-                    <path
-                      d={svgPathString}
-                      fill="none"
-                      stroke="#1e293b"
-                      strokeWidth={trackDef.roadHalfWidth * 2}
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </>
-                )}
-
-                {/* 4. Dashed Yellow Centerline */}
-                <path
-                  d={svgPathString}
-                  fill="none"
-                  stroke="#facc15"
-                  strokeWidth={1.6}
-                  strokeDasharray="10 10"
-                  opacity={0.85}
-                />
-
-                {/* 4a. Track Masks: Road Holes / Pit Cutouts & Parallel Split-Lane Medians */}
-                {(trackDef.trackMasks ?? []).map((mask) => {
-                  const lat =
-                    mask.type === "SPLIT_MEDIAN" ? 0 : mask.lateral;
-                  const sample = splineData.getPointAtNormalizedT(
-                    mask.normT,
-                    lat
-                  );
-                  const angleDeg =
-                    (Math.atan2(sample.tangent.x, sample.tangent.z) * 180) /
-                    Math.PI;
-                  return (
-                    <g
-                      key={mask.id}
-                      transform={`translate(${sample.position.x.toFixed(1)}, ${(-sample.position.z).toFixed(1)}) rotate(${angleDeg.toFixed(1)})`}
-                      onClick={(e) => {
-                        if (activeTool.kind === "ERASER") {
-                          e.stopPropagation();
-                          commitWorkingEdit(
-                            syncTracksideSceneryAndClearRoad({
-                              ...trackDef,
-                              trackMasks: (trackDef.trackMasks ?? []).filter(
-                                (m) => m.id !== mask.id
-                              ),
-                            })
-                          );
-                        }
-                      }}
-                    >
-                      {mask.type === "ROAD_HOLE" ? (
-                        <ellipse
-                          cx={0}
-                          cy={0}
-                          rx={mask.width * 0.5}
-                          ry={mask.length * 0.5}
-                          fill="#05070b"
-                          stroke="#f43f5e"
-                          strokeWidth={1.8}
-                          strokeDasharray="3 2"
-                        />
-                      ) : mask.type === "BOOST_SHORTCUT" ? (
-                        <rect
-                          x={-mask.width * 0.5}
-                          y={-mask.length * 0.5}
-                          width={mask.width}
-                          height={mask.length}
-                          rx={Math.min(mask.width * 0.45, 5)}
-                          fill="#b45309"
-                          fillOpacity={0.75}
-                          stroke="#f59e0b"
-                          strokeWidth={1.8}
-                          strokeDasharray="4 2"
-                        />
-                      ) : mask.type === "PAVED_SHORTCUT" ? (
-                        <rect
-                          x={-mask.width * 0.5}
-                          y={-mask.length * 0.5}
-                          width={mask.width}
-                          height={mask.length}
-                          rx={Math.min(mask.width * 0.45, 5)}
-                          fill="#0f172a"
-                          fillOpacity={0.85}
-                          stroke="#06b6d4"
-                          strokeWidth={1.8}
-                        />
-                      ) : (
-                        <rect
-                          x={-mask.width * 0.5}
-                          y={-mask.length * 0.5}
-                          width={mask.width}
-                          height={mask.length}
-                          rx={Math.min(mask.width * 0.45, 5)}
-                          fill="#15803d"
-                          stroke="#f43f5e"
-                          strokeWidth={1.8}
-                        />
-                      )}
-                    </g>
-                  );
-                })}
-
-                {/* 4b. Recorded AI Racing Path Traces & Off-Road Overshoot Hotspots */}
-                {showAiTraces &&
-                  recordedAiTraces.map((racerTrace) => (
-                    <g
-                      key={`ai_trace_${racerTrace.racerId}`}
-                      className="pointer-events-none"
-                    >
-                      {racerTrace.pathSamples.map((s, idx) => {
-                        if (idx === 0) return null;
-                        const prev = racerTrace.pathSamples[idx - 1];
-                        const distSq =
-                          (s.x - prev.x) * (s.x - prev.x) +
-                          (s.z - prev.z) * (s.z - prev.z);
-                        if (distSq > 1600) return null;
-                        const isUnboostedOffRoad =
-                          s.surface === "OFFROAD" &&
-                          !s.boosting &&
-                          !s.combatDisrupted;
-                        const strokeColor = getAiTraceSampleColors(
-                          s,
-                          traceColorMode
-                        ).hex;
-                        return (
-                          <React.Fragment key={idx}>
-                            <line
-                              x1={prev.x}
-                              y1={-prev.z}
-                              x2={s.x}
-                              y2={-s.z}
-                              stroke={strokeColor}
-                              strokeWidth={isUnboostedOffRoad ? 2.8 : 1.9}
-                              strokeOpacity={0.92}
-                              strokeLinecap="round"
-                            />
-                            {isUnboostedOffRoad && idx % 2 === 0 && (
-                              <circle
-                                cx={s.x}
-                                cy={-s.z}
-                                r={2.2}
-                                fill="#f43f5e"
-                                stroke="#ffffff"
-                                strokeWidth={0.6}
-                              />
-                            )}
-                          </React.Fragment>
-                        );
-                      })}
-                    </g>
-                  ))}
-
-                {/* 5. Start / Finish Line Banner */}
-                {splineData.samples.length > 0 && (() => {
-                  const s0 = splineData.samples[0];
-                  const halfW0 = s0.localRoadHalfWidth || trackDef.roadHalfWidth;
-                  const p1 = s0.position.subtract(
-                    s0.binormal.scale(halfW0)
-                  );
-                  const p2 = s0.position.add(
-                    s0.binormal.scale(halfW0)
-                  );
-                  return (
-                    <line
-                      x1={p1.x}
-                      y1={-p1.z}
-                      x2={p2.x}
-                      y2={-p2.z}
-                      stroke="#ffffff"
-                      strokeWidth={4.5}
-                      strokeDasharray="4 4"
-                    />
-                  );
-                })()}
-
-                {/* 6. Placed Scenery Prefabs */}
-                {trackDef.sceneryProps.map((prop) => {
-                  const meta =
-                    SCENERY_LIBRARY.find((s) => s.type === prop.type) ??
-                    SCENERY_LIBRARY[0];
-                  const r =
-                    prop.type === "GRANDSTAND"
-                      ? 9.0
-                      : prop.type === "SUBURBAN_HOUSE"
-                      ? 6.0
-                      : prop.type === "OAK_TREE"
-                      ? 4.0 * prop.scale
-                      : prop.type === "PINE_TREE"
-                      ? 3.4 * prop.scale
-                      : 2.5 * prop.scale;
-                  return (
-                    <g
-                      key={prop.id}
-                      transform={`translate(${prop.x}, ${-prop.z})`}
-                      onClick={(e) => {
-                        if (activeTool.kind === "ERASER") {
-                          e.stopPropagation();
-                          commitWorkingEdit({
-                            ...trackDef,
-                            sceneryProps: trackDef.sceneryProps.filter(
-                              (p) => p.id !== prop.id
-                            ),
-                          });
-                        }
-                      }}
-                    >
-                      <circle
-                        cx={0}
-                        cy={0}
-                        r={r}
-                        fill={meta.color}
-                        stroke="#052e16"
-                        strokeWidth={1}
-                      />
-                    </g>
-                  );
-                })}
-
-                {/* 7. Speed Boost Pads */}
-                {trackDef.boostPads.map((pad) => {
-                  const sample = splineData.getPointAtNormalizedT(
-                    pad.normT,
-                    pad.lateral
-                  );
-                  const angleDeg =
-                    (Math.atan2(sample.tangent.x, sample.tangent.z) * 180) /
-                    Math.PI;
-                  return (
-                    <g
-                      key={pad.id}
-                      transform={`translate(${sample.position.x.toFixed(1)}, ${(-sample.position.z).toFixed(1)}) rotate(${angleDeg.toFixed(1)})`}
-                      onClick={(e) => {
-                        if (activeTool.kind === "ERASER") {
-                          e.stopPropagation();
-                          commitWorkingEdit({
-                            ...trackDef,
-                            boostPads: trackDef.boostPads.filter(
-                              (b) => b.id !== pad.id
-                            ),
-                          });
-                        }
-                      }}
-                    >
-                      <rect
-                        x={-2.6}
-                        y={-3.6}
-                        width={5.2}
-                        height={7.2}
-                        rx={1}
-                        fill="#18181b"
-                        stroke="#facc15"
-                        strokeWidth={1.2}
-                      />
-                    </g>
-                  );
-                })}
-
-                {/* 8. Item Box Rows */}
-                {trackDef.itemBoxRows.map((row) => {
-                  const offsets = [-8.4, -2.8, 2.8, 8.4];
-                  return (
-                    <g
-                      key={row.id}
-                      onClick={(e) => {
-                        if (activeTool.kind === "ERASER") {
-                          e.stopPropagation();
-                          commitWorkingEdit({
-                            ...trackDef,
-                            itemBoxRows: trackDef.itemBoxRows.filter(
-                              (r) => r.id !== row.id
-                            ),
-                          });
-                        }
-                      }}
-                    >
-                      {offsets.map((lat, idx) => {
-                        const pt = splineData.getPointAtNormalizedT(
-                          row.normT,
-                          lat
-                        ).position;
-                        return (
-                          <rect
-                            key={idx}
-                            x={pt.x - 1.5}
-                            y={-pt.z - 1.5}
-                            width={3}
-                            height={3}
-                            fill="#22d3ee"
-                            stroke="#facc15"
-                            strokeWidth={1}
-                          />
-                        );
-                      })}
-                    </g>
-                  );
-                })}
-
-                {/* 9. Obstacles */}
-                {trackDef.obstacles.map((obs) => {
-                  const meta =
-                    OBSTACLE_LIBRARY.find((o) => o.type === obs.type) ??
-                    OBSTACLE_LIBRARY[0];
-                  return (
-                    <circle
-                      key={obs.id}
-                      cx={obs.x}
-                      cy={-obs.z}
-                      r={3.5 * (obs.scale || 1)}
-                      fill={meta.color}
-                      stroke="#ffffff"
-                      strokeWidth={1.2}
-                      onClick={(e) => {
-                        if (activeTool.kind === "ERASER") {
-                          e.stopPropagation();
-                          commitWorkingEdit({
-                            ...trackDef,
-                            obstacles: trackDef.obstacles.filter(
-                              (o) => o.id !== obs.id
-                            ),
-                          });
-                        }
-                      }}
-                    />
-                  );
-                })}
 
                 {/* 10. Draggable Catmull-Rom Spline Control Points (P0..Pn) */}
                 {trackDef.controlPoints.map((pt, idx) => {

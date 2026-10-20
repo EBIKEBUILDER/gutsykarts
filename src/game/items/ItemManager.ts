@@ -799,6 +799,45 @@ export class ItemManager {
     return traps;
   }
 
+  public getActiveGroundTrapTelemetry(): Array<{
+    id: string;
+    type: "CRYO_MINE" | "GLITCH_PRISM";
+    x: number;
+    z: number;
+  }> {
+    const out: Array<{
+      id: string;
+      type: "CRYO_MINE" | "GLITCH_PRISM";
+      x: number;
+      z: number;
+    }> = [];
+    for (let i = 0; i < this.mines.length; i++) {
+      const m = this.mines[i];
+      if (m.lifeTimer > 0) {
+        const pos = m.lobTargetPos ?? m.position;
+        out.push({
+          id: m.id,
+          type: "CRYO_MINE",
+          x: Number(pos.x.toFixed(1)),
+          z: Number(pos.z.toFixed(1)),
+        });
+      }
+    }
+    for (let i = 0; i < this.glitchPrisms.length; i++) {
+      const gp = this.glitchPrisms[i];
+      if (gp.lifeTimer > 0) {
+        const pos = gp.lobTargetPos ?? gp.basePosition;
+        out.push({
+          id: gp.id,
+          type: "GLITCH_PRISM",
+          x: Number(pos.x.toFixed(1)),
+          z: Number(pos.z.toFixed(1)),
+        });
+      }
+    }
+    return out;
+  }
+
   public exportBoxRespawnTimers(): Record<string, number> {
     const map: Record<string, number> = {};
     for (const box of this.itemBoxes) {
@@ -1189,7 +1228,7 @@ export class ItemManager {
         continue;
       }
       target.applyEmpShockwaveDebuff();
-      // Spawn a localized lightning ring over each zapped target
+      // Spawn a localized EMP shockwave arc ring over each zapped target
       const strikeRing = MeshBuilder.CreateTorus(
         `empStrike_${this.nextEntityId++}`,
         { diameter: 1.4, thickness: 0.22, tessellation: 16 },
