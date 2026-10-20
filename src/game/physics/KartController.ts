@@ -3058,16 +3058,42 @@ export class KartController implements CollidableKartBody {
           ? Math.max(0.95, input.throttle)
           : input.throttle;
 
+      const accelBoost = isPowerBoosting
+        ? 1.65
+        : this.spinOutMercyTimer > 0
+        ? 1.35
+        : this.driftState === "DRIFT_ACTIVE" && this.grounded
+        ? PHYSICS_CONSTANTS.DRIFT_ACTIVE_ACCEL_MULT
+        : 1.0;
+
+      // Analytical dt-independent steady-state equilibrium offset matching the 60Hz accel vs. 5.5s^-1 top-speed damper balance:
+      // Preserves each archetype's exact Pass #19 cruising speed (v_eq = effectiveMaxSpeed + accel * 0.16515) with zero frame-time oscillation.
+      const isUnboostedOffRoad =
+        this.grounded && this.surface === "OFFROAD" && !hasOffRoadImmunity;
+      const steadyBonusFactor = isUnboostedOffRoad
+        ? 0.0825
+        : (1 - 5.5 / 60) / 5.5;
+      const steadyStateAccelBonus =
+        effectiveThrottle > 0
+          ? this.stats.acceleration *
+            aiAccelScale *
+            accelBoost *
+            effectiveThrottle *
+            steadyBonusFactor
+          : 0;
+
       // Normal-Turning Speed Bleed:
-      // Executing sharp turns without drifting slightly trims the non-drift ceiling (~2.5% at full lock), whereas DRIFT_ACTIVE preserves 100% speed!
+      // Executing sharp turns without drifting slightly trims the non-drift equilibrium ceiling, whereas DRIFT_ACTIVE preserves 100% speed!
+      const absSteer = Math.abs(this.smoothedSteer);
       const nonDriftTurnTrim =
         this.grounded &&
         this.driftState === "NONE" &&
         !isPowerBoosting &&
-        Math.abs(this.smoothedSteer) > 0.35
-          ? 1.0 - (Math.abs(this.smoothedSteer) - 0.35) * 0.038
+        absSteer > 0.35
+          ? 1.0 - (0.36 * absSteer) / (5.5 + 0.36 * absSteer)
           : 1.0;
-      const targetCruiseSpeed = effectiveMaxSpeed * nonDriftTurnTrim;
+      const targetCruiseSpeed =
+        (effectiveMaxSpeed + steadyStateAccelBonus) * nonDriftTurnTrim;
 
       if (effectiveThrottle > 0 && this.forwardSpeed < targetCruiseSpeed) {
         // Non-linear acceleration curve: high initial punch (+55% off-the-line), tapering near top speed
@@ -3076,13 +3102,6 @@ export class KartController implements CollidableKartBody {
           Math.max(0, this.forwardSpeed) / (this.stats.topSpeed * 0.65)
         );
         const launchTorque = 1.0 + 0.55 * (1.0 - lowSpeedProgress);
-        const accelBoost = isPowerBoosting
-          ? 1.65
-          : this.spinOutMercyTimer > 0
-          ? 1.35
-          : this.driftState === "DRIFT_ACTIVE" && this.grounded
-          ? PHYSICS_CONSTANTS.DRIFT_ACTIVE_ACCEL_MULT
-          : 1.0;
         this.forwardSpeed = Math.min(
           targetCruiseSpeed,
           this.forwardSpeed +
@@ -3117,12 +3136,7 @@ export class KartController implements CollidableKartBody {
       }
 
       // Off-Road Linear Damping (lambda_drag = 4.5 s^-1) rapidly bleeds excess speed down to 55% cap while wheels are on off-road terrain
-      if (
-        this.grounded &&
-        this.surface === "OFFROAD" &&
-        !hasOffRoadImmunity &&
-        this.forwardSpeed > targetCruiseSpeed
-      ) {
+      if (isUnboostedOffRoad && this.forwardSpeed > targetCruiseSpeed) {
         const excess = this.forwardSpeed - targetCruiseSpeed;
         this.forwardSpeed -=
           excess * Math.min(1, PHYSICS_CONSTANTS.OFFROAD_LINEAR_DRAG * dt);

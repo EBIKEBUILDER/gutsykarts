@@ -1122,12 +1122,14 @@ export class AiBrainManager {
       const raw = window.localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       const parsed = JSON.parse(raw) as Partial<PersistedBrainState>;
+      const isSameBalancePass =
+        parsed.rosterBalancePass === ROSTER_BALANCE_PASS;
       const storedGen =
         typeof parsed.generation === "number" ? parsed.generation : 0;
-      if (storedGen >= 1) {
+      if (isSameBalancePass && storedGen >= 1) {
         this.generation = Math.max(this.generation, storedGen);
       }
-      if (typeof parsed.episodesCompleted === "number") {
+      if (isSameBalancePass && typeof parsed.episodesCompleted === "number") {
         this.episodesCompleted = Math.max(
           this.episodesCompleted,
           parsed.episodesCompleted
@@ -1140,13 +1142,15 @@ export class AiBrainManager {
         this.autoBalanceRosterEnabled = parsed.autoBalanceRosterEnabled;
       }
       if (
-        parsed.trainingTrackMode === "ROTATE_CUP" ||
-        parsed.trainingTrackMode === "ALL_CUPS" ||
-        parsed.trainingTrackMode === "SINGLE_TRACK"
+        isSameBalancePass &&
+        (parsed.trainingTrackMode === "ROTATE_CUP" ||
+          parsed.trainingTrackMode === "ALL_CUPS" ||
+          parsed.trainingTrackMode === "SINGLE_TRACK")
       ) {
         this.trainingTrackMode = parsed.trainingTrackMode;
       }
       if (
+        isSameBalancePass &&
         storedGen >= 27530 &&
         parsed.championGenome &&
         parsed.championGenome.weights
@@ -1169,6 +1173,7 @@ export class AiBrainManager {
         this.championGenome = parsed.championGenome;
       }
       if (
+        isSameBalancePass &&
         storedGen >= 27530 &&
         Array.isArray(parsed.population) &&
         parsed.population.length >= 4
@@ -1200,6 +1205,7 @@ export class AiBrainManager {
         });
       }
       if (
+        isSameBalancePass &&
         storedGen >= 27530 &&
         parsed.archetypeGenomes &&
         typeof parsed.archetypeGenomes === "object"
@@ -1234,10 +1240,7 @@ export class AiBrainManager {
           HARD: Boolean(parsed.useTrainedPresets.HARD),
         };
       }
-      if (
-        parsed.characterStats &&
-        parsed.rosterBalancePass === ROSTER_BALANCE_PASS
-      ) {
+      if (isSameBalancePass && parsed.characterStats) {
         for (const meta of DEFAULT_CHARACTER_META) {
           const savedChar = parsed.characterStats[meta.characterId];
           if (savedChar && typeof savedChar.racesCompleted === "number") {
@@ -1248,6 +1251,9 @@ export class AiBrainManager {
           }
         }
       } else {
+        this.trainingTrackMode = "ALL_CUPS";
+        this.initDefaultPopulation();
+        this.initDefaultArchetypeGenomes();
         this.initDefaultCharacterStats();
         this.saveToStorage();
       }
