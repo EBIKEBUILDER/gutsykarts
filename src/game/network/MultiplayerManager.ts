@@ -179,7 +179,7 @@ function generatePeerId(): string {
   return `peer_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function loadOrCreatePlayerName(): string {
+export function loadOrCreatePlayerName(): string {
   if (typeof window !== "undefined") {
     try {
       const saved = window.localStorage.getItem("gutsy_karts_player_name");

@@ -1297,8 +1297,24 @@ export function buildProceduralKart(
       ps.emitRate = flameRate;
     }
 
-    // 5. Off-Road Dirt Clods & Ripped-Up Grass Blades (including high-intensity grass shredding during off-road burnouts!)
+    // 5. Off-Road Dirt Clods & Ripped-Up Grass Blades OR Shallow Lagoon Water Spray
     if (
+      grounded &&
+      surface === "SHALLOW_WATER" &&
+      (isBurnoutActive || Math.abs(forwardSpeed) > 2.5)
+    ) {
+      const splashRate = isBurnoutActive
+        ? 135
+        : Math.min(125, Math.abs(forwardSpeed) * 3.8);
+      for (const ps of [leftOffRoadDirt, rightOffRoadDirt]) {
+        ps.color1 = new Color4(0.18, 0.88, 0.98, 0.92); // Bright cyan lagoon splash
+        ps.color2 = new Color4(0.92, 0.98, 1.0, 0.95); // White seafoam droplets
+        ps.colorDead = new Color4(0.12, 0.65, 0.85, 0.0);
+        ps.emitRate = splashRate;
+      }
+      leftGrassBlades.emitRate = 0;
+      rightGrassBlades.emitRate = 0;
+    } else if (
       grounded &&
       surface === "OFFROAD" &&
       (isBurnoutActive || Math.abs(forwardSpeed) > 3.0)
@@ -1309,8 +1325,12 @@ export function buildProceduralKart(
       const grassBladeRate = isBurnoutActive
         ? 145
         : Math.min(85, Math.abs(forwardSpeed) * 2.6);
-      leftOffRoadDirt.emitRate = dirtRate;
-      rightOffRoadDirt.emitRate = dirtRate;
+      for (const ps of [leftOffRoadDirt, rightOffRoadDirt]) {
+        ps.color1 = new Color4(0.48, 0.34, 0.18, 0.95); // Brown dirt clods
+        ps.color2 = new Color4(0.22, 0.62, 0.24, 0.95); // Green grass chunks
+        ps.colorDead = new Color4(0.32, 0.24, 0.14, 0.0);
+        ps.emitRate = dirtRate;
+      }
       leftGrassBlades.emitRate = grassBladeRate;
       rightGrassBlades.emitRate = grassBladeRate;
     } else {
@@ -1320,9 +1340,13 @@ export function buildProceduralKart(
       rightGrassBlades.emitRate = 0;
     }
 
-    // 6. Curb Micro-Sparks, Burnout Tire Smoke / Turf Dust & Pavement Heat Haze
+    // 6. Curb Micro-Sparks, Burnout Tire Smoke / Turf Dust / Water Mist & Pavement Heat Haze
     if (isBurnoutActive && grounded) {
-      if (surface === "OFFROAD") {
+      if (surface === "SHALLOW_WATER") {
+        curbAndHazeSystem.color1 = new Color4(0.35, 0.92, 1.0, 0.72);
+        curbAndHazeSystem.color2 = new Color4(0.95, 0.99, 1.0, 0.65);
+        curbAndHazeSystem.emitRate = 85;
+      } else if (surface === "OFFROAD") {
         curbAndHazeSystem.color1 = new Color4(0.54, 0.36, 0.18, 0.62);
         curbAndHazeSystem.color2 = new Color4(0.24, 0.68, 0.22, 0.52);
         curbAndHazeSystem.emitRate = 75;
@@ -1331,6 +1355,14 @@ export function buildProceduralKart(
         curbAndHazeSystem.color2 = new Color4(0.55, 0.58, 0.64, 0.35);
         curbAndHazeSystem.emitRate = 60;
       }
+    } else if (
+      grounded &&
+      surface === "SHALLOW_WATER" &&
+      Math.abs(forwardSpeed) > 6.0
+    ) {
+      curbAndHazeSystem.color1 = new Color4(0.45, 0.94, 1.0, 0.55);
+      curbAndHazeSystem.color2 = new Color4(0.95, 0.99, 1.0, 0.45);
+      curbAndHazeSystem.emitRate = 52;
     } else if (grounded && surface === "CURB" && Math.abs(forwardSpeed) > 8.0) {
       curbAndHazeSystem.color1 = new Color4(1.0, 0.25, 0.25, 0.9);
       curbAndHazeSystem.color2 = new Color4(1.0, 1.0, 1.0, 0.9);

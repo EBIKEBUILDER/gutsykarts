@@ -96,7 +96,12 @@ import {
   UnifiedTrackMap,
 } from "@/src/components/UnifiedTrackMap";
 import { SoundtrackManager } from "@/src/game/audio/SoundtrackManager";
-import { MultiplayerManager } from "@/src/game/network/MultiplayerManager";
+import {
+  loadOrCreatePlayerName,
+  MultiplayerManager,
+} from "@/src/game/network/MultiplayerManager";
+import { globalAnalytics } from "@/src/game/network/AnalyticsTracker";
+import { AnalyticsDashboardModal } from "@/src/components/AnalyticsDashboardModal";
 
 const TOTAL_LAPS = 3;
 const TRACK_RECORDS_STORAGE_KEY = "gutsy_karts_track_records_v1";
@@ -181,6 +186,10 @@ declare global {
 
 export const RaceGame: React.FC = () => {
   const [screen, setScreen] = useState<"SELECT" | "EDITOR" | "RACE">("SELECT");
+  const [menuTab, setMenuTab] = useState<
+    "SINGLE_PLAYER" | "MULTIPLAYER" | "AI_LAB"
+  >("SINGLE_PLAYER");
+  const [isOnlineConnected, setIsOnlineConnected] = useState<boolean>(false);
   const [cupsCatalog, setCupsCatalog] = useState<GrandPrixCupDefinition[]>(() =>
     createDefaultCupsCatalog()
   );
@@ -256,6 +265,27 @@ export const RaceGame: React.FC = () => {
   const [showBalanceGuide, setShowBalanceGuide] = useState<boolean>(false);
   const [showAiArchitectureGuide, setShowAiArchitectureGuide] =
     useState<boolean>(false);
+  const [showAnalyticsModal, setShowAnalyticsModal] = useState<boolean>(false);
+
+  const screenRef = useRef<"SELECT" | "EDITOR" | "RACE">(screen);
+  screenRef.current = screen;
+  const showAiLabRef = useRef<boolean>(showAiLab);
+  showAiLabRef.current = showAiLab;
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      globalAnalytics.updatePlayerIdentity(playerCallsignRef.current);
+      globalAnalytics.recordActivitySecond({
+        screen: screenRef.current,
+        isAiSimMode: allAiSimModeRef.current,
+        isSpectating: Boolean(
+          allAiSimModeRef.current || shouldHostDedicatedRef.current
+        ),
+        isAiLabOpen: showAiLabRef.current,
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   const [trackRecords, setTrackRecords] = useState<
     Record<string, TrackTimingRecord>
@@ -324,6 +354,7 @@ export const RaceGame: React.FC = () => {
         return updated;
       });
       saveTrackDefinition(stamped);
+      globalAnalytics.recordFeatureUsed("custom_track_saved");
     },
     [selectedCupId, selectedTrackIdx]
   );
@@ -599,6 +630,7 @@ export const RaceGame: React.FC = () => {
       shouldHostDedicatedRef.current = false;
       preserveOnlineRoomRef.current = false;
       allAiSimModeRef.current = true;
+      globalAnalytics.markAiSimModeActive(true);
       spectateAutoDirectorRef.current = true;
       autoRepeatTrainingRef.current = true;
       setAutoRepeatTraining(true);
@@ -629,9 +661,145 @@ export const RaceGame: React.FC = () => {
     ]
   );
 
+  const handleLobbyUpdated = useCallback(
+    (
+      players: OnlinePlayerPresence[],
+      rooms: OnlineRoomSummary[],
+      status: NetworkBackendStatus
+    ) => {
+      setOnlinePlayers(players);
+      setOpenRooms(rooms);
+      setBackendStatus(status);
+    },
+    []
+  );
+
+  const handleWelcomeSnapshot = useCallback(
+    (snapshot: WelcomeSnapshotPayload) => {
+      pendingWelcomeSnapshotRef.current = snapshot;
+      joinedTrackOverrideRef.current = snapshot.trackDef;
+      if (snapshot.cupDef) {
+        joinedCupOverrideRef.current = snapshot.cupDef;
+        setJoinedCupOverride(snapshot.cupDef);
+      }
+      shouldHostOnlineRef.current = false;
+      if (snapshot.assignedSlotIndex < 0) {
+        spectateAutoDirectorRef.current = true;
+      }
+      setJoiningRoomId(null);
+      if (snapshot.trackIdx === 0) {
+        cupPointsByCharRef.current = {};
+        setCupStandings([]);
+      }
+      setSelectedCupId(snapshot.cupId);
+      setSelectedTrackIdx(snapshot.trackIdx);
+      setIsCupSeriesActive(true);
+      setRaceSessionKey((k) => k + 1);
+      setScreen("RACE");
+    },
+    []
+  );
+
+  const [selectedCharId, setSelectedCharId] = useState<string>("aero_vance");
+  const [selectedKartByChar, setSelectedKartByChar] = useState<
+    Record<string, string>
+  >({
+    rex_ironclad: "behemoth_bruiser",
+    aero_vance: "apex_striker",
+    nyx_drift: "phantom_coupe",
+    pip_spark: "bumblebee_buggy",
+  });
+
+  const selectedCharacter = useMemo(
+    () =>
+      CHARACTER_ROSTER.find((c) => c.id === selectedCharId) ??
+      CHARACTER_ROSTER[0],
+    [selectedCharId]
+  );
+
+  const activeKartId =
+    selectedKartByChar[selectedCharacter.id] ?? selectedCharacter.defaultKartId;
+
+  const resolvedPreviewStats = useMemo(
+    () => resolveRacerStats(selectedCharacter.id, activeKartId),
+    [selectedCharacter.id, activeKartId]
+  );
+
+  // Explicitly connect to Online Multiplayer Lobby only when requested by the user
+  const connectOnlineNetwork = useCallback((): MultiplayerManager => {
+    if (mpRef.current) {
+      setIsOnlineConnected(true);
+      return mpRef.current;
+    }
+    const mp = new MultiplayerManager(selectedCharacter.id, activeKartId, {
+      onLobbyUpdated: handleLobbyUpdated,
+      onWelcomeSnapshot: handleWelcomeSnapshot,
+    });
+    const currentCallsign = playerCallsignRef.current.trim();
+    if (currentCallsign.length > 0) {
+      mp.setPlayerIdentity(currentCallsign, selectedCharacter.id, activeKartId);
+    } else {
+      setPlayerCallsign(mp.playerName);
+    }
+    mpRef.current = mp;
+    setIsOnlineConnected(true);
+    return mp;
+  }, [
+    selectedCharacter.id,
+    activeKartId,
+    handleLobbyUpdated,
+    handleWelcomeSnapshot,
+  ]);
+
+  // Explicitly disconnect from Online Multiplayer Lobby and go 100% offline
+  const disconnectOnlineNetwork = useCallback(() => {
+    if (mpRef.current) {
+      mpRef.current.dispose();
+      mpRef.current = null;
+    }
+    setIsOnlineConnected(false);
+    setOnlinePlayers([]);
+    setOpenRooms([]);
+    setJoiningRoomId(null);
+    shouldHostOnlineRef.current = false;
+    shouldHostDedicatedRef.current = false;
+    preserveOnlineRoomRef.current = false;
+  }, []);
+
+  // Load saved local callsign on mount without opening any network connection
+  useEffect(() => {
+    setPlayerCallsign(loadOrCreatePlayerName());
+    return () => {
+      mpRef.current?.dispose();
+      mpRef.current = null;
+    };
+  }, []);
+
+  // Keep player identity synced when callsign, character, or kart changes
+  useEffect(() => {
+    if (typeof window !== "undefined" && playerCallsign.trim().length > 0) {
+      try {
+        window.localStorage.setItem(
+          "gutsy_karts_player_name",
+          playerCallsign.trim().slice(0, 18)
+        );
+      } catch {
+        // Ignore storage errors
+      }
+    }
+    mpRef.current?.setPlayerIdentity(
+      playerCallsign,
+      selectedCharacter.id,
+      activeKartId
+    );
+  }, [playerCallsign, selectedCharacter.id, activeKartId]);
+
   const startHostedOnlineRace = useCallback(
     (cupId = selectedCupId, startTrackIndex = selectedTrackIdx) => {
+      connectOnlineNetwork();
       allAiSimModeRef.current = false;
+      globalAnalytics.markAiSimModeActive(false);
+      globalAnalytics.recordFeatureUsed("online_room_hosted");
       setSimSpeedMult(1);
       simSpeedMultRef.current = 1;
       shouldHostOnlineRef.current = true;
@@ -649,11 +817,12 @@ export const RaceGame: React.FC = () => {
       setRaceSessionKey((k) => k + 1);
       setScreen("RACE");
     },
-    [selectedCupId, selectedTrackIdx]
+    [selectedCupId, selectedTrackIdx, connectOnlineNetwork]
   );
 
   const startDedicatedServerRoom = useCallback(
     (cupId = selectedCupId, startTrackIndex = selectedTrackIdx) => {
+      connectOnlineNetwork();
       allAiSimModeRef.current = true;
       setSimSpeedMult(1);
       simSpeedMultRef.current = 1;
@@ -674,7 +843,7 @@ export const RaceGame: React.FC = () => {
       setRaceSessionKey((k) => k + 1);
       setScreen("RACE");
     },
-    [selectedCupId, selectedTrackIdx]
+    [selectedCupId, selectedTrackIdx, connectOnlineNetwork]
   );
 
   const advanceToNextTrackInCup = useCallback(() => {
@@ -719,7 +888,6 @@ export const RaceGame: React.FC = () => {
     setRaceSessionKey((k) => k + 1);
   }, [activeCup, cupsCatalog, selectedTrackIdx]);
 
-
   const toggleMusicMute = useCallback(() => {
     setMusicMuted((prev) => {
       const next = !prev;
@@ -728,107 +896,18 @@ export const RaceGame: React.FC = () => {
     });
   }, []);
 
-  const [selectedCharId, setSelectedCharId] = useState<string>("aero_vance");
-  const [selectedKartByChar, setSelectedKartByChar] = useState<
-    Record<string, string>
-  >({
-    rex_ironclad: "behemoth_bruiser",
-    aero_vance: "apex_striker",
-    nyx_drift: "phantom_coupe",
-    pip_spark: "bumblebee_buggy",
-  });
-
-  const selectedCharacter = useMemo(
-    () =>
-      CHARACTER_ROSTER.find((c) => c.id === selectedCharId) ??
-      CHARACTER_ROSTER[0],
-    [selectedCharId]
-  );
-
-  const activeKartId =
-    selectedKartByChar[selectedCharacter.id] ?? selectedCharacter.defaultKartId;
-
-  const resolvedPreviewStats = useMemo(
-    () => resolveRacerStats(selectedCharacter.id, activeKartId),
-    [selectedCharacter.id, activeKartId]
-  );
-
-  const handleLobbyUpdated = useCallback(
-    (
-      players: OnlinePlayerPresence[],
-      rooms: OnlineRoomSummary[],
-      status: NetworkBackendStatus
-    ) => {
-      setOnlinePlayers(players);
-      setOpenRooms(rooms);
-      setBackendStatus(status);
-    },
-    []
-  );
-
-  const handleWelcomeSnapshot = useCallback(
-    (snapshot: WelcomeSnapshotPayload) => {
-      pendingWelcomeSnapshotRef.current = snapshot;
-      joinedTrackOverrideRef.current = snapshot.trackDef;
-      if (snapshot.cupDef) {
-        joinedCupOverrideRef.current = snapshot.cupDef;
-        setJoinedCupOverride(snapshot.cupDef);
-      }
-      shouldHostOnlineRef.current = false;
-      if (snapshot.assignedSlotIndex < 0) {
-        spectateAutoDirectorRef.current = true;
-      }
-      setJoiningRoomId(null);
-      if (snapshot.trackIdx === 0) {
-        cupPointsByCharRef.current = {};
-        setCupStandings([]);
-      }
-      setSelectedCupId(snapshot.cupId);
-      setSelectedTrackIdx(snapshot.trackIdx);
-      setIsCupSeriesActive(true);
-      setRaceSessionKey((k) => k + 1);
-      setScreen("RACE");
-    },
-    []
-  );
-
-  // Initialize MultiplayerManager once on client mount (100% safe offline / without env vars)
-  useEffect(() => {
-    const mp = new MultiplayerManager(selectedCharacter.id, activeKartId, {
-      onLobbyUpdated: handleLobbyUpdated,
-      onWelcomeSnapshot: handleWelcomeSnapshot,
-    });
-    mpRef.current = mp;
-    setPlayerCallsign(mp.playerName);
-
-    return () => {
-      mp.dispose();
-      mpRef.current = null;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // Keep player identity synced with MultiplayerManager when callsign, character, or kart changes
-  useEffect(() => {
-    mpRef.current?.setPlayerIdentity(
-      playerCallsign,
-      selectedCharacter.id,
-      activeKartId
-    );
-  }, [playerCallsign, selectedCharacter.id, activeKartId]);
-
   const handleJoinOnlineRoom = useCallback(
     (room: OnlineRoomSummary) => {
-      if (!mpRef.current) return;
+      const mp = connectOnlineNetwork();
       setJoiningRoomId(room.roomId);
-      mpRef.current.setPlayerIdentity(
+      mp.setPlayerIdentity(
         playerCallsign,
         selectedCharacter.id,
         activeKartId
       );
-      mpRef.current.joinExistingRoom(room);
+      mp.joinExistingRoom(room);
     },
-    [playerCallsign, selectedCharacter.id, activeKartId]
+    [connectOnlineNetwork, playerCallsign, selectedCharacter.id, activeKartId]
   );
 
   const handleLeaveOnlineRaceToMenu = useCallback(() => {
@@ -984,9 +1063,15 @@ export const RaceGame: React.FC = () => {
     });
 
     const scene = new Scene(engine);
-    scene.clearColor = new Color4(0.46, 0.72, 0.96, 1.0); // Vibrant suburban sky
-
     const effectiveTrackDef = joinedTrackOverrideRef.current ?? trackDef;
+    const activeBiome = effectiveTrackDef.biome ?? "ALPINE_SUBURBS";
+    if (activeBiome === "TROPICAL_ATOLL") {
+      scene.clearColor = new Color4(0.32, 0.78, 0.96, 1.0); // Bright coastal tropical sky
+    } else if (activeBiome === "SUNSET_CANYON") {
+      scene.clearColor = new Color4(0.88, 0.44, 0.34, 1.0); // Warm desert sunset sky
+    } else {
+      scene.clearColor = new Color4(0.46, 0.72, 0.96, 1.0); // Vibrant suburban sky
+    }
 
     // Build closed-loop Catmull-Rom spline track, curbs, terrain, obstacles, and props
     const track: BuiltTrack = buildProceduralTrack(scene, effectiveTrackDef);
@@ -1345,6 +1430,30 @@ export const RaceGame: React.FC = () => {
       (a, b) => b.totalProgressDistance - a.totalProgressDistance
     );
     const initialFocusKart = getFocusKart(initialSortedRacers);
+
+    if (allAiSimModeRef.current || shouldHostDedicatedRef.current) {
+      globalAnalytics.markAiSimModeActive(true);
+    } else {
+      const initialHumanKart = getLocalPlayerKart();
+      if (initialHumanKart) {
+        globalAnalytics.recordHumanRaceStart({
+          mode: mp?.activeRoomId
+            ? mp.isHost
+              ? "online_host"
+              : "online_client"
+            : isCupSeriesActive
+              ? "single_cup"
+              : "single_track",
+          cupId: activeCup.id,
+          trackId: effectiveTrackDef.id ?? effectiveTrackDef.name,
+          trackName: effectiveTrackDef.name,
+          characterId: initialHumanKart.stats.character.id,
+          kartId: initialHumanKart.stats.kart.id,
+          aiDifficulty: aiDifficultyRef.current,
+          humanCount: racers.filter((r) => r.controlMode !== "AI").length,
+        });
+      }
+    }
 
     // Snap camera immediately behind initial focus kart on spawn / spectate
     let smoothedCamYaw = initialFocusKart.headingYaw;
@@ -2865,6 +2974,9 @@ export const RaceGame: React.FC = () => {
         const timingSnapshots = resolveRacerTimingSnapshots(sorted);
 
         if (isFirstFinishPass) {
+          const preEvolveSnap = globalAiBrain.getTelemetrySnapshot(
+            aiDifficultyRef.current
+          );
           const finishRanksByRacerId: Record<string, number> = {};
           const lapSplitsByRacerId: Record<string, number[]> = {};
           for (const r of sorted) {
@@ -2879,6 +2991,54 @@ export const RaceGame: React.FC = () => {
             finishRanksByRacerId,
             lapSplitsByRacerId
           );
+
+          if (allAiSimModeRef.current || shouldHostDedicatedRef.current) {
+            const postEvolveSnap = globalAiBrain.getTelemetrySnapshot(
+              aiDifficultyRef.current
+            );
+            const reportMd = globalAiBrain.formatClipboardReport(
+              aiDifficultyRef.current,
+              effectiveTrackDef.name
+            );
+            globalAnalytics.syncAiLabSnapshot({
+              snapshot: postEvolveSnap,
+              championWeights: {},
+              reportMarkdown: reportMd,
+            });
+          } else {
+            const localHumanFinish = sorted.find(
+              (r) => r.controlMode === "LOCAL_HUMAN"
+            );
+            if (localHumanFinish) {
+              const humanSnap = timingSnapshots[localHumanFinish.racerId];
+              const humanTelemetry = preEvolveSnap.racers.find(
+                (rt) => rt.racerId === localHumanFinish.racerId
+              );
+              globalAnalytics.recordHumanRaceFinish({
+                mode: mp?.activeRoomId
+                  ? mp.isHost
+                    ? "online_host"
+                    : "online_client"
+                  : isCupSeriesActive
+                    ? "single_cup"
+                    : "single_track",
+                cupId: activeCup.id,
+                trackId: effectiveTrackDef.id ?? effectiveTrackDef.name,
+                trackName: effectiveTrackDef.name,
+                characterId: localHumanFinish.stats.character.id,
+                kartId: localHumanFinish.stats.kart.id,
+                aiDifficulty: aiDifficultyRef.current,
+                placement: localHumanFinish.rank,
+                humanCount: sorted.filter((r) => r.controlMode !== "AI").length,
+                finishTimeMs:
+                  humanSnap?.finishTimeMs ?? Math.round(elapsedRaceMs),
+                lapTimesMs:
+                  humanSnap?.lapTimesMs ?? localHumanFinish.lapTimesMs,
+                racerTelemetry: humanTelemetry ?? null,
+              });
+            }
+          }
+
           if (autoRepeatTrainingRef.current && !mp?.activeRoomId) {
             postRaceAutoAdvanceTimer = 1.6;
           }
@@ -3376,6 +3536,9 @@ export const RaceGame: React.FC = () => {
     window.addEventListener("resize", handleResize);
 
     return () => {
+      if (!allAiSimModeRef.current && !shouldHostDedicatedRef.current) {
+        globalAnalytics.recordHumanRaceAbandoned();
+      }
       clearInterval(bgServerKeepAliveInterval);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("pagehide", disconnectOnlineHumanIfLocked);
@@ -3716,832 +3879,1210 @@ export const RaceGame: React.FC = () => {
     </div>
   ) : null;
 
-  // SCREEN 1: GRAND PRIX CUP, CIRCUIT, CHARACTER & KART SELECTOR
+  // SCREEN 1: FOCUSED MULTI-VIEW HUB (SINGLE PLAYER / OPT-IN MULTIPLAYER / AI LAB)
   if (screen === "SELECT") {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-950 via-indigo-950 to-slate-900 text-white flex flex-col justify-between p-4 sm:p-8 overflow-y-auto">
         <div className="mx-auto w-full max-w-6xl">
-          {/* Header */}
-          <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-white/15 pb-5">
-            <div>
-              <div className="inline-flex items-center gap-2 rounded-full bg-amber-400/15 border border-amber-400/40 px-3 py-1 text-xs font-extrabold tracking-widest text-amber-300 uppercase">
-                <Trophy className="w-3.5 h-3.5" /> Gutsy Karts Neighborhood Circuit
+          {/* Top Brand & Primary Navigation Bar */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-white/15 pb-5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-400/15 border border-amber-400/40 px-3 py-0.5 text-[11px] font-extrabold tracking-widest text-amber-300 uppercase">
+                    <Trophy className="w-3 h-3" /> Gutsy Karts Neighborhood Circuit
+                  </span>
+                  {isOnlineConnected ? (
+                    <span
+                      data-testid="online-connection-pill"
+                      className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/20 border border-emerald-400/50 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-emerald-300"
+                    >
+                      <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                      ONLINE CONNECTED ({onlinePlayers.length})
+                    </span>
+                  ) : (
+                    <span
+                      data-testid="online-connection-pill"
+                      className="inline-flex items-center gap-1.5 rounded-full bg-slate-800/90 border border-white/15 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-slate-300"
+                    >
+                      <span className="h-2 w-2 rounded-full bg-slate-400" />
+                      OFFLINE / PRIVATE MODE
+                    </span>
+                  )}
+                </div>
+                <h1 className="mt-1.5 text-3xl sm:text-4xl font-black tracking-tight text-white">
+                  GUTSY KARTS <span className="text-amber-400">3D GP</span>
+                </h1>
               </div>
-              <h1 className="mt-2 text-3xl sm:text-5xl font-black tracking-tight text-white">
-                GUTSY KARTS <span className="text-amber-400">3D GP</span>
-              </h1>
-              <p className="mt-1 text-sm sm:text-base text-slate-300 max-w-2xl">
-                Choose a{" "}
-                <span className="text-amber-300 font-semibold">
-                  Grand Prix Cup
-                </span>{" "}
-                to race through a multi-track championship series (4-3-2-1 points system), or open the{" "}
-                <span className="text-emerald-300 font-semibold">
-                  3D Terrain &amp; Circuit Studio
-                </span>{" "}
-                to sculpt tracks and manage Cup maps.
-              </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-3">
+            {/* 4-Section Navigation Tabs */}
+            <div
+              role="tablist"
+              aria-label="Game Sections"
+              className="flex flex-wrap items-center gap-2 rounded-2xl border border-white/15 bg-slate-950/75 p-1.5 shadow-lg"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={menuTab === "SINGLE_PLAYER"}
+                data-testid="nav-tab-single-player"
+                onClick={() => setMenuTab("SINGLE_PLAYER")}
+                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs sm:text-sm font-black uppercase tracking-wider transition cursor-pointer ${
+                  menuTab === "SINGLE_PLAYER"
+                    ? "bg-gradient-to-r from-amber-400 to-orange-500 text-slate-950 shadow-[0_0_20px_rgba(245,158,11,0.35)]"
+                    : "text-slate-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <Trophy className="w-4 h-4" />
+                <span>Single Player</span>
+              </button>
+
+              <button
+                type="button"
+                role="tab"
+                aria-selected={menuTab === "MULTIPLAYER"}
+                data-testid="nav-tab-multiplayer"
+                onClick={() => setMenuTab("MULTIPLAYER")}
+                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs sm:text-sm font-black uppercase tracking-wider transition cursor-pointer ${
+                  menuTab === "MULTIPLAYER"
+                    ? "bg-gradient-to-r from-cyan-400 to-teal-400 text-slate-950 shadow-[0_0_20px_rgba(34,211,238,0.35)]"
+                    : "text-slate-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <Wifi className="w-4 h-4" />
+                <span>Online Multiplayer</span>
+                <span
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-black uppercase ${
+                    menuTab === "MULTIPLAYER"
+                      ? "bg-slate-950/25 text-slate-950"
+                      : isOnlineConnected
+                      ? "bg-emerald-500/25 border border-emerald-400/50 text-emerald-300"
+                      : "bg-slate-800 text-slate-400"
+                  }`}
+                >
+                  {isOnlineConnected ? `${onlinePlayers.length} LIVE` : "OFFLINE"}
+                </span>
+              </button>
+
               {!joiningRoomId && !mpRef.current?.activeRoomId && (
                 <button
                   type="button"
                   data-testid="open-track-editor-btn"
-                  onClick={() => setScreen("EDITOR")}
-                  className="inline-flex items-center justify-center gap-2 rounded-2xl border-2 border-emerald-400/60 bg-emerald-500/15 px-4 py-3.5 text-xs sm:text-sm font-black tracking-wider text-emerald-200 uppercase hover:bg-emerald-500/25 transition cursor-pointer"
+                  onClick={() => {
+                    globalAnalytics.recordFeatureUsed("circuit_studio_opened");
+                    setScreen("EDITOR");
+                  }}
+                  className="inline-flex items-center gap-2 rounded-xl border border-emerald-400/40 bg-emerald-500/15 px-4 py-2.5 text-xs sm:text-sm font-black uppercase tracking-wider text-emerald-200 hover:bg-emerald-500/25 transition cursor-pointer"
                 >
                   <Map className="w-4 h-4 text-emerald-300" />
-                  <span>3D CIRCUIT STUDIO</span>
+                  <span>3D Circuit Studio</span>
                 </button>
               )}
 
               <button
                 type="button"
-                data-testid="host-dedicated-server-btn"
-                onClick={() => startDedicatedServerRoom(selectedCupId, selectedTrackIdx)}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl border-2 border-fuchsia-400/70 bg-fuchsia-500/20 px-4 py-3.5 text-xs sm:text-sm font-black tracking-wider text-fuchsia-200 uppercase shadow-[0_0_24px_rgba(217,70,239,0.25)] hover:bg-fuchsia-500/30 active:scale-95 transition cursor-pointer"
+                role="tab"
+                aria-selected={menuTab === "AI_LAB"}
+                data-testid="nav-tab-ai-lab"
+                onClick={() => setMenuTab("AI_LAB")}
+                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs sm:text-sm font-black uppercase tracking-wider transition cursor-pointer ${
+                  menuTab === "AI_LAB"
+                    ? "bg-gradient-to-r from-fuchsia-400 to-indigo-400 text-slate-950 shadow-[0_0_20px_rgba(217,70,239,0.35)]"
+                    : "text-slate-300 hover:bg-white/10 hover:text-white"
+                }`}
               >
-                <Monitor className="w-4 h-4 text-fuchsia-300" />
-                <span>DEDICATED SERVER (4 SLOTS)</span>
-              </button>
-
-              <button
-                type="button"
-                data-testid="host-online-race-btn"
-                onClick={() => startHostedOnlineRace(selectedCupId, selectedTrackIdx)}
-                className="inline-flex items-center justify-center gap-2 rounded-2xl border-2 border-cyan-400/70 bg-cyan-500/20 px-4 py-3.5 text-xs sm:text-sm font-black tracking-wider text-cyan-200 uppercase shadow-[0_0_24px_rgba(34,211,238,0.25)] hover:bg-cyan-500/30 active:scale-95 transition cursor-pointer"
-              >
-                <Radio className="w-4 h-4 text-cyan-300 animate-pulse" />
-                <span>HOST &amp; PLAY ONLINE</span>
-              </button>
-
-              <button
-                type="button"
-                data-testid="start-grand-prix-btn"
-                onClick={() => startGrandPrixCupSeries(selectedCupId, 0)}
-                className="group inline-flex items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500 px-6 py-3.5 text-sm sm:text-base font-black tracking-wider text-slate-950 uppercase shadow-[0_0_30px_rgba(245,158,11,0.5)] hover:brightness-110 active:scale-95 transition cursor-pointer"
-              >
-                <span>START {activeCup?.name.toUpperCase()}</span>
-                <ChevronRight className="w-5 h-5 transition-transform group-hover:translate-x-1" />
+                <Brain className="w-4 h-4" />
+                <span>AI Lab &amp; Analytics</span>
               </button>
             </div>
           </div>
 
-          {/* ONLINE MULTIPLAYER & DROP-IN AI REPLACEMENT LOBBY */}
-          <div
-            data-testid="multiplayer-lobby-panel"
-            className="mt-5 rounded-3xl border border-cyan-400/35 bg-slate-900/85 p-4 sm:p-5 space-y-4 shadow-xl"
-          >
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-white/10 pb-3.5">
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-cyan-300">
-                    <Wifi className="w-4 h-4 text-cyan-400" /> PLAYER-HOSTED ONLINE MULTIPLAYER &amp; DEDICATED LOBBY
-                  </span>
-                  <span
-                    data-testid="network-backend-badge"
-                    className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${
-                      backendStatus === "SUPABASE_ONLINE"
-                        ? "bg-emerald-500/20 border border-emerald-400/50 text-emerald-300"
-                        : "bg-cyan-500/20 border border-cyan-400/40 text-cyan-200"
-                    }`}
-                  >
-                    {backendStatus === "SUPABASE_ONLINE"
-                      ? "SUPABASE REALTIME + WEBRTC ONLINE"
-                      : "OFFLINE-SAFE / LOCAL CROSS-TAB READY"}
-                  </span>
-                </div>
-                <p className="text-xs text-slate-300 mt-1">
-                  Host a race while driving, launch a{" "}
-                  <strong className="text-fuchsia-300">
-                    Dedicated Spectator Server (4 open player slots + auto-loop)
-                  </strong>
-                  , or join any active race below to{" "}
-                  <strong className="text-amber-300">
-                    immediately replace an AI bot mid-race
-                  </strong>
-                  !
-                </p>
-              </div>
-
-              {/* Callsign Input & Online Player Counter */}
-              <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-                <div className="flex items-center gap-2 rounded-xl border border-white/15 bg-slate-950/80 px-3 py-1.5">
-                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
-                    CALLSIGN:
-                  </span>
-                  <input
-                    type="text"
-                    data-testid="player-callsign-input"
-                    value={playerCallsign}
-                    maxLength={18}
-                    onChange={(e) => setPlayerCallsign(e.target.value)}
-                    className="w-28 sm:w-32 bg-transparent text-xs font-black text-amber-300 focus:outline-none"
-                    placeholder="Your Callsign"
-                  />
-                </div>
-
-                <div
-                  data-testid="online-players-count"
-                  className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-400/30 bg-cyan-950/40 px-3 py-2 text-xs font-black text-cyan-200"
-                >
-                  <Users className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>{onlinePlayers.length} ONLINE</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Online Players Presence Strip */}
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
-                RACERS ONLINE:
-              </span>
-              {onlinePlayers.map((p) => {
-                const isMe = p.peerId === mpRef.current?.peerId;
-                return (
-                  <span
-                    key={p.peerId}
-                    data-testid={`presence-pill-${p.peerId}`}
-                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${
-                      isMe
-                        ? "border-amber-400/50 bg-amber-500/15 text-amber-200"
-                        : "border-white/15 bg-slate-950/70 text-slate-200"
-                    }`}
-                  >
-                    <span
-                      className={`h-2 w-2 rounded-full ${
-                        p.status === "LOBBY"
-                          ? "bg-emerald-400"
-                          : p.status === "DEDICATED_HOST"
-                          ? "bg-fuchsia-400 animate-pulse"
-                          : "bg-amber-400 animate-pulse"
-                      }`}
-                    />
-                    <span>
-                      {p.playerName} {isMe ? "(YOU)" : ""}
+          {/* ===================================================================== */}
+          {/* TAB 1: SINGLE PLAYER GRAND PRIX & DRIVER SELECTION (DEFAULT)          */}
+          {/* ===================================================================== */}
+          {menuTab === "SINGLE_PLAYER" && (
+            <div data-testid="single-player-view" className="space-y-5 mt-5">
+              {/* Clean Single Player Quick-Launch Bar */}
+              <div className="rounded-3xl border border-amber-400/35 bg-slate-900/85 p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 shadow-xl">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2 text-xs font-black uppercase tracking-wider text-amber-300">
+                    <span>SINGLE PLAYER GRAND PRIX</span>
+                    <span className="text-slate-500">•</span>
+                    <span className="text-cyan-300">
+                      {resolvedPreviewStats.character.name} ({resolvedPreviewStats.kart.name})
                     </span>
-                    <span className="text-[9px] uppercase tracking-wider text-slate-400">
-                      •{" "}
-                      {p.status === "DEDICATED_HOST"
-                        ? "DEDICATED SERVER"
-                        : p.status}
+                    <span className="text-slate-500">•</span>
+                    <span className="text-emerald-300">
+                      {activeCup?.name} — {trackDef.name}
                     </span>
-                  </span>
-                );
-              })}
-            </div>
-
-            {/* Active Open Races (Joinable Mid-Race to Replace an AI Bot) */}
-            <div data-testid="open-rooms-list" className="space-y-2">
-              <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                ACTIVE PLAYER &amp; DEDICATED RACES ({openRooms.length} OPEN)
-              </div>
-
-              {openRooms.length === 0 ? (
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-dashed border-white/15 bg-slate-950/50 px-4 py-3 text-xs text-slate-400">
-                  <span>
-                    No ongoing online races right now. Click{" "}
-                    <strong className="text-cyan-300">HOST &amp; PLAY ONLINE</strong>{" "}
-                    to race with 3 open AI slots, or{" "}
-                    <strong className="text-fuchsia-300">
-                      DEDICATED SERVER (4 SLOTS)
-                    </strong>{" "}
-                    to run a spectator server that 4 players can join!
-                  </span>
-                  <div className="flex flex-wrap items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => startDedicatedServerRoom(selectedCupId, selectedTrackIdx)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-fuchsia-500/20 border border-fuchsia-400/50 px-3 py-1.5 text-[11px] font-black uppercase text-fuchsia-200 hover:bg-fuchsia-500/30 transition cursor-pointer"
-                    >
-                      <Monitor className="w-3.5 h-3.5" /> DEDICATED (4 SLOTS)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => startHostedOnlineRace(selectedCupId, selectedTrackIdx)}
-                      className="inline-flex items-center gap-1.5 rounded-xl bg-cyan-500/20 border border-cyan-400/50 px-3 py-1.5 text-[11px] font-black uppercase text-cyan-200 hover:bg-cyan-500/30 transition cursor-pointer"
-                    >
-                      <Play className="w-3.5 h-3.5" /> HOST {trackDef.name.toUpperCase()}
-                    </button>
                   </div>
+                  <p className="text-xs sm:text-sm text-slate-300">
+                    Race offline against 3 AI opponents across a multi-track Championship Cup (4-3-2-1 points system), or click any circuit below to practice.
+                  </p>
                 </div>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                  {openRooms.map((room) => {
-                    const canHotJoin = room.aiSlotCount > 0 && room.racePhase !== "FINISHED";
-                    const isJoiningThis = joiningRoomId === room.roomId;
-                    return (
-                      <div
-                        key={room.roomId}
-                        data-testid={`open-room-card-${room.roomId}`}
-                        className="flex items-center justify-between gap-3 rounded-2xl border border-cyan-400/40 bg-slate-950/80 p-3.5 shadow-md"
-                      >
-                        <div>
-                          <div className="flex flex-wrap items-center gap-2">
-                            {room.isDedicatedServer && (
-                              <span className="inline-flex items-center gap-1 rounded-md bg-fuchsia-500/25 border border-fuchsia-400/50 px-2 py-0.5 text-[10px] font-black uppercase text-fuchsia-200">
-                                <Monitor className="w-3 h-3" /> DEDICATED SERVER
-                              </span>
-                            )}
-                            {room.isCustomTrack && (
-                              <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/25 border border-amber-400/50 px-2 py-0.5 text-[10px] font-black uppercase text-amber-200">
-                                <Sparkles className="w-3 h-3" /> CUSTOM CIRCUIT
-                              </span>
-                            )}
-                            <span className="rounded-md bg-cyan-500/20 border border-cyan-400/40 px-2 py-0.5 text-[10px] font-black uppercase text-cyan-300">
-                              {room.racePhase === "COUNTDOWN"
-                                ? "STARTING GRID"
-                                : `LIVE • LAP ${room.currentLap}/${room.totalLaps}`}
-                            </span>
-                            <span className="text-xs font-black text-white">
-                              {room.trackName}
-                            </span>
-                            {room.cupName && (
-                              <span className="text-[10px] font-bold text-slate-400">
-                                ({room.cupName})
-                              </span>
-                            )}
-                          </div>
-                          <div className="mt-1 text-[11px] text-slate-300">
-                            Host:{" "}
-                            <strong className="text-amber-300">
-                              {room.hostName}
-                            </strong>{" "}
-                            •{" "}
-                            <span className="text-emerald-300 font-bold">
-                              {room.humanCount}/4 Humans
-                            </span>{" "}
-                            •{" "}
-                            <span className="text-cyan-300 font-bold">
-                              {room.aiSlotCount} AI{" "}
-                              {room.aiSlotCount === 1 ? "Bot" : "Bots"} Open
-                            </span>
-                          </div>
-                          {room.slotSummaries && room.slotSummaries.length > 0 && (
-                            <div className="mt-1.5 flex flex-wrap items-center gap-1">
-                              {room.slotSummaries.map((slot) => (
-                                <span
-                                  key={slot.slotIndex}
-                                  className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${
-                                    slot.isHuman
-                                      ? "bg-cyan-500/20 border border-cyan-400/50 text-cyan-200"
-                                      : "bg-slate-800/80 border border-white/10 text-slate-400"
-                                  }`}
-                                >
-                                  <span>{slot.playerName}</span>
-                                  <span
-                                    className={`rounded px-1 text-[8px] font-black uppercase ${
-                                      slot.isHuman
-                                        ? "bg-cyan-400 text-slate-950"
-                                        : "bg-slate-700 text-slate-300"
-                                    }`}
-                                  >
-                                    {slot.isHuman ? "HUMAN" : "AI"}
-                                  </span>
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </div>
 
+                <div className="flex flex-wrap items-center gap-3 shrink-0">
+                  {/* Compact AI Difficulty Pills */}
+                  <div className="flex items-center gap-1 rounded-2xl border border-white/10 bg-slate-950/80 p-1">
+                    {(
+                      [
+                        { id: "EASY" as AiDifficulty, label: "Easy", activeClass: "bg-emerald-500/30 border-emerald-400 text-emerald-200" },
+                        { id: "MEDIUM" as AiDifficulty, label: "Medium", activeClass: "bg-cyan-500/30 border-cyan-400 text-cyan-200" },
+                        { id: "HARD" as AiDifficulty, label: "Hard", activeClass: "bg-rose-500/30 border-rose-400 text-rose-200" },
+                        { id: "SELF_LEARNING" as AiDifficulty, label: "Neural AI", activeClass: "bg-fuchsia-500/30 border-fuchsia-400 text-fuchsia-200" },
+                      ] as const
+                    ).map((tier) => {
+                      const active = aiDifficulty === tier.id;
+                      return (
                         <button
+                          key={tier.id}
                           type="button"
-                          data-testid="join-room-btn"
-                          disabled={!canHotJoin || isJoiningThis}
-                          onClick={() => handleJoinOnlineRoom(room)}
-                          className={`rounded-xl px-4 py-2.5 text-xs font-black uppercase tracking-wider transition shrink-0 ${
-                            canHotJoin
-                              ? "bg-gradient-to-r from-cyan-400 to-emerald-400 text-slate-950 hover:brightness-110 active:scale-95 cursor-pointer shadow-lg"
-                              : "bg-slate-800 text-slate-500 cursor-not-allowed"
+                          data-testid={`ai-diff-${tier.id.toLowerCase()}`}
+                          onClick={() => handleSelectAiDifficulty(tier.id)}
+                          className={`rounded-xl border px-2.5 py-1.5 text-[11px] font-black uppercase tracking-wider transition cursor-pointer ${
+                            active
+                              ? tier.activeClass
+                              : "border-transparent text-slate-400 hover:text-white"
                           }`}
                         >
-                          {isJoiningThis
-                            ? "JOINING..."
-                            : canHotJoin
-                            ? "JOIN & REPLACE AI"
-                            : "FULL (4/4)"}
+                          {tier.label}
                         </button>
-                      </div>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    type="button"
+                    data-testid="start-grand-prix-btn"
+                    onClick={() => startGrandPrixCupSeries(selectedCupId, 0)}
+                    className="group inline-flex items-center justify-center gap-2.5 rounded-2xl bg-gradient-to-r from-amber-400 via-orange-500 to-rose-500 px-6 py-3.5 text-sm sm:text-base font-black tracking-wider text-slate-950 uppercase shadow-[0_0_30px_rgba(245,158,11,0.5)] hover:brightness-110 active:scale-95 transition cursor-pointer"
+                  >
+                    <span>START {activeCup?.name.toUpperCase()}</span>
+                    <ChevronRight className="w-5 h-5 transition-transform group-hover:translate-x-1" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Grand Prix Cup & Multi-Track Series Selector */}
+              <div className="rounded-3xl border border-amber-400/30 bg-slate-900/80 p-4 sm:p-5 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <div className="text-[11px] font-black uppercase tracking-widest text-amber-300 flex items-center gap-1.5">
+                      <Trophy className="w-3.5 h-3.5" /> GRAND PRIX CHAMPIONSHIP CUPS (1ST = 4 PTS • 2ND = 3 PTS • 3RD = 2 PTS • 4TH = 1 PT)
+                    </div>
+                    <p className="text-xs text-slate-300 mt-0.5">
+                      Select a Cup to race its circuits sequentially for the Championship Podium, or click any individual track to practice or edit it.
+                    </p>
+                  </div>
+                  {activeCup && !joiningRoomId && !mpRef.current?.activeRoomId && (
+                    <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                      <button
+                        type="button"
+                        data-testid="menu-new-cup-btn"
+                        onClick={() => {
+                          handleAddCustomCup();
+                          setScreen("EDITOR");
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-amber-400/50 bg-amber-500/15 px-3 py-2 text-xs font-black uppercase tracking-wider text-amber-200 hover:bg-amber-500/25 transition cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> NEW CUSTOM CUP
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleAddTrackToCup(activeCup.id);
+                          setScreen("EDITOR");
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-400/50 bg-emerald-500/15 px-3 py-2 text-xs font-black uppercase tracking-wider text-emerald-200 hover:bg-emerald-500/25 transition cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" /> ADD NEW TRACK TO {activeCup.name.toUpperCase()}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Cup Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {cupsCatalog.map((cup) => {
+                    const isSelectedCup = cup.id === activeCup?.id;
+                    const isCustom = cup.isCustomCup || !isBuiltinCupId(cup.id);
+                    return (
+                      <button
+                        key={cup.id}
+                        type="button"
+                        data-testid={`select-cup-${cup.id}`}
+                        onClick={() => {
+                          setSelectedCupId(cup.id);
+                          setSelectedTrackIdx(0);
+                        }}
+                        className={`rounded-2xl border-2 p-4 text-left transition cursor-pointer ${
+                          isSelectedCup
+                            ? "border-amber-400 bg-slate-950/90 shadow-[0_0_24px_rgba(251,191,36,0.25)]"
+                            : "border-white/10 bg-slate-950/50 hover:border-white/30"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              style={{ backgroundColor: cup.badgeColor }}
+                              className="rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-slate-950"
+                            >
+                              {cup.tracks.length} RACES
+                            </span>
+                            {isCustom && (
+                              <span className="rounded-full bg-amber-500/20 border border-amber-400/50 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-amber-300">
+                                CUSTOM CUP
+                              </span>
+                            )}
+                          </div>
+                          <Trophy
+                            className="w-4 h-4"
+                            style={{ color: cup.badgeColor }}
+                          />
+                        </div>
+                        <div className="mt-2 text-lg font-black text-white">
+                          {cup.name}
+                        </div>
+                        <div className="text-xs text-slate-400">{cup.subtitle}</div>
+                      </button>
                     );
                   })}
                 </div>
-              )}
-            </div>
-          </div>
 
-
-          {/* Grand Prix Cup & Multi-Track Series Selector */}
-          <div className="mt-5 rounded-3xl border border-amber-400/30 bg-slate-900/80 p-4 sm:p-5 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <div className="text-[11px] font-black uppercase tracking-widest text-amber-300 flex items-center gap-1.5">
-                  <Trophy className="w-3.5 h-3.5" /> GRAND PRIX CHAMPIONSHIP CUPS (1ST = 4 PTS • 2ND = 3 PTS • 3RD = 2 PTS • 4TH = 1 PT)
-                </div>
-                <p className="text-xs text-slate-300 mt-0.5">
-                  Select a Cup to race its circuits sequentially for the Championship Podium, or click any individual track to practice or edit it.
-                </p>
-              </div>
-              {activeCup && !joiningRoomId && !mpRef.current?.activeRoomId && (
-                <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
-                  <button
-                    type="button"
-                    data-testid="menu-new-cup-btn"
-                    onClick={() => {
-                      handleAddCustomCup();
-                      setScreen("EDITOR");
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-amber-400/50 bg-amber-500/15 px-3 py-2 text-xs font-black uppercase tracking-wider text-amber-200 hover:bg-amber-500/25 transition cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> NEW CUSTOM CUP
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      handleAddTrackToCup(activeCup.id);
-                      setScreen("EDITOR");
-                    }}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-emerald-400/50 bg-emerald-500/15 px-3 py-2 text-xs font-black uppercase tracking-wider text-emerald-200 hover:bg-emerald-500/25 transition cursor-pointer"
-                  >
-                    <Plus className="w-3.5 h-3.5" /> ADD NEW TRACK TO {activeCup.name.toUpperCase()}
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Cup Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {cupsCatalog.map((cup) => {
-                const isSelectedCup = cup.id === activeCup?.id;
-                const isCustom = cup.isCustomCup || !isBuiltinCupId(cup.id);
-                return (
-                  <button
-                    key={cup.id}
-                    type="button"
-                    data-testid={`select-cup-${cup.id}`}
-                    onClick={() => {
-                      setSelectedCupId(cup.id);
-                      setSelectedTrackIdx(0);
-                    }}
-                    className={`rounded-2xl border-2 p-4 text-left transition cursor-pointer ${
-                      isSelectedCup
-                        ? "border-amber-400 bg-slate-950/90 shadow-[0_0_24px_rgba(251,191,36,0.25)]"
-                        : "border-white/10 bg-slate-950/50 hover:border-white/30"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <span
-                          style={{ backgroundColor: cup.badgeColor }}
-                          className="rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-widest text-slate-950"
+                {/* Tracks in Selected Cup */}
+                {activeCup && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-white/10">
+                    {activeCup.tracks.map((t, idx) => {
+                      const isSelectedTrack = idx === selectedTrackIdx;
+                      const savedRec = trackRecords[t.id || t.name];
+                      return (
+                        <div
+                          key={t.id ?? idx}
+                          data-testid={`cup-track-card-${idx}`}
+                          onClick={() => setSelectedTrackIdx(idx)}
+                          className={`flex flex-col justify-between rounded-2xl border p-3 transition cursor-pointer ${
+                            isSelectedTrack
+                              ? "border-cyan-400 bg-cyan-950/30"
+                              : "border-white/10 bg-slate-950/60 hover:border-white/25"
+                          }`}
                         >
-                          {cup.tracks.length} RACES
-                        </span>
-                        {isCustom && (
-                          <span className="rounded-full bg-amber-500/20 border border-amber-400/50 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-amber-300">
-                            CUSTOM CUP
-                          </span>
-                        )}
-                      </div>
-                      <Trophy
-                        className="w-4 h-4"
-                        style={{ color: cup.badgeColor }}
-                      />
-                    </div>
-                    <div className="mt-2 text-lg font-black text-white">
-                      {cup.name}
-                    </div>
-                    <div className="text-xs text-slate-400">{cup.subtitle}</div>
-                  </button>
-                );
-              })}
-            </div>
+                          <div>
+                            <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider">
+                              <span className="text-amber-300">
+                                RACE {idx + 1} OF {activeCup.tracks.length}
+                              </span>
+                              <span className="text-slate-400">
+                                {t.boostPads.length} BOOSTS • {t.obstacles.length} HAZARDS
+                              </span>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between gap-1.5">
+                              <span className="text-sm font-black text-white truncate">
+                                {t.name}
+                              </span>
+                              {t.isUserModified && (
+                                <span
+                                  title="Modified in local browser storage"
+                                  className="shrink-0 rounded bg-amber-500/20 border border-amber-400/40 px-1.5 py-0.5 text-[9px] font-black uppercase text-amber-300"
+                                >
+                                  LOCAL EDIT
+                                </span>
+                              )}
+                            </div>
+                            {t.description && (
+                              <p className="mt-0.5 text-[11px] text-slate-400 line-clamp-2">
+                                {t.description}
+                              </p>
+                            )}
+                            <div className="mt-2 relative rounded-xl border border-white/10 bg-slate-950/95 p-1.5 overflow-hidden">
+                              <UnifiedTrackMap
+                                trackDef={t}
+                                variant="PREVIEW"
+                                className="h-24 w-full rounded-lg bg-slate-950"
+                              />
+                              <div className="mt-1 flex flex-wrap items-center justify-between gap-1 px-1 text-[8px] font-bold uppercase text-slate-400">
+                                <span className="inline-flex items-center gap-1 text-emerald-300">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Split Route
+                                </span>
+                                <span className="inline-flex items-center gap-1 text-cyan-300">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" /> Paved Cut
+                                </span>
+                                <span className="inline-flex items-center gap-1 text-amber-300">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-amber-400" /> Boost Cut
+                                </span>
+                              </div>
+                            </div>
+                            {savedRec && (
+                              <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-amber-400/25 bg-slate-900/90 px-2 py-1 text-[10px] font-mono">
+                                <span className="text-amber-300 font-bold">
+                                  BEST: {formatRaceTime(savedRec.bestRaceTimeMs)}
+                                </span>
+                                <span className="text-slate-600">•</span>
+                                <span className="text-cyan-300 font-bold">
+                                  LAP: {formatRaceTime(savedRec.bestLapTimeMs)}
+                                </span>
+                              </div>
+                            )}
+                          </div>
 
-            {/* Tracks in Selected Cup */}
-            {activeCup && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-white/10">
-                {activeCup.tracks.map((t, idx) => {
-                  const isSelectedTrack = idx === selectedTrackIdx;
-                  const savedRec = trackRecords[t.id || t.name];
-                  return (
-                    <div
-                      key={t.id ?? idx}
-                      data-testid={`cup-track-card-${idx}`}
-                      onClick={() => setSelectedTrackIdx(idx)}
-                      className={`flex flex-col justify-between rounded-2xl border p-3 transition cursor-pointer ${
-                        isSelectedTrack
-                          ? "border-cyan-400 bg-cyan-950/30"
-                          : "border-white/10 bg-slate-950/60 hover:border-white/25"
-                      }`}
-                    >
-                      <div>
-                        <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider">
-                          <span className="text-amber-300">
-                            RACE {idx + 1} OF {activeCup.tracks.length}
-                          </span>
-                          <span className="text-slate-400">
-                            {t.boostPads.length} BOOSTS • {t.obstacles.length} HAZARDS
-                          </span>
-                        </div>
-                        <div className="mt-1 flex items-center justify-between gap-1.5">
-                          <span className="text-sm font-black text-white truncate">
-                            {t.name}
-                          </span>
-                          {t.isUserModified && (
-                            <span
-                              title="Modified in local browser storage"
-                              className="shrink-0 rounded bg-amber-500/20 border border-amber-400/40 px-1.5 py-0.5 text-[9px] font-black uppercase text-amber-300"
+                          <div className="mt-2.5 flex items-center gap-1.5 pt-2 border-t border-white/10">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                startGrandPrixCupSeries(activeCup.id, idx);
+                              }}
+                              className="flex-1 rounded-lg bg-amber-400/20 border border-amber-400/50 py-1 text-[10px] font-black uppercase text-amber-200 hover:bg-amber-400/30 cursor-pointer"
                             >
-                              LOCAL EDIT
-                            </span>
-                          )}
-                        </div>
-                        {t.description && (
-                          <p className="mt-0.5 text-[11px] text-slate-400 line-clamp-2">
-                            {t.description}
-                          </p>
-                        )}
-                        <div className="mt-2 relative rounded-xl border border-white/10 bg-slate-950/95 p-1.5 overflow-hidden">
-                          <UnifiedTrackMap
-                            trackDef={t}
-                            variant="PREVIEW"
-                            className="h-24 w-full rounded-lg bg-slate-950"
-                          />
-                          <div className="mt-1 flex flex-wrap items-center justify-between gap-1 px-1 text-[8px] font-bold uppercase text-slate-400">
-                            <span className="inline-flex items-center gap-1 text-emerald-300">
-                              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" /> Split Route
-                            </span>
-                            <span className="inline-flex items-center gap-1 text-cyan-300">
-                              <span className="h-1.5 w-1.5 rounded-full bg-cyan-400" /> Paved Cut
-                            </span>
-                            <span className="inline-flex items-center gap-1 text-amber-300">
-                              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" /> Boost Cut
-                            </span>
+                              RACE FROM R{idx + 1}
+                            </button>
+                            {!joiningRoomId && !mpRef.current?.activeRoomId && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedTrackIdx(idx);
+                                  setScreen("EDITOR");
+                                }}
+                                className="rounded-lg bg-emerald-500/20 border border-emerald-400/50 px-2.5 py-1 text-[10px] font-black uppercase text-emerald-200 hover:bg-emerald-500/30 cursor-pointer"
+                              >
+                                EDIT 3D
+                              </button>
+                            )}
                           </div>
                         </div>
-                        {savedRec && (
-                          <div className="mt-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-amber-400/25 bg-slate-900/90 px-2 py-1 text-[10px] font-mono">
-                            <span className="text-amber-300 font-bold">
-                              BEST: {formatRaceTime(savedRec.bestRaceTimeMs)}
-                            </span>
-                            <span className="text-slate-600">•</span>
-                            <span className="text-cyan-300 font-bold">
-                              LAP: {formatRaceTime(savedRec.bestLapTimeMs)}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="mt-2.5 flex items-center gap-1.5 pt-2 border-t border-white/10">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            startGrandPrixCupSeries(activeCup.id, idx);
-                          }}
-                          className="flex-1 rounded-lg bg-amber-400/20 border border-amber-400/50 py-1 text-[10px] font-black uppercase text-amber-200 hover:bg-amber-400/30 cursor-pointer"
-                        >
-                          RACE FROM R{idx + 1}
-                        </button>
-                        {!joiningRoomId && !mpRef.current?.activeRoomId && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedTrackIdx(idx);
-                              setScreen("EDITOR");
-                            }}
-                            className="rounded-lg bg-emerald-500/20 border border-emerald-400/50 px-2.5 py-1 text-[10px] font-black uppercase text-emerald-200 hover:bg-emerald-500/30 cursor-pointer"
-                          >
-                            EDIT 3D
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          {/* 4-Tier AI Thinking, Difficulty & Self-Learning Selector */}
-          <div className="mt-4 rounded-3xl border border-white/15 bg-slate-900/75 p-4 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-            <div className="flex-1">
-              <div className="text-[11px] font-black uppercase tracking-widest text-amber-300 flex flex-wrap items-center gap-2">
-                <span className="inline-flex items-center gap-1.5">
-                  <Zap className="w-3.5 h-3.5" /> AI OPPONENT THINKING &amp; SELF-LEARNING MODEL
-                </span>
-                <span className="rounded-full border border-fuchsia-400/40 bg-fuchsia-500/15 px-2 py-0.5 text-[10px] font-black text-fuchsia-200">
-                  GEN #{globalAiBrain.getTelemetrySnapshot(aiDifficulty).generation} • BEST FITNESS {globalAiBrain.getTelemetrySnapshot(aiDifficulty).championFitness.toFixed(1)}/100
-                </span>
+              {/* 4 Character Cards Header + ? Balance Guide Trigger */}
+              <div className="pt-2 flex flex-wrap items-center justify-between gap-2 px-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-black uppercase tracking-widest text-amber-300">
+                    DRIVER ROSTER &amp; ASYMMETRIC ARCHETYPES
+                  </span>
+                  <span className="text-xs text-slate-400">
+                    • 4 distinct driving styles tuned for equal ~25% win rate across all tracks
+                  </span>
+                </div>
                 <button
                   type="button"
-                  data-testid="open-ai-architecture-btn"
-                  onClick={() => setShowAiArchitectureGuide(true)}
-                  className="inline-flex items-center gap-1 rounded-full border border-fuchsia-400/45 bg-slate-900/90 px-2.5 py-0.5 text-[10px] font-extrabold text-fuchsia-200 hover:border-fuchsia-300 hover:bg-fuchsia-500/25 hover:text-white transition cursor-pointer"
-                  title="View technical architecture of the (1+3) Elitist Neuro-Evolutionary AI Self-Learning system"
+                  data-testid="open-balance-guide-btn"
+                  onClick={() => setShowBalanceGuide(true)}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-cyan-400/40 bg-slate-900/85 px-3 py-1 text-[11px] font-extrabold text-cyan-200 hover:border-cyan-300 hover:bg-cyan-500/20 hover:text-white transition cursor-pointer shadow-sm"
+                  title="How our 4 asymmetric character archetypes are balanced for equal lap pace"
                 >
-                  <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-fuchsia-400/25 text-[9px] font-black text-fuchsia-200 border border-fuchsia-300/50">
+                  <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-cyan-400/25 text-[10px] font-black text-cyan-200 border border-cyan-300/50">
                     ?
                   </span>
-                  <span>HOW AI SELF-LEARNING WORKS</span>
+                  <span>HOW ARCHETYPE BALANCE WORKS</span>
                 </button>
               </div>
-              <p className="mt-0.5 text-xs text-slate-300">
-                {aiDifficulty === "EASY" &&
-                  "EASY (Rookie): Full kart top speed unlocked, relaxed corner lines, conservative drift entry, and wide item scatter."}
-                {aiDifficulty === "MEDIUM" &&
-                  "MEDIUM (Challenger): Spirited apex cuts, hits ~75% of speed booster pads & ramps, charges Blue/Orange Mini-Turbos, and leads shots."}
-                {aiDifficulty === "HARD" &&
-                  "HARD (Pro Ace): High-speed pro racing! Cuts optimal inside apexes, holds drifts through grass shortcuts with boost, and uses predictive aiming."}
-                {aiDifficulty === "SELF_LEARNING" &&
-                  "SELF-LEARNING ((1+3) Elitist Evolution Strategy + Neural Residual Policy): 23-parameter genome (15 spline/drift-PD weights + 8-input tanh neural steering residual) scored at 60Hz with Orthogonal Latin-Square grid×brain rotation!"}
-              </p>
-            </div>
 
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 shrink-0">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {(
-                  [
-                    {
-                      id: "EASY" as AiDifficulty,
-                      label: "EASY",
-                      sub: globalAiBrain.getTelemetrySnapshot(aiDifficulty)
-                        .useTrainedPresets.EASY
-                        ? "Trained Dataset"
-                        : "Beginner",
-                      activeClass:
-                        "border-emerald-400 bg-emerald-500/25 text-emerald-200 shadow-[0_0_16px_rgba(16,185,129,0.25)]",
-                    },
-                    {
-                      id: "MEDIUM" as AiDifficulty,
-                      label: "MEDIUM",
-                      sub: globalAiBrain.getTelemetrySnapshot(aiDifficulty)
-                        .useTrainedPresets.MEDIUM
-                        ? "Trained Dataset"
-                        : "Challenger",
-                      activeClass:
-                        "border-cyan-400 bg-cyan-500/25 text-cyan-200 shadow-[0_0_16px_rgba(34,211,238,0.25)]",
-                    },
-                    {
-                      id: "HARD" as AiDifficulty,
-                      label: "HARD",
-                      sub: globalAiBrain.getTelemetrySnapshot(aiDifficulty)
-                        .useTrainedPresets.HARD
-                        ? "Trained Dataset"
-                        : "Pro Ace",
-                      activeClass:
-                        "border-rose-400 bg-rose-500/25 text-rose-200 shadow-[0_0_20px_rgba(244,63,94,0.3)]",
-                    },
-                    {
-                      id: "SELF_LEARNING" as AiDifficulty,
-                      label: "SELF LEARNING",
-                      sub: `Gen #${globalAiBrain.getTelemetrySnapshot("SELF_LEARNING").generation}`,
-                      activeClass:
-                        "border-fuchsia-400 bg-fuchsia-500/25 text-fuchsia-200 shadow-[0_0_20px_rgba(217,70,239,0.35)]",
-                    },
-                  ] as const
-                ).map((tier) => {
-                  const active = aiDifficulty === tier.id;
+              {/* 4 Character Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {CHARACTER_ROSTER.map((char) => {
+                  const isSelected = char.id === selectedCharacter.id;
+                  const charKartId =
+                    selectedKartByChar[char.id] ?? char.defaultKartId;
+                  const stats = resolveRacerStats(char.id, charKartId);
+
                   return (
-                    <button
-                      key={tier.id}
-                      type="button"
-                      data-testid={`ai-diff-${tier.id.toLowerCase()}`}
-                      onClick={() => handleSelectAiDifficulty(tier.id)}
-                      className={`rounded-2xl border-2 px-3.5 py-2 text-center transition cursor-pointer ${
-                        active
-                          ? tier.activeClass
-                          : "border-white/10 bg-slate-950/60 text-slate-400 hover:border-white/25 hover:text-white"
+                    <div
+                      key={char.id}
+                      data-testid={`char-card-${char.id}`}
+                      onClick={() => setSelectedCharId(char.id)}
+                      className={`flex flex-col justify-between rounded-3xl border-2 p-5 transition-all cursor-pointer ${
+                        isSelected
+                          ? "border-amber-400 bg-slate-900/90 shadow-[0_0_28px_rgba(251,191,36,0.3)] -translate-y-1"
+                          : "border-white/15 bg-slate-900/55 hover:border-white/35 hover:bg-slate-900/75"
                       }`}
                     >
-                      <div className="text-xs font-black tracking-wider uppercase flex items-center justify-center gap-1">
-                        {tier.id === "SELF_LEARNING" && (
-                          <Brain className="w-3.5 h-3.5 text-fuchsia-300" />
-                        )}
-                        <span>{tier.label}</span>
+                      <div>
+                        <div className="flex items-center justify-between gap-2">
+                          <span
+                            style={{ backgroundColor: char.colors.badge }}
+                            className="rounded-full px-2.5 py-0.5 text-[10px] font-black tracking-widest text-slate-950 uppercase"
+                          >
+                            {char.archetypeClass.replace("_", " ")}
+                          </span>
+                          <span className="inline-flex items-center gap-1 text-xs font-extrabold text-amber-300">
+                            <Weight className="w-3.5 h-3.5" /> {stats.baseMass} kg
+                          </span>
+                        </div>
+
+                        <h2 className="mt-3 text-xl font-black tracking-tight text-white">
+                          {char.name}
+                        </h2>
+                        <p className="text-xs font-bold text-cyan-300 uppercase tracking-wider">
+                          {char.title}
+                        </p>
+                        <p className="mt-2 text-xs text-slate-300 leading-relaxed">
+                          {char.bio}
+                        </p>
+
+                        {/* Stat Bars */}
+                        <div className="mt-4 space-y-2.5 text-xs">
+                          <div>
+                            <div className="flex justify-between font-bold text-slate-300">
+                              <span>MASS / JUGGERNAUT</span>
+                              <span className="text-amber-300">
+                                {stats.baseMass} kg
+                              </span>
+                            </div>
+                            <div className="mt-1 h-2 w-full rounded-full bg-slate-800 overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-amber-400 to-red-500"
+                                style={{
+                                  width: `${Math.min(100, (stats.baseMass / 250) * 100)}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="flex justify-between font-bold text-slate-300">
+                              <span>TOP SPEED (PAVE / OFF)</span>
+                              <span className="text-cyan-300">
+                                {stats.topSpeed} / {stats.offRoadTopSpeed} u/s
+                              </span>
+                            </div>
+                            <div className="mt-1 h-2 w-full rounded-full bg-slate-800 overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500"
+                                style={{
+                                  width: `${Math.min(100, (stats.topSpeed / 52) * 100)}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="flex justify-between font-bold text-slate-300">
+                              <span>ACCELERATION</span>
+                              <span className="text-emerald-300">
+                                {stats.acceleration} u/s²
+                              </span>
+                            </div>
+                            <div className="mt-1 h-2 w-full rounded-full bg-slate-800 overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-500"
+                                style={{
+                                  width: `${Math.min(100, (stats.acceleration / 36) * 100)}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="flex justify-between font-bold text-slate-300">
+                              <span>DRIFT &amp; HANDLING</span>
+                              <span className="text-fuchsia-300">
+                                {stats.handling} ({Math.round(stats.driftGrip * 100)}% grip)
+                              </span>
+                            </div>
+                            <div className="mt-1 h-2 w-full rounded-full bg-slate-800 overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-fuchsia-400 to-purple-500"
+                                style={{
+                                  width: `${Math.min(100, (stats.handling / 3.4) * 100)}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+
+                          <div>
+                            <div className="flex justify-between font-bold text-slate-300">
+                              <span>MINI-TURBO BOOST</span>
+                              <span className="text-indigo-300">
+                                +{Math.round(stats.miniTurboDurationBonus * 100)}% spd • {stats.miniTurboDurationSec.toFixed(2)}s
+                              </span>
+                            </div>
+                            <div className="mt-1 h-2 w-full rounded-full bg-slate-800 overflow-hidden">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-500"
+                                style={{
+                                  width: `${Math.min(100, ((stats.miniTurboDurationBonus + 0.02) / 0.18) * 100)}%`,
+                                }}
+                              />
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                      <div className="text-[10px] font-bold opacity-80">
-                        {tier.sub}
+
+                      {/* Swappable Kart Chassis Selector */}
+                      <div
+                        className="mt-5 pt-4 border-t border-white/10"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <label className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-400">
+                          CHASSIS LOADOUT ({char.availableKartIds.length} UNLOCKED)
+                        </label>
+                        <select
+                          data-testid={`kart-select-${char.id}`}
+                          value={charKartId}
+                          onChange={(e) => {
+                            setSelectedCharId(char.id);
+                            setSelectedKartByChar((prev) => ({
+                              ...prev,
+                              [char.id]: e.target.value,
+                            }));
+                          }}
+                          className="mt-1.5 w-full rounded-xl border border-white/20 bg-slate-950 px-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
+                        >
+                          {char.availableKartIds.map((kId) => {
+                            const k = KART_CHASSIS_CATALOG[kId];
+                            if (!k) return null;
+                            return (
+                              <option key={k.id} value={k.id}>
+                                {k.name} ({k.bodyStyle})
+                              </option>
+                            );
+                          })}
+                        </select>
+                        <p className="mt-1.5 text-[11px] text-slate-400 line-clamp-2">
+                          {stats.kart.tagline}
+                        </p>
                       </div>
-                    </button>
+                    </div>
                   );
                 })}
               </div>
-
-              <button
-                type="button"
-                data-testid="launch-ai-training-sim-btn"
-                onClick={() =>
-                  startAiSelfTrainingSim(activeCup.id, selectedTrackIdx)
-                }
-                className="rounded-2xl border-2 border-fuchsia-400/70 bg-gradient-to-r from-fuchsia-600/35 to-indigo-600/35 px-4 py-2 text-left hover:from-fuchsia-500/45 hover:to-indigo-500/45 transition cursor-pointer shadow-[0_0_20px_rgba(217,70,239,0.25)]"
-                title="Launch 4 AI racers in accelerated 8x auto-looping Self-Training Simulation mode with live path & telemetry analysis"
-              >
-                <div className="flex items-center gap-1.5 text-xs font-black uppercase text-fuchsia-200">
-                  <FastForward className="w-3.5 h-3.5 text-fuchsia-300" />
-                  <span>4-AI TRAINING SIM</span>
-                </div>
-                <div className="text-[10px] font-bold text-fuchsia-300/90">
-                  Auto-Repeat + Path Lab
-                </div>
-              </button>
             </div>
-          </div>
+          )}
 
-          {/* 4 Character Cards Header + ? Balance Guide Trigger */}
-          <div className="mt-6 flex flex-wrap items-center justify-between gap-2 px-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-xs font-black uppercase tracking-widest text-amber-300">
-                DRIVER ROSTER &amp; ASYMMETRIC ARCHETYPES
-              </span>
-              <span className="text-xs text-slate-400">
-                • 4 distinct driving styles tuned for equal ~25% win rate across all tracks
-              </span>
-            </div>
-            <button
-              type="button"
-              data-testid="open-balance-guide-btn"
-              onClick={() => setShowBalanceGuide(true)}
-              className="inline-flex items-center gap-1.5 rounded-full border border-cyan-400/40 bg-slate-900/85 px-3 py-1 text-[11px] font-extrabold text-cyan-200 hover:border-cyan-300 hover:bg-cyan-500/20 hover:text-white transition cursor-pointer shadow-sm"
-              title="How our 4 asymmetric character archetypes are balanced for equal lap pace"
-            >
-              <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-cyan-400/25 text-[10px] font-black text-cyan-200 border border-cyan-300/50">
-                ?
-              </span>
-              <span>HOW ARCHETYPE BALANCE WORKS</span>
-            </button>
-          </div>
-
-          {/* 4 Character Cards */}
-          <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {CHARACTER_ROSTER.map((char) => {
-              const isSelected = char.id === selectedCharacter.id;
-              const charKartId =
-                selectedKartByChar[char.id] ?? char.defaultKartId;
-              const stats = resolveRacerStats(char.id, charKartId);
-
-              return (
+          {/* ===================================================================== */}
+          {/* TAB 2: STRICTLY OPT-IN ONLINE MULTIPLAYER & DEDICATED LOBBY           */}
+          {/* ===================================================================== */}
+          {menuTab === "MULTIPLAYER" && (
+            <div data-testid="multiplayer-view" className="space-y-5 mt-5">
+              {!isOnlineConnected ? (
+                /* OPT-IN GATE: DISCONNECTED BY DEFAULT UNTIL THE USER CLICKS CONNECT */
                 <div
-                  key={char.id}
-                  data-testid={`char-card-${char.id}`}
-                  onClick={() => setSelectedCharId(char.id)}
-                  className={`flex flex-col justify-between rounded-3xl border-2 p-5 transition-all cursor-pointer ${
-                    isSelected
-                      ? "border-amber-400 bg-slate-900/90 shadow-[0_0_28px_rgba(251,191,36,0.3)] -translate-y-1"
-                      : "border-white/15 bg-slate-900/55 hover:border-white/35 hover:bg-slate-900/75"
-                  }`}
+                  data-testid="multiplayer-opt-in-card"
+                  className="rounded-3xl border-2 border-cyan-400/40 bg-slate-900/90 p-6 sm:p-8 shadow-2xl space-y-6"
                 >
-                  <div>
-                    <div className="flex items-center justify-between gap-2">
-                      <span
-                        style={{ backgroundColor: char.colors.badge }}
-                        className="rounded-full px-2.5 py-0.5 text-[10px] font-black tracking-widest text-slate-950 uppercase"
-                      >
-                        {char.archetypeClass.replace("_", " ")}
-                      </span>
-                      <span className="inline-flex items-center gap-1 text-xs font-extrabold text-amber-300">
-                        <Weight className="w-3.5 h-3.5" /> {stats.baseMass} kg
-                      </span>
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+                    <div className="space-y-2 max-w-2xl">
+                      <div className="inline-flex items-center gap-2 rounded-full border border-emerald-400/40 bg-emerald-500/15 px-3 py-1 text-xs font-black uppercase tracking-widest text-emerald-300">
+                        <Shield className="w-3.5 h-3.5" /> Private Offline Mode Active — Consent-First Networking
+                      </div>
+                      <h2 className="text-2xl sm:text-3xl font-black text-white">
+                        Connect to the Online Multiplayer Lobby
+                      </h2>
+                      <p className="text-sm text-slate-300 leading-relaxed">
+                        Gutsy Karts never connects you to an online room or broadcasts your presence without your consent. Choose your Callsign below and click{" "}
+                        <strong className="text-cyan-300">Connect to Online Lobby</strong>{" "}
+                        when you are ready to browse live races, replace an AI bot mid-race, or host an online room.
+                      </p>
                     </div>
 
-                    <h2 className="mt-3 text-xl font-black tracking-tight text-white">
-                      {char.name}
-                    </h2>
-                    <p className="text-xs font-bold text-cyan-300 uppercase tracking-wider">
-                      {char.title}
-                    </p>
-                    <p className="mt-2 text-xs text-slate-300 leading-relaxed">
-                      {char.bio}
-                    </p>
-
-                    {/* Stat Bars */}
-                    <div className="mt-4 space-y-2.5 text-xs">
-                      <div>
-                        <div className="flex justify-between font-bold text-slate-300">
-                          <span>MASS / JUGGERNAUT</span>
-                          <span className="text-amber-300">
-                            {stats.baseMass} kg
-                          </span>
-                        </div>
-                        <div className="mt-1 h-2 w-full rounded-full bg-slate-800 overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-gradient-to-r from-amber-400 to-red-500"
-                            style={{
-                              width: `${Math.min(100, (stats.baseMass / 250) * 100)}%`,
-                            }}
-                          />
-                        </div>
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+                      <div className="flex items-center gap-2 rounded-2xl border border-white/20 bg-slate-950 px-4 py-3">
+                        <span className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
+                          CALLSIGN:
+                        </span>
+                        <input
+                          type="text"
+                          data-testid="player-callsign-input"
+                          value={playerCallsign}
+                          maxLength={18}
+                          onChange={(e) => setPlayerCallsign(e.target.value)}
+                          className="w-32 bg-transparent text-sm font-black text-amber-300 focus:outline-none"
+                          placeholder="Your Callsign"
+                        />
                       </div>
 
-                      <div>
-                        <div className="flex justify-between font-bold text-slate-300">
-                          <span>TOP SPEED (PAVE / OFF)</span>
-                          <span className="text-cyan-300">
-                            {stats.topSpeed} / {stats.offRoadTopSpeed} u/s
-                          </span>
-                        </div>
-                        <div className="mt-1 h-2 w-full rounded-full bg-slate-800 overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-blue-500"
-                            style={{
-                              width: `${Math.min(100, (stats.topSpeed / 52) * 100)}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex justify-between font-bold text-slate-300">
-                          <span>ACCELERATION</span>
-                          <span className="text-emerald-300">
-                            {stats.acceleration} u/s²
-                          </span>
-                        </div>
-                        <div className="mt-1 h-2 w-full rounded-full bg-slate-800 overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-teal-500"
-                            style={{
-                              width: `${Math.min(100, (stats.acceleration / 36) * 100)}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex justify-between font-bold text-slate-300">
-                          <span>DRIFT &amp; HANDLING</span>
-                          <span className="text-fuchsia-300">
-                            {stats.handling} ({Math.round(stats.driftGrip * 100)}% grip)
-                          </span>
-                        </div>
-                        <div className="mt-1 h-2 w-full rounded-full bg-slate-800 overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-gradient-to-r from-fuchsia-400 to-purple-500"
-                            style={{
-                              width: `${Math.min(100, (stats.handling / 3.4) * 100)}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="flex justify-between font-bold text-slate-300">
-                          <span>MINI-TURBO BOOST</span>
-                          <span className="text-indigo-300">
-                            +{Math.round(stats.miniTurboDurationBonus * 100)}% spd • {stats.miniTurboDurationSec.toFixed(2)}s
-                          </span>
-                        </div>
-                        <div className="mt-1 h-2 w-full rounded-full bg-slate-800 overflow-hidden">
-                          <div
-                            className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-500"
-                            style={{
-                              width: `${Math.min(100, ((stats.miniTurboDurationBonus + 0.02) / 0.18) * 100)}%`,
-                            }}
-                          />
-                        </div>
-                      </div>
+                      <button
+                        type="button"
+                        data-testid="connect-online-lobby-btn"
+                        onClick={() => connectOnlineNetwork()}
+                        className="inline-flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-400 via-teal-400 to-emerald-400 px-6 py-3.5 text-sm font-black uppercase tracking-wider text-slate-950 shadow-[0_0_28px_rgba(34,211,238,0.4)] hover:brightness-110 active:scale-95 transition cursor-pointer"
+                      >
+                        <Wifi className="w-4 h-4" />
+                        <span>Connect to Online Lobby</span>
+                      </button>
                     </div>
                   </div>
 
-                  {/* Swappable Kart Chassis Selector */}
-                  <div
-                    className="mt-5 pt-4 border-t border-white/10"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <label className="block text-[10px] font-extrabold uppercase tracking-widest text-slate-400">
-                      CHASSIS LOADOUT ({char.availableKartIds.length} UNLOCKED)
-                    </label>
-                    <select
-                      data-testid={`kart-select-${char.id}`}
-                      value={charKartId}
-                      onChange={(e) => {
-                        setSelectedCharId(char.id);
-                        setSelectedKartByChar((prev) => ({
-                          ...prev,
-                          [char.id]: e.target.value,
-                        }));
-                      }}
-                      className="mt-1.5 w-full rounded-xl border border-white/20 bg-slate-950 px-3 py-2 text-xs font-bold text-white focus:border-amber-400 focus:outline-none"
-                    >
-                      {char.availableKartIds.map((kId) => {
-                        const k = KART_CHASSIS_CATALOG[kId];
-                        if (!k) return null;
-                        return (
-                          <option key={k.id} value={k.id}>
-                            {k.name} ({k.bodyStyle})
-                          </option>
-                        );
-                      })}
-                    </select>
-                    <p className="mt-1.5 text-[11px] text-slate-400 line-clamp-2">
-                      {stats.kart.tagline}
-                    </p>
+                  {/* Direct Host Shortcuts (automatically connects & starts hosting) */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4 border-t border-white/10">
+                    <div className="rounded-2xl border border-cyan-400/30 bg-slate-950/70 p-4 flex flex-col justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-black uppercase tracking-wider text-cyan-300 flex items-center gap-1.5">
+                          <Radio className="w-4 h-4" /> Host &amp; Drive Online (Drop-In AI Replacement)
+                        </div>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Connects and immediately launches{" "}
+                          <strong className="text-white">{trackDef.name}</strong> ({activeCup?.name}) with 3 AI bots that online human racers can hot-swap into at any time.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="host-online-race-btn"
+                        onClick={() => startHostedOnlineRace(selectedCupId, selectedTrackIdx)}
+                        className="self-start inline-flex items-center gap-2 rounded-xl border border-cyan-400/60 bg-cyan-500/20 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-cyan-200 hover:bg-cyan-500/30 transition cursor-pointer"
+                      >
+                        <Radio className="w-3.5 h-3.5 text-cyan-300" />
+                        <span>Connect &amp; Host {trackDef.name.toUpperCase()}</span>
+                      </button>
+                    </div>
+
+                    <div className="rounded-2xl border border-fuchsia-400/30 bg-slate-950/70 p-4 flex flex-col justify-between gap-3">
+                      <div>
+                        <div className="text-xs font-black uppercase tracking-wider text-fuchsia-300 flex items-center gap-1.5">
+                          <Monitor className="w-4 h-4" /> Dedicated Spectator Server (4 Open Player Slots)
+                        </div>
+                        <p className="mt-1 text-xs text-slate-400">
+                          Connects and runs an automated 24/7 loop on{" "}
+                          <strong className="text-white">{activeCup?.name}</strong> where up to 4 remote human players can drop in and race together.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="host-dedicated-server-btn"
+                        onClick={() => startDedicatedServerRoom(selectedCupId, selectedTrackIdx)}
+                        className="self-start inline-flex items-center gap-2 rounded-xl border border-fuchsia-400/60 bg-fuchsia-500/20 px-4 py-2.5 text-xs font-black uppercase tracking-wider text-fuchsia-200 hover:bg-fuchsia-500/30 transition cursor-pointer"
+                      >
+                        <Monitor className="w-3.5 h-3.5 text-fuchsia-300" />
+                        <span>Connect &amp; Launch Dedicated Server</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
-              );
-            })}
-          </div>
+              ) : (
+                /* CONNECTED STATE: LIVE ONLINE LOBBY & ROOM BROWSER */
+                <div
+                  data-testid="multiplayer-lobby-panel"
+                  className="rounded-3xl border border-cyan-400/35 bg-slate-900/85 p-4 sm:p-5 space-y-4 shadow-xl"
+                >
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-white/10 pb-3.5">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center gap-1.5 text-xs font-black uppercase tracking-widest text-cyan-300">
+                          <Wifi className="w-4 h-4 text-cyan-400" /> PLAYER-HOSTED ONLINE MULTIPLAYER &amp; DEDICATED LOBBY
+                        </span>
+                        <span
+                          data-testid="network-backend-badge"
+                          className={`rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${
+                            backendStatus === "SUPABASE_ONLINE"
+                              ? "bg-emerald-500/20 border border-emerald-400/50 text-emerald-300"
+                              : "bg-cyan-500/20 border border-cyan-400/40 text-cyan-200"
+                          }`}
+                        >
+                          {backendStatus === "SUPABASE_ONLINE"
+                            ? "SUPABASE REALTIME + WEBRTC ONLINE"
+                            : "OFFLINE-SAFE / LOCAL CROSS-TAB READY"}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-300 mt-1">
+                        Host a race while driving, launch a{" "}
+                        <strong className="text-fuchsia-300">
+                          Dedicated Spectator Server (4 open player slots + auto-loop)
+                        </strong>
+                        , or join any active race below to{" "}
+                        <strong className="text-amber-300">
+                          immediately replace an AI bot mid-race
+                        </strong>
+                        !
+                      </p>
+                    </div>
+
+                    {/* Callsign Input, Online Player Counter & Disconnect Button */}
+                    <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                      <div className="flex items-center gap-2 rounded-xl border border-white/15 bg-slate-950/80 px-3 py-1.5">
+                        <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                          CALLSIGN:
+                        </span>
+                        <input
+                          type="text"
+                          data-testid="player-callsign-input"
+                          value={playerCallsign}
+                          maxLength={18}
+                          onChange={(e) => setPlayerCallsign(e.target.value)}
+                          className="w-28 sm:w-32 bg-transparent text-xs font-black text-amber-300 focus:outline-none"
+                          placeholder="Your Callsign"
+                        />
+                      </div>
+
+                      <div
+                        data-testid="online-players-count"
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-cyan-400/30 bg-cyan-950/40 px-3 py-2 text-xs font-black text-cyan-200"
+                      >
+                        <Users className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>{onlinePlayers.length} ONLINE</span>
+                      </div>
+
+                      <button
+                        type="button"
+                        data-testid="disconnect-online-lobby-btn"
+                        onClick={() => disconnectOnlineNetwork()}
+                        className="inline-flex items-center gap-1.5 rounded-xl border border-rose-400/50 bg-rose-500/15 px-3 py-2 text-xs font-black uppercase tracking-wider text-rose-200 hover:bg-rose-500/25 transition cursor-pointer"
+                        title="Disconnect from the online lobby and return to private offline mode"
+                      >
+                        <Shield className="w-3.5 h-3.5" />
+                        <span>Go Offline</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Quick Host Action Bar */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-slate-950/60 p-3">
+                    <div className="text-xs text-slate-300">
+                      Selected Setup:{" "}
+                      <strong className="text-amber-300">
+                        {resolvedPreviewStats.character.name} ({resolvedPreviewStats.kart.name})
+                      </strong>{" "}
+                      on{" "}
+                      <strong className="text-cyan-300">
+                        {trackDef.name} ({activeCup?.name})
+                      </strong>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        data-testid="host-dedicated-server-btn"
+                        onClick={() => startDedicatedServerRoom(selectedCupId, selectedTrackIdx)}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border border-fuchsia-400/70 bg-fuchsia-500/20 px-3.5 py-2 text-xs font-black tracking-wider text-fuchsia-200 uppercase hover:bg-fuchsia-500/30 transition cursor-pointer"
+                      >
+                        <Monitor className="w-3.5 h-3.5 text-fuchsia-300" />
+                        <span>DEDICATED SERVER (4 SLOTS)</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        data-testid="host-online-race-btn"
+                        onClick={() => startHostedOnlineRace(selectedCupId, selectedTrackIdx)}
+                        className="inline-flex items-center justify-center gap-2 rounded-xl border border-cyan-400/70 bg-cyan-500/20 px-3.5 py-2 text-xs font-black tracking-wider text-cyan-200 uppercase hover:bg-cyan-500/30 transition cursor-pointer"
+                      >
+                        <Radio className="w-3.5 h-3.5 text-cyan-300 animate-pulse" />
+                        <span>HOST &amp; PLAY ONLINE</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Online Players Presence Strip */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                      RACERS ONLINE:
+                    </span>
+                    {onlinePlayers.map((p) => {
+                      const isMe = p.peerId === mpRef.current?.peerId;
+                      return (
+                        <span
+                          key={p.peerId}
+                          data-testid={`presence-pill-${p.peerId}`}
+                          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-bold ${
+                            isMe
+                              ? "border-amber-400/50 bg-amber-500/15 text-amber-200"
+                              : "border-white/15 bg-slate-950/70 text-slate-200"
+                          }`}
+                        >
+                          <span
+                            className={`h-2 w-2 rounded-full ${
+                              p.status === "LOBBY"
+                                ? "bg-emerald-400"
+                                : p.status === "DEDICATED_HOST"
+                                ? "bg-fuchsia-400 animate-pulse"
+                                : "bg-amber-400 animate-pulse"
+                            }`}
+                          />
+                          <span>
+                            {p.playerName} {isMe ? "(YOU)" : ""}
+                          </span>
+                          <span className="text-[9px] uppercase tracking-wider text-slate-400">
+                            •{" "}
+                            {p.status === "DEDICATED_HOST"
+                              ? "DEDICATED SERVER"
+                              : p.status}
+                          </span>
+                        </span>
+                      );
+                    })}
+                  </div>
+
+                  {/* Active Open Races (Joinable Mid-Race to Replace an AI Bot) */}
+                  <div data-testid="open-rooms-list" className="space-y-2">
+                    <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                      ACTIVE PLAYER &amp; DEDICATED RACES ({openRooms.length} OPEN)
+                    </div>
+
+                    {openRooms.length === 0 ? (
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-dashed border-white/15 bg-slate-950/50 px-4 py-3 text-xs text-slate-400">
+                        <span>
+                          No ongoing online races right now. Click{" "}
+                          <strong className="text-cyan-300">HOST &amp; PLAY ONLINE</strong>{" "}
+                          to race with 3 open AI slots, or{" "}
+                          <strong className="text-fuchsia-300">
+                            DEDICATED SERVER (4 SLOTS)
+                          </strong>{" "}
+                          to run a spectator server that 4 players can join!
+                        </span>
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => startDedicatedServerRoom(selectedCupId, selectedTrackIdx)}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-fuchsia-500/20 border border-fuchsia-400/50 px-3 py-1.5 text-[11px] font-black uppercase text-fuchsia-200 hover:bg-fuchsia-500/30 transition cursor-pointer"
+                          >
+                            <Monitor className="w-3.5 h-3.5" /> DEDICATED (4 SLOTS)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => startHostedOnlineRace(selectedCupId, selectedTrackIdx)}
+                            className="inline-flex items-center gap-1.5 rounded-xl bg-cyan-500/20 border border-cyan-400/50 px-3 py-1.5 text-[11px] font-black uppercase text-cyan-200 hover:bg-cyan-500/30 transition cursor-pointer"
+                          >
+                            <Play className="w-3.5 h-3.5" /> HOST {trackDef.name.toUpperCase()}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                        {openRooms.map((room) => {
+                          const canHotJoin = room.aiSlotCount > 0 && room.racePhase !== "FINISHED";
+                          const isJoiningThis = joiningRoomId === room.roomId;
+                          return (
+                            <div
+                              key={room.roomId}
+                              data-testid={`open-room-card-${room.roomId}`}
+                              className="flex items-center justify-between gap-3 rounded-2xl border border-cyan-400/40 bg-slate-950/80 p-3.5 shadow-md"
+                            >
+                              <div>
+                                <div className="flex flex-wrap items-center gap-2">
+                                  {room.isDedicatedServer && (
+                                    <span className="inline-flex items-center gap-1 rounded-md bg-fuchsia-500/25 border border-fuchsia-400/50 px-2 py-0.5 text-[10px] font-black uppercase text-fuchsia-200">
+                                      <Monitor className="w-3 h-3" /> DEDICATED SERVER
+                                    </span>
+                                  )}
+                                  {room.isCustomTrack && (
+                                    <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/25 border border-amber-400/50 px-2 py-0.5 text-[10px] font-black uppercase text-amber-200">
+                                      <Sparkles className="w-3 h-3" /> CUSTOM CIRCUIT
+                                    </span>
+                                  )}
+                                  <span className="rounded-md bg-cyan-500/20 border border-cyan-400/40 px-2 py-0.5 text-[10px] font-black uppercase text-cyan-300">
+                                    {room.racePhase === "COUNTDOWN"
+                                      ? "STARTING GRID"
+                                      : `LIVE • LAP ${room.currentLap}/${room.totalLaps}`}
+                                  </span>
+                                  <span className="text-xs font-black text-white">
+                                    {room.trackName}
+                                  </span>
+                                  {room.cupName && (
+                                    <span className="text-[10px] font-bold text-slate-400">
+                                      ({room.cupName})
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="mt-1 text-[11px] text-slate-300">
+                                  Host:{" "}
+                                  <strong className="text-amber-300">
+                                    {room.hostName}
+                                  </strong>{" "}
+                                  •{" "}
+                                  <span className="text-emerald-300 font-bold">
+                                    {room.humanCount}/4 Humans
+                                  </span>{" "}
+                                  •{" "}
+                                  <span className="text-cyan-300 font-bold">
+                                    {room.aiSlotCount} AI{" "}
+                                    {room.aiSlotCount === 1 ? "Bot" : "Bots"} Open
+                                  </span>
+                                </div>
+                                {room.slotSummaries && room.slotSummaries.length > 0 && (
+                                  <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                                    {room.slotSummaries.map((slot) => (
+                                      <span
+                                        key={slot.slotIndex}
+                                        className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                          slot.isHuman
+                                            ? "bg-cyan-500/20 border border-cyan-400/50 text-cyan-200"
+                                            : "bg-slate-800/80 border border-white/10 text-slate-400"
+                                        }`}
+                                      >
+                                        <span>{slot.playerName}</span>
+                                        <span
+                                          className={`rounded px-1 text-[8px] font-black uppercase ${
+                                            slot.isHuman
+                                              ? "bg-cyan-400 text-slate-950"
+                                              : "bg-slate-700 text-slate-300"
+                                          }`}
+                                        >
+                                          {slot.isHuman ? "HUMAN" : "AI"}
+                                        </span>
+                                      </span>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+
+                              <button
+                                type="button"
+                                data-testid="join-room-btn"
+                                disabled={!canHotJoin || isJoiningThis}
+                                onClick={() => handleJoinOnlineRoom(room)}
+                                className={`rounded-xl px-4 py-2.5 text-xs font-black uppercase tracking-wider transition shrink-0 ${
+                                  canHotJoin
+                                    ? "bg-gradient-to-r from-cyan-400 to-emerald-400 text-slate-950 hover:brightness-110 active:scale-95 cursor-pointer shadow-lg"
+                                    : "bg-slate-800 text-slate-500 cursor-not-allowed"
+                                }`}
+                              >
+                                {isJoiningThis
+                                  ? "JOINING..."
+                                  : canHotJoin
+                                  ? "JOIN & REPLACE AI"
+                                  : "FULL (4/4)"}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Compact Multiplayer Loadout & Circuit Picker */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="rounded-3xl border border-white/15 bg-slate-900/75 p-4 space-y-3">
+                  <div className="text-xs font-black uppercase tracking-wider text-amber-300">
+                    1. SELECT CIRCUIT FOR HOSTING
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {cupsCatalog.map((cup) => (
+                      <button
+                        key={cup.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedCupId(cup.id);
+                          setSelectedTrackIdx(0);
+                        }}
+                        className={`rounded-xl border p-2.5 text-left transition cursor-pointer ${
+                          cup.id === activeCup?.id
+                            ? "border-amber-400 bg-amber-500/15 text-white"
+                            : "border-white/10 bg-slate-950/60 text-slate-300 hover:border-white/25"
+                        }`}
+                      >
+                        <div className="text-xs font-black truncate">{cup.name}</div>
+                        <div className="text-[10px] text-slate-400">{cup.tracks.length} Circuits</div>
+                      </button>
+                    ))}
+                  </div>
+                  {activeCup && (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-white/10">
+                      {activeCup.tracks.map((t, idx) => (
+                        <button
+                          key={t.id ?? idx}
+                          type="button"
+                          onClick={() => setSelectedTrackIdx(idx)}
+                          className={`rounded-xl border p-2 text-left transition cursor-pointer ${
+                            idx === selectedTrackIdx
+                              ? "border-cyan-400 bg-cyan-500/15 text-white"
+                              : "border-white/10 bg-slate-950/60 text-slate-300 hover:border-white/25"
+                          }`}
+                        >
+                          <div className="text-[10px] font-black text-amber-300">RACE {idx + 1}</div>
+                          <div className="text-xs font-bold truncate">{t.name}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="rounded-3xl border border-white/15 bg-slate-900/75 p-4 space-y-3">
+                  <div className="text-xs font-black uppercase tracking-wider text-cyan-300">
+                    2. SELECT DRIVER &amp; KART CHASSIS FOR ONLINE RACE
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {CHARACTER_ROSTER.map((char) => {
+                      const isSelected = char.id === selectedCharacter.id;
+                      const charKartId = selectedKartByChar[char.id] ?? char.defaultKartId;
+                      const stats = resolveRacerStats(char.id, charKartId);
+                      return (
+                        <div
+                          key={char.id}
+                          onClick={() => setSelectedCharId(char.id)}
+                          className={`rounded-xl border p-2.5 transition cursor-pointer ${
+                            isSelected
+                              ? "border-amber-400 bg-amber-500/15 text-white"
+                              : "border-white/10 bg-slate-950/60 text-slate-300 hover:border-white/25"
+                          }`}
+                        >
+                          <div className="text-xs font-black truncate">{char.name}</div>
+                          <div className="text-[10px] text-amber-300 font-bold">{stats.baseMass} kg</div>
+                          <select
+                            value={charKartId}
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={(e) => {
+                              setSelectedCharId(char.id);
+                              setSelectedKartByChar((prev) => ({
+                                ...prev,
+                                [char.id]: e.target.value,
+                              }));
+                            }}
+                            className="mt-1.5 w-full rounded-lg border border-white/15 bg-slate-950 px-1.5 py-1 text-[10px] font-bold text-white"
+                          >
+                            {char.availableKartIds.map((kId) => {
+                              const k = KART_CHASSIS_CATALOG[kId];
+                              return k ? (
+                                <option key={k.id} value={k.id}>
+                                  {k.name}
+                                </option>
+                              ) : null;
+                            })}
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ===================================================================== */}
+          {/* TAB 3: AI LAB, NEURO-EVOLUTION SIMULATOR & BUILD ANALYTICS            */}
+          {/* ===================================================================== */}
+          {menuTab === "AI_LAB" && (
+            <div data-testid="ai-lab-view" className="space-y-5 mt-5">
+              {/* 4-Tier AI Thinking, Difficulty & Self-Learning Selector */}
+              <div className="rounded-3xl border border-fuchsia-400/35 bg-slate-900/85 p-5 sm:p-6 flex flex-col gap-5 shadow-xl">
+                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+                  <div className="flex-1 space-y-1.5">
+                    <div className="text-xs font-black uppercase tracking-widest text-amber-300 flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center gap-1.5">
+                        <Zap className="w-4 h-4" /> AI OPPONENT THINKING &amp; NEURO-EVOLUTION LAB
+                      </span>
+                      <span className="rounded-full border border-fuchsia-400/40 bg-fuchsia-500/15 px-2.5 py-0.5 text-[10px] font-black text-fuchsia-200">
+                        GEN #{globalAiBrain.getTelemetrySnapshot(aiDifficulty).generation} • BEST FITNESS {globalAiBrain.getTelemetrySnapshot(aiDifficulty).championFitness.toFixed(1)}/100
+                      </span>
+                    </div>
+                    <p className="text-xs sm:text-sm text-slate-300">
+                      {aiDifficulty === "EASY" &&
+                        "EASY (Rookie): Full kart top speed unlocked, relaxed corner lines, conservative drift entry, and wide item scatter."}
+                      {aiDifficulty === "MEDIUM" &&
+                        "MEDIUM (Challenger): Spirited apex cuts, hits ~75% of speed booster pads & ramps, charges Blue/Orange Mini-Turbos, and leads shots."}
+                      {aiDifficulty === "HARD" &&
+                        "HARD (Pro Ace): High-speed pro racing! Cuts optimal inside apexes, holds drifts through grass shortcuts with boost, and uses predictive aiming."}
+                      {aiDifficulty === "SELF_LEARNING" &&
+                        "SELF-LEARNING ((1+3) Elitist Evolution Strategy + Neural Residual Policy): 23-parameter genome (15 spline/drift-PD weights + 8-input tanh neural steering residual) scored at 60Hz with Orthogonal Latin-Square grid×brain rotation!"}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+                    <button
+                      type="button"
+                      data-testid="open-ai-architecture-btn"
+                      onClick={() => setShowAiArchitectureGuide(true)}
+                      className="inline-flex items-center gap-1.5 rounded-2xl border border-fuchsia-400/50 bg-fuchsia-500/15 px-4 py-2.5 text-xs font-black uppercase text-fuchsia-200 hover:bg-fuchsia-500/25 transition cursor-pointer"
+                    >
+                      <Brain className="w-4 h-4 text-fuchsia-300" />
+                      <span>How AI Self-Learning Works</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      data-testid="open-analytics-modal-btn"
+                      onClick={() => setShowAnalyticsModal(true)}
+                      className="inline-flex items-center gap-2 rounded-2xl border-2 border-cyan-400/60 bg-cyan-500/15 px-4 py-2.5 text-xs font-black tracking-wider text-cyan-200 uppercase hover:bg-cyan-500/25 transition cursor-pointer"
+                    >
+                      <Activity className="w-4 h-4 text-cyan-300" />
+                      <span>Build Analytics Dashboard</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-4 border-t border-white/10">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 flex-1">
+                    {(
+                      [
+                        {
+                          id: "EASY" as AiDifficulty,
+                          label: "EASY",
+                          sub: globalAiBrain.getTelemetrySnapshot(aiDifficulty)
+                            .useTrainedPresets.EASY
+                            ? "Trained Dataset"
+                            : "Beginner",
+                          activeClass:
+                            "border-emerald-400 bg-emerald-500/25 text-emerald-200 shadow-[0_0_16px_rgba(16,185,129,0.25)]",
+                        },
+                        {
+                          id: "MEDIUM" as AiDifficulty,
+                          label: "MEDIUM",
+                          sub: globalAiBrain.getTelemetrySnapshot(aiDifficulty)
+                            .useTrainedPresets.MEDIUM
+                            ? "Trained Dataset"
+                            : "Challenger",
+                          activeClass:
+                            "border-cyan-400 bg-cyan-500/25 text-cyan-200 shadow-[0_0_16px_rgba(34,211,238,0.25)]",
+                        },
+                        {
+                          id: "HARD" as AiDifficulty,
+                          label: "HARD",
+                          sub: globalAiBrain.getTelemetrySnapshot(aiDifficulty)
+                            .useTrainedPresets.HARD
+                            ? "Trained Dataset"
+                            : "Pro Ace",
+                          activeClass:
+                            "border-rose-400 bg-rose-500/25 text-rose-200 shadow-[0_0_20px_rgba(244,63,94,0.3)]",
+                        },
+                        {
+                          id: "SELF_LEARNING" as AiDifficulty,
+                          label: "SELF LEARNING",
+                          sub: `Gen #${globalAiBrain.getTelemetrySnapshot("SELF_LEARNING").generation}`,
+                          activeClass:
+                            "border-fuchsia-400 bg-fuchsia-500/25 text-fuchsia-200 shadow-[0_0_20px_rgba(217,70,239,0.35)]",
+                        },
+                      ] as const
+                    ).map((tier) => {
+                      const active = aiDifficulty === tier.id;
+                      return (
+                        <button
+                          key={tier.id}
+                          type="button"
+                          data-testid={`ai-diff-${tier.id.toLowerCase()}`}
+                          onClick={() => handleSelectAiDifficulty(tier.id)}
+                          className={`rounded-2xl border-2 px-3.5 py-2.5 text-center transition cursor-pointer ${
+                            active
+                              ? tier.activeClass
+                              : "border-white/10 bg-slate-950/60 text-slate-400 hover:border-white/25 hover:text-white"
+                          }`}
+                        >
+                          <div className="text-xs font-black tracking-wider uppercase flex items-center justify-center gap-1">
+                            {tier.id === "SELF_LEARNING" && (
+                              <Brain className="w-3.5 h-3.5 text-fuchsia-300" />
+                            )}
+                            <span>{tier.label}</span>
+                          </div>
+                          <div className="text-[10px] font-bold opacity-80">
+                            {tier.sub}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <button
+                    type="button"
+                    data-testid="launch-ai-training-sim-btn"
+                    onClick={() =>
+                      startAiSelfTrainingSim(activeCup.id, selectedTrackIdx)
+                    }
+                    className="rounded-2xl border-2 border-fuchsia-400/70 bg-gradient-to-r from-fuchsia-600/35 to-indigo-600/35 px-5 py-3 text-left hover:from-fuchsia-500/45 hover:to-indigo-500/45 transition cursor-pointer shadow-[0_0_20px_rgba(217,70,239,0.25)]"
+                    title="Launch 4 AI racers in accelerated 8x auto-looping Self-Training Simulation mode with live path & telemetry analysis"
+                  >
+                    <div className="flex items-center gap-1.5 text-xs font-black uppercase text-fuchsia-200">
+                      <FastForward className="w-4 h-4 text-fuchsia-300" />
+                      <span>LAUNCH 4-AI TRAINING SIM ({trackDef.name.toUpperCase()})</span>
+                    </div>
+                    <div className="text-[10px] font-bold text-fuchsia-300/90">
+                      Auto-Repeat + Live Path &amp; Telemetry Lab
+                    </div>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Controls & Physics Reference Footer */}
           <div className="mt-6 grid grid-cols-1 md:grid-cols-3 gap-4 rounded-3xl border border-white/15 bg-slate-900/60 p-5 text-xs">
@@ -4549,14 +5090,14 @@ export const RaceGame: React.FC = () => {
               <Gauge className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
               <div>
                 <h3 className="font-black text-white uppercase tracking-wider">
-                  Desktop & Mobile Controls
+                  Desktop &amp; Mobile Controls
                 </h3>
                 <p className="mt-1 text-slate-300">
                   <strong className="text-white">Desktop:</strong> WASD / Arrows to drive,{" "}
-                  <strong className="text-amber-300">Space / Shift</strong> to Jump & Hold to Drift,{" "}
+                  <strong className="text-amber-300">Space / Shift</strong> to Jump &amp; Hold to Drift,{" "}
                   <strong className="text-emerald-300">E / Enter</strong> for Power-Up,{" "}
                   <strong className="text-cyan-300">C</strong> for Camera.{" "}
-                  <strong className="text-white">Mobile:</strong> Bottom-left Virtual Joystick + Bottom-right Jump/Drift & Item buttons.
+                  <strong className="text-white">Mobile:</strong> Bottom-left Virtual Joystick + Bottom-right Jump/Drift &amp; Item buttons.
                 </p>
               </div>
             </div>
@@ -4565,7 +5106,7 @@ export const RaceGame: React.FC = () => {
               <Flame className="w-5 h-5 text-orange-400 shrink-0 mt-0.5" />
               <div>
                 <h3 className="font-black text-white uppercase tracking-wider">
-                  Hop-to-Drift & 3-Stage Sparks
+                  Hop-to-Drift &amp; 3-Stage Sparks
                 </h3>
                 <p className="mt-1 text-slate-300">
                   Tap <strong className="text-amber-300">Jump</strong> to hop (vy = 6.5). Hold Jump while steering to lock a ±22° drift slip angle! Charge{" "}
@@ -4595,6 +5136,10 @@ export const RaceGame: React.FC = () => {
         </div>
         {balanceGuideModal}
         {aiArchitectureGuideModal}
+        <AnalyticsDashboardModal
+          open={showAnalyticsModal}
+          onClose={() => setShowAnalyticsModal(false)}
+        />
       </div>
     );
   }
@@ -5394,6 +5939,16 @@ export const RaceGame: React.FC = () => {
 
                     <button
                       type="button"
+                      data-testid="ai-lab-open-analytics-btn"
+                      onClick={() => setShowAnalyticsModal(true)}
+                      className="inline-flex items-center gap-1 rounded-md border border-cyan-400/60 bg-cyan-500/20 px-2 py-0.5 text-[9px] font-black uppercase text-cyan-200 hover:bg-cyan-500/30 cursor-pointer"
+                      title="Open Build Telemetry & Cloud Analytics Dashboard"
+                    >
+                      CLOUD ANALYTICS
+                    </button>
+
+                    <button
+                      type="button"
                       data-testid="export-ai-brain-json-btn"
                       onClick={() => {
                         const json = globalAiBrain.exportBrainDatasetJson();
@@ -5932,6 +6487,8 @@ export const RaceGame: React.FC = () => {
                   ? "bg-emerald-500/20 text-emerald-300 border border-emerald-400/40"
                   : telemetry.surface === "CURB"
                   ? "bg-amber-500/25 text-amber-300 border border-amber-400/40"
+                  : telemetry.surface === "SHALLOW_WATER"
+                  ? "bg-sky-500/25 text-sky-300 border border-sky-400/50"
                   : telemetry.prolongedRocketBoostActive
                   ? "bg-cyan-500/25 text-cyan-300 border border-cyan-400/50"
                   : "bg-red-500/30 text-red-300 border border-red-400/50 animate-pulse"
@@ -5941,6 +6498,8 @@ export const RaceGame: React.FC = () => {
                 ? "PAVEMENT (100%)"
                 : telemetry.surface === "CURB"
                 ? "RUMBLE CURB (98%)"
+                : telemetry.surface === "SHALLOW_WATER"
+                ? "SHALLOW WATER (85%)"
                 : telemetry.prolongedRocketBoostActive
                 ? "OFF-ROAD IMMUNITY (PRB)"
                 : "OFF-ROAD SLOWDOWN (55%)"}
@@ -6926,6 +7485,10 @@ export const RaceGame: React.FC = () => {
 
       {balanceGuideModal}
       {aiArchitectureGuideModal}
+      <AnalyticsDashboardModal
+        open={showAnalyticsModal}
+        onClose={() => setShowAnalyticsModal(false)}
+      />
     </div>
   );
 };

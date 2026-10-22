@@ -78,6 +78,9 @@ export function getUnifiedAiTraceSampleColor(
       ? { hex: "#38bdf8", label: "Boosted Shortcut Cut" }
       : { hex: "#f43f5e", label: "Unboosted Off-Road Drag" };
   }
+  if (s.surface === "SHALLOW_WATER") {
+    return { hex: "#22d3ee", label: "Shallow Lagoon Splash (85%)" };
+  }
   if (s.driftState === "DRIFT_ACTIVE") {
     return { hex: "#fbbf24", label: "Active Drift Arc" };
   }
@@ -95,6 +98,8 @@ const OBSTACLE_COLORS: Record<ObstaclePrefabType, string> = {
 const SCENERY_COLORS: Record<SceneryPrefabType, string> = {
   PINE_TREE: "#15803d",
   OAK_TREE: "#22c55e",
+  PALM_TREE: "#10b981",
+  BEACH_CABANA: "#06b6d4",
   BOULDER: "#94a3b8",
   GRANDSTAND: "#ef4444",
   SUBURBAN_HOUSE: "#f59e0b",
@@ -361,6 +366,19 @@ export function computeUnifiedMapGeometry(
       ) {
         const archBell = Math.sin(u * Math.PI);
         latCenter = attachLat + (mask.lateral - attachLat) * archBell;
+      } else if (mask.type === "SHALLOW_WATER") {
+        const isOffCenter = Math.abs(mask.lateral) > 4.0;
+        const archBell = Math.sin(u * Math.PI);
+        latCenter = isOffCenter
+          ? sideSign * 6.0 + (mask.lateral - sideSign * 6.0) * archBell
+          : mask.lateral;
+        const taper =
+          u < 0.14
+            ? 0.55 + 0.45 * (u / 0.14)
+            : u > 0.86
+            ? 0.55 + 0.45 * ((1 - u) / 0.14)
+            : 1.0;
+        localHalfW = Math.max(2.0, halfW * taper);
       } else if (mask.type === "ROAD_HOLE") {
         const holeProfile = Math.sin(u * Math.PI);
         localHalfW = Math.max(0.3, halfW * holeProfile);
@@ -611,30 +629,48 @@ const MemoizedStaticTrackLayers: React.FC<StaticTrackLayersProps> = React.memo(
             />
           ))}
 
-        {/* 1. Outer Grass/Dirt Runoff & Dynamic Wall Perimeter Zone */}
+        {/* 1. Outer Grass/Beach/Canyon Runoff & Dynamic Wall/Coastline Perimeter Zone */}
         {showWallBoundary && wallRibbonPath && (
           <g className="pointer-events-none">
             <path
               d={wallRibbonPath}
-              fill="#14291d"
+              fill={
+                trackDef.biome === "TROPICAL_ATOLL"
+                  ? "#45381b"
+                  : trackDef.biome === "SUNSET_CANYON"
+                  ? "#432014"
+                  : "#14291d"
+              }
               fillRule="nonzero"
               opacity={variant === "EDITOR" ? 0.65 : 0.55}
             />
             <path
               d={wallLeftEdgePath}
               fill="none"
-              stroke="#334155"
+              stroke={
+                trackDef.biome === "TROPICAL_ATOLL"
+                  ? "#22d3ee"
+                  : trackDef.biome === "SUNSET_CANYON"
+                  ? "#f97316"
+                  : "#334155"
+              }
               strokeWidth={variant === "RADAR" ? 1.4 : 1.1}
               strokeDasharray="6 4"
-              opacity={0.65}
+              opacity={0.75}
             />
             <path
               d={wallRightEdgePath}
               fill="none"
-              stroke="#334155"
+              stroke={
+                trackDef.biome === "TROPICAL_ATOLL"
+                  ? "#22d3ee"
+                  : trackDef.biome === "SUNSET_CANYON"
+                  ? "#f97316"
+                  : "#334155"
+              }
               strokeWidth={variant === "RADAR" ? 1.4 : 1.1}
               strokeDasharray="6 4"
-              opacity={0.65}
+              opacity={0.75}
             />
           </g>
         )}
@@ -750,7 +786,13 @@ const MemoizedStaticTrackLayers: React.FC<StaticTrackLayersProps> = React.memo(
         <g className="pointer-events-none">
           <path
             d={curbRibbonPath}
-            fill="#dc2626"
+            fill={
+              trackDef.biome === "TROPICAL_ATOLL"
+                ? "#0891b2"
+                : trackDef.biome === "SUNSET_CANYON"
+                ? "#ea580c"
+                : "#dc2626"
+            }
             fillRule="nonzero"
             opacity={0.9}
           />
@@ -781,13 +823,50 @@ const MemoizedStaticTrackLayers: React.FC<StaticTrackLayersProps> = React.memo(
           />
         </g>
 
-        {/* 4. Parallel Split Medians (`SPLIT_MEDIAN`) & Road Holes (`ROAD_HOLE`) On Top of Asphalt */}
+        {/* 4. Parallel Split Medians (`SPLIT_MEDIAN`), Shallow Lagoon Water (`SHALLOW_WATER`), & Road Holes (`ROAD_HOLE`) On Top of Asphalt */}
         {maskGeometries
           .filter(
             (mg) =>
-              mg.mask.type === "SPLIT_MEDIAN" || mg.mask.type === "ROAD_HOLE"
+              mg.mask.type === "SPLIT_MEDIAN" ||
+              mg.mask.type === "ROAD_HOLE" ||
+              mg.mask.type === "SHALLOW_WATER"
           )
           .map((mg) => {
+            if (mg.mask.type === "SHALLOW_WATER") {
+              return (
+                <g
+                  key={mg.mask.id}
+                  onClick={
+                    onClickMask ? (e) => onClickMask(mg.mask, e) : undefined
+                  }
+                  className={
+                    onClickMask ? "cursor-pointer" : "pointer-events-none"
+                  }
+                >
+                  <polygon
+                    points={mg.outerPolygonPoints}
+                    fill="#cffafe"
+                    fillOpacity={0.75}
+                  />
+                  <polygon
+                    points={mg.innerPolygonPoints}
+                    fill="#06b6d4"
+                    fillOpacity={0.82}
+                    stroke="#67e8f9"
+                    strokeWidth={1.0}
+                    strokeDasharray="4 3"
+                  />
+                  <path
+                    d={mg.centerlinePath}
+                    fill="none"
+                    stroke="#ecfeff"
+                    strokeWidth={1.1}
+                    strokeDasharray="4 4"
+                    opacity={0.85}
+                  />
+                </g>
+              );
+            }
             if (mg.mask.type === "ROAD_HOLE") {
               return (
                 <g

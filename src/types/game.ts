@@ -77,7 +77,12 @@ export interface ResolvedRacerStats {
   driftSteerOutRatio: number;
 }
 
-export type SurfaceType = "PAVEMENT" | "CURB" | "OFFROAD";
+export type SurfaceType = "PAVEMENT" | "CURB" | "SHALLOW_WATER" | "OFFROAD";
+
+export type TrackBiome =
+  | "ALPINE_SUBURBS"
+  | "TROPICAL_ATOLL"
+  | "SUNSET_CANYON";
 
 export type DriftState = "NONE" | "HOPPING" | "DRIFT_ACTIVE";
 
@@ -414,6 +419,8 @@ export type ObstaclePrefabType =
 export type SceneryPrefabType =
   | "PINE_TREE"
   | "OAK_TREE"
+  | "PALM_TREE"
+  | "BEACH_CABANA"
   | "BOULDER"
   | "GRANDSTAND"
   | "SUBURBAN_HOUSE"
@@ -423,7 +430,8 @@ export type TrackMaskType =
   | "ROAD_HOLE"
   | "SPLIT_MEDIAN"
   | "BOOST_SHORTCUT"
-  | "PAVED_SHORTCUT";
+  | "PAVED_SHORTCUT"
+  | "SHALLOW_WATER";
 
 export interface PlacedTrackMask {
   id: string;
@@ -477,6 +485,7 @@ export interface CustomTrackDefinition {
   cupId?: string;
   name: string;
   description?: string;
+  biome?: TrackBiome;
   roadHalfWidth: number;
   controlPoints: Array<{
     x: number;

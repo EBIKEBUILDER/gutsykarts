@@ -28,6 +28,7 @@ import {
   PlacedTrackMask,
   SceneryPrefabType,
   TerrainSculptMod,
+  TrackBiome,
   TrackMaskType,
 } from "@/src/types/game";
 import defaultCupsJson from "./defaultCups.json";
@@ -79,6 +80,7 @@ export interface TrackObstacleZone {
 }
 
 export interface BuiltTrack {
+  biome: TrackBiome;
   controlPoints: Vector3[];
   splinePoints: Vector3[];
   path3d: Path3D;
@@ -456,12 +458,13 @@ export function computeTrackSplineSamples(
     lastSample.cumulativeDistance + closingStep
   );
 
-  // Automatically flare road width around SPLIT_MEDIAN masks and carve outer wall boundaries around BOOST_SHORTCUT & PAVED_SHORTCUT zones
+  // Automatically flare road width around SPLIT_MEDIAN masks and carve outer wall boundaries around BOOST_SHORTCUT, PAVED_SHORTCUT & SHALLOW_WATER zones
   const corridorMasks = (trackMasks ?? []).filter(
     (m) =>
       m.type === "SPLIT_MEDIAN" ||
       m.type === "BOOST_SHORTCUT" ||
-      m.type === "PAVED_SHORTCUT"
+      m.type === "PAVED_SHORTCUT" ||
+      m.type === "SHALLOW_WATER"
   );
   if (corridorMasks.length > 0) {
     for (let i = 0; i < samples.length; i++) {
@@ -744,7 +747,8 @@ export function generateProceduralForestOutsideTrack(
   controlPoints: Array<{ x: number; y: number; z: number }>,
   roadHalfWidth = ROAD_HALF_WIDTH,
   seedOffset = 0,
-  density = 1.0
+  density = 1.0,
+  biome: TrackBiome = "ALPINE_SUBURBS"
 ): PlacedSceneryProp[] {
   const { samples, queryClosestTrackPoint } = computeTrackSplineSamples(
     controlPoints,
@@ -798,7 +802,7 @@ export function generateProceduralForestOutsideTrack(
     }
   }
 
-  // 3. Inner & Mid Ring of Pine Trees, Oak Trees, Houses & Boulders following the circuit exterior
+  // 3. Inner & Mid Ring of Biome-Specific Trees, Structures & Boulders following the circuit exterior
   const sampleStep = Math.max(2, Math.round(5 / Math.max(0.35, density)));
   for (let i = 0; i < samples.length; i += sampleStep) {
     const s = samples[i];
@@ -815,18 +819,41 @@ export function generateProceduralForestOutsideTrack(
       if (q.horizontalDistance < minClearance) continue;
 
       let type: SceneryPrefabType = "PINE_TREE";
-      if (frac > 0.88) {
-        type = "SUBURBAN_HOUSE";
-      } else if (frac > 0.72) {
-        type = "BOULDER";
-      } else if (frac > 0.44) {
-        type = "OAK_TREE";
+      if (biome === "TROPICAL_ATOLL") {
+        if (frac > 0.85) {
+          type = "BEACH_CABANA";
+        } else if (frac > 0.72) {
+          type = "BOULDER";
+        } else if (frac > 0.25) {
+          type = "PALM_TREE";
+        } else {
+          type = "OAK_TREE";
+        }
+      } else if (biome === "SUNSET_CANYON") {
+        if (frac > 0.88) {
+          type = "SUBURBAN_HOUSE";
+        } else if (frac > 0.48) {
+          type = "BOULDER";
+        } else if (frac > 0.26) {
+          type = "PALM_TREE";
+        } else {
+          type = "OAK_TREE";
+        }
+      } else {
+        if (frac > 0.88) {
+          type = "SUBURBAN_HOUSE";
+        } else if (frac > 0.72) {
+          type = "BOULDER";
+        } else if (frac > 0.44) {
+          type = "OAK_TREE";
+        }
       }
 
-      const scale =
-        type === "SUBURBAN_HOUSE"
-          ? 1.0
-          : Number((0.85 + ((frac * 10) % 1) * 0.55).toFixed(2));
+      const isFacingStructure =
+        type === "SUBURBAN_HOUSE" || type === "BEACH_CABANA";
+      const scale = isFacingStructure
+        ? 1.0
+        : Number((0.85 + ((frac * 10) % 1) * 0.55).toFixed(2));
       const yaw = Math.atan2(s.tangent.x, s.tangent.z);
 
       props.push({
@@ -835,7 +862,7 @@ export function generateProceduralForestOutsideTrack(
         x: Number(candidate.x.toFixed(1)),
         z: Number(candidate.z.toFixed(1)),
         rotationY: Number(
-          (type === "SUBURBAN_HOUSE"
+          (isFacingStructure
             ? yaw + (side > 0 ? -Math.PI / 2 : Math.PI / 2)
             : frac * Math.PI * 2
           ).toFixed(2)
@@ -846,7 +873,7 @@ export function generateProceduralForestOutsideTrack(
     }
   }
 
-  // 4. Outer Woodland Scatter (fills the broader surrounding hills outside the track)
+  // 4. Outer Biome Scatter (fills the broader surrounding terrain/coastline outside the track)
   let minX = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY;
   let minZ = Number.POSITIVE_INFINITY;
@@ -868,12 +895,22 @@ export function generateProceduralForestOutsideTrack(
     const wx = minX - 80 + rx * (maxX - minX + 160);
     const wz = minZ - 80 + rz * (maxZ - minZ + 160);
     const q = queryClosestTrackPoint(new Vector3(wx, 0, wz));
-    if (q.horizontalDistance < minClearance + 5.0 || q.horizontalDistance > 110) {
+    const maxScatterDist = biome === "TROPICAL_ATOLL" ? 64 : 110;
+    if (
+      q.horizontalDistance < minClearance + 5.0 ||
+      q.horizontalDistance > maxScatterDist
+    ) {
       continue;
     }
 
-    const type: SceneryPrefabType =
-      k % 5 === 0 ? "BOULDER" : k % 2 === 0 ? "PINE_TREE" : "OAK_TREE";
+    let type: SceneryPrefabType;
+    if (biome === "TROPICAL_ATOLL") {
+      type = k % 4 === 0 ? "BOULDER" : "PALM_TREE";
+    } else if (biome === "SUNSET_CANYON") {
+      type = k % 3 === 0 ? "PALM_TREE" : "BOULDER";
+    } else {
+      type = k % 5 === 0 ? "BOULDER" : k % 2 === 0 ? "PINE_TREE" : "OAK_TREE";
+    }
     props.push({
       id: `prop_woods_${idCounter++}`,
       type,
@@ -930,7 +967,8 @@ export function syncTracksideSceneryAndClearRoad(
           def.controlPoints,
           roadHalfWidth,
           def.scenerySeed ?? 0,
-          def.sceneryDensity ?? 1.0
+          def.sceneryDensity ?? 1.0,
+          def.biome ?? "ALPINE_SUBURBS"
         )
       : [];
 
@@ -948,7 +986,8 @@ export function evaluateTerrainHeightAt(
   curbOuterWidth: number,
   wallHalfWidth: number,
   terrainHillScale = 1.0,
-  terrainMods: TerrainSculptMod[] = []
+  terrainMods: TerrainSculptMod[] = [],
+  biome: TrackBiome = "ALPINE_SUBURBS"
 ): { y: number; dist: number; roadY: number } {
   const query = queryClosestTrackPoint(new Vector3(wx, 0, wz));
   const dist = query.horizontalDistance;
@@ -977,7 +1016,7 @@ export function evaluateTerrainHeightAt(
   }
 
   // Keep the off-road shortcut corridor level with roadY - 0.22 out to effectiveWallHalf - 5.0
-  // so BOOST_SHORTCUT and PAVED_SHORTCUT lanes never get buried by hillside terrain waves!
+  // so BOOST_SHORTCUT, PAVED_SHORTCUT, and SHALLOW_WATER lanes never get buried by hillside terrain waves!
   if (hasShortcutExpansion && dist <= effectiveWallHalf - 5.0) {
     return { y: roadY - 0.22, dist, roadY };
   }
@@ -992,10 +1031,28 @@ export function evaluateTerrainHeightAt(
     (Math.sin(wx * 0.045) * Math.cos(wz * 0.045) * 2.6 +
       Math.sin((wx + wz) * 0.025) * 2.0) *
     terrainHillScale;
-  const outerBowl =
-    dist > effectiveWallHalf
-      ? Math.min(18, (dist - effectiveWallHalf) * 0.22 * terrainHillScale)
-      : 0;
+
+  let outerBowl = 0;
+  let hillMult = 0.4;
+  if (biome === "TROPICAL_ATOLL") {
+    // Gentle sandy island coastline sloping downward into the turquoise lagoon/ocean water table
+    hillMult = 0.22;
+    outerBowl =
+      dist > effectiveWallHalf
+        ? -Math.min(4.6, (dist - effectiveWallHalf) * 0.095)
+        : 0;
+  } else if (biome === "SUNSET_CANYON") {
+    hillMult = 0.48;
+    outerBowl =
+      dist > effectiveWallHalf
+        ? Math.min(22, (dist - effectiveWallHalf) * 0.26 * terrainHillScale)
+        : 0;
+  } else {
+    outerBowl =
+      dist > effectiveWallHalf
+        ? Math.min(18, (dist - effectiveWallHalf) * 0.22 * terrainHillScale)
+        : 0;
+  }
 
   // Since roadY already incorporates terrainMods along the road centerline, apply only the
   // differential customDeltaY outside the shoulder so road hills and terrain hills match seamlessly!
@@ -1008,7 +1065,9 @@ export function evaluateTerrainHeightAt(
   const relativeDeltaY = modAtPoint - modAtRoad;
 
   const y =
-    roadY - 0.25 + blend * (hillWave * 0.4 + outerBowl + relativeDeltaY);
+    roadY -
+    0.25 +
+    blend * (hillWave * hillMult + outerBowl + relativeDeltaY);
   return { y, dist, roadY };
 }
 
@@ -1287,6 +1346,12 @@ export function hydrateTrackDefinition(
     return pt;
   });
   const roadHalfWidth = rawTrack.roadHalfWidth || ROAD_HALF_WIDTH;
+  const biome: TrackBiome =
+    rawTrack.biome === "TROPICAL_ATOLL" ||
+    rawTrack.biome === "SUNSET_CANYON" ||
+    rawTrack.biome === "ALPINE_SUBURBS"
+      ? rawTrack.biome
+      : "ALPINE_SUBURBS";
   const autoTracksideScenery = rawTrack.autoTracksideScenery !== false;
   const scenerySeed = rawTrack.scenerySeed ?? 0;
   const sceneryDensity = rawTrack.sceneryDensity ?? 1.0;
@@ -1301,7 +1366,8 @@ export function hydrateTrackDefinition(
       controlPoints,
       roadHalfWidth,
       scenerySeed,
-      sceneryDensity
+      sceneryDensity,
+      biome
     );
     const manualProps = sceneryProps.filter((p) => p.isManual);
     sceneryProps = [...generated, ...manualProps];
@@ -1321,6 +1387,7 @@ export function hydrateTrackDefinition(
 
   return {
     ...rawTrack,
+    biome,
     roadHalfWidth,
     controlPoints,
     boostPads: (rawTrack.boostPads ?? []).map((b) => ({ ...b })),
@@ -1887,10 +1954,13 @@ export function sanitizeCustomTrackDefinition(
     "SPLIT_MEDIAN",
     "BOOST_SHORTCUT",
     "PAVED_SHORTCUT",
+    "SHALLOW_WATER",
   ];
   const validScenery: SceneryPrefabType[] = [
     "PINE_TREE",
     "OAK_TREE",
+    "PALM_TREE",
+    "BEACH_CABANA",
     "BOULDER",
     "GRANDSTAND",
     "SUBURBAN_HOUSE",
@@ -2000,6 +2070,13 @@ export function sanitizeCustomTrackDefinition(
         })
     : [];
 
+  const biome: TrackBiome =
+    obj.biome === "TROPICAL_ATOLL" ||
+    obj.biome === "SUNSET_CANYON" ||
+    obj.biome === "ALPINE_SUBURBS"
+      ? obj.biome
+      : "ALPINE_SUBURBS";
+
   return hydrateTrackDefinition({
     id: typeof obj.id === "string" ? obj.id : `track_${Date.now()}`,
     cupId: typeof obj.cupId === "string" ? obj.cupId : undefined,
@@ -2008,6 +2085,7 @@ export function sanitizeCustomTrackDefinition(
       typeof obj.description === "string"
         ? obj.description.slice(0, 240)
         : "Imported custom circuit.",
+    biome,
     roadHalfWidth,
     controlPoints,
     boostPads,
@@ -2279,6 +2357,7 @@ export function buildProceduralTrack(
   customDef?: CustomTrackDefinition
 ): BuiltTrack {
   const trackDef = customDef ?? createDefaultTrackDefinition();
+  const biome: TrackBiome = trackDef.biome ?? "ALPINE_SUBURBS";
   const roadHalfWidth = trackDef.roadHalfWidth || ROAD_HALF_WIDTH;
   const curbOuterWidth = roadHalfWidth + 1.5;
   const wallHalfWidth = roadHalfWidth + 12.5;
@@ -2286,15 +2365,28 @@ export function buildProceduralTrack(
 
   const root = new TransformNode("trackRoot", scene);
 
-  // Lighting: vibrant suburban afternoon sky + directional sunlight with shadows
+  // Biome-aware sky & ambient lighting + directional sunlight with shadows
   const hemiLight = new HemisphericLight(
     "hemiLight",
     new Vector3(0.15, 1.0, 0.1),
     scene
   );
-  hemiLight.intensity = 0.78;
-  hemiLight.diffuse = new Color3(0.98, 0.98, 1.0);
-  hemiLight.groundColor = new Color3(0.32, 0.42, 0.34);
+  if (biome === "TROPICAL_ATOLL") {
+    scene.clearColor = new Color4(0.32, 0.78, 0.96, 1.0);
+    hemiLight.intensity = 0.85;
+    hemiLight.diffuse = new Color3(0.96, 0.99, 1.0);
+    hemiLight.groundColor = new Color3(0.28, 0.56, 0.54);
+  } else if (biome === "SUNSET_CANYON") {
+    scene.clearColor = new Color4(0.94, 0.52, 0.34, 1.0);
+    hemiLight.intensity = 0.76;
+    hemiLight.diffuse = new Color3(1.0, 0.88, 0.74);
+    hemiLight.groundColor = new Color3(0.46, 0.26, 0.18);
+  } else {
+    scene.clearColor = new Color4(0.52, 0.76, 0.96, 1.0);
+    hemiLight.intensity = 0.78;
+    hemiLight.diffuse = new Color3(0.98, 0.98, 1.0);
+    hemiLight.groundColor = new Color3(0.32, 0.42, 0.34);
+  }
 
   const sunLight = new DirectionalLight(
     "sunLight",
@@ -2302,8 +2394,11 @@ export function buildProceduralTrack(
     scene
   );
   sunLight.position = new Vector3(200, 220, -160);
-  sunLight.intensity = 0.95;
-  sunLight.diffuse = new Color3(1.0, 0.96, 0.88);
+  sunLight.intensity = biome === "TROPICAL_ATOLL" ? 1.05 : 0.95;
+  sunLight.diffuse =
+    biome === "SUNSET_CANYON"
+      ? new Color3(1.0, 0.84, 0.66)
+      : new Color3(1.0, 0.96, 0.88);
 
   const shadowGenerator = new ShadowGenerator(1024, sunLight);
   shadowGenerator.useBlurExponentialShadowMap = true;
@@ -2385,13 +2480,23 @@ export function buildProceduralTrack(
         .subtract(normal.scale(0.42))
     );
 
-    const isRedStripe = Math.floor(i / 2) % 2 === 0;
-    const stripeColor = isRedStripe
-      ? new Color4(0.92, 0.18, 0.18, 1.0)
+    const isPrimaryStripe = Math.floor(i / 2) % 2 === 0;
+    const stripeColor = isPrimaryStripe
+      ? biome === "TROPICAL_ATOLL"
+        ? new Color4(0.06, 0.72, 0.85, 1.0)
+        : biome === "SUNSET_CANYON"
+        ? new Color4(0.95, 0.48, 0.12, 1.0)
+        : new Color4(0.92, 0.18, 0.18, 1.0)
       : new Color4(0.96, 0.96, 0.98, 1.0);
     curbColorsLeft.push(stripeColor);
     curbColorsRight.push(stripeColor);
-    shoulderColors.push(new Color4(0.44, 0.35, 0.24, 1.0));
+    shoulderColors.push(
+      biome === "TROPICAL_ATOLL"
+        ? new Color4(0.92, 0.82, 0.56, 1.0)
+        : biome === "SUNSET_CANYON"
+        ? new Color4(0.68, 0.36, 0.22, 1.0)
+        : new Color4(0.44, 0.35, 0.24, 1.0)
+    );
   }
 
   const allLeftCurbColors = [
@@ -2474,7 +2579,8 @@ export function buildProceduralTrack(
     wallHalfWidth,
     terrainHillScale,
     terrainMods,
-    queryClosestTrackPoint
+    queryClosestTrackPoint,
+    biome
   );
 
   // Build perimeter bollards + all placed Scenery Prefabs from trackDef
@@ -2488,7 +2594,8 @@ export function buildProceduralTrack(
     terrainMods,
     trackDef.sceneryProps,
     queryClosestTrackPoint,
-    shadowGenerator
+    shadowGenerator,
+    biome
   );
 
   // Item Box Row indices from trackDef (mapped via true arc-length normT)
@@ -2513,7 +2620,7 @@ export function buildProceduralTrack(
     shadowGenerator
   );
 
-  // Track Masks (Road Holes / Pit Cutouts & Parallel Split-Lane Medians)
+  // Track Masks (Road Holes / Pit Cutouts, Parallel Split-Lane Medians, Shortcuts & Shallow Water)
   createTrackMasks(
     scene,
     root,
@@ -2526,6 +2633,7 @@ export function buildProceduralTrack(
   const { svgPath, viewBox } = computeMiniMapSvg(samples);
 
   return {
+    biome,
     controlPoints,
     splinePoints,
     path3d,
@@ -3111,6 +3219,101 @@ function createTrackMasks(
           post.isPickable = false;
         }
       }
+    } else if (mask.type === "SHALLOW_WATER") {
+      const steps = 18;
+      const halfSpanT =
+        Math.max(8, mask.length * 0.5) / Math.max(100, totalTrackLength);
+      const halfW = Math.max(3.5, mask.width * 0.5);
+
+      const leftFoam: Vector3[] = [];
+      const leftWater: Vector3[] = [];
+      const rightWater: Vector3[] = [];
+      const rightFoam: Vector3[] = [];
+
+      const isOffCenter = Math.abs(mask.lateral) > 4.0;
+      const sideSign = mask.lateral >= 0 ? 1 : -1;
+
+      for (let s = 0; s <= steps; s++) {
+        const u = s / steps;
+        const t = mask.normT - halfSpanT + u * (halfSpanT * 2);
+        const archBell = Math.sin(u * Math.PI);
+        const latCenter = isOffCenter
+          ? sideSign * 6.0 + (mask.lateral - sideSign * 6.0) * archBell
+          : mask.lateral;
+        const taper =
+          u < 0.14
+            ? 0.55 + 0.45 * (u / 0.14)
+            : u > 0.86
+            ? 0.55 + 0.45 * ((1 - u) / 0.14)
+            : 1.0;
+        const w = halfW * taper;
+        const pt = getPointAtNormalizedT(t, latCenter);
+        const c = pt.position;
+        const b = pt.binormal;
+        const n = pt.normal;
+
+        leftFoam.push(c.subtract(b.scale(w + 0.75)).add(n.scale(0.055)));
+        leftWater.push(c.subtract(b.scale(w)).add(n.scale(0.075)));
+        rightWater.push(c.add(b.scale(w)).add(n.scale(0.075)));
+        rightFoam.push(c.add(b.scale(w + 0.75)).add(n.scale(0.055)));
+      }
+
+      const lagoonWaterMat = new StandardMaterial(
+        `shallowWaterLagoonMat_${idx}`,
+        scene
+      );
+      lagoonWaterMat.diffuseColor = new Color3(0.05, 0.72, 0.88);
+      lagoonWaterMat.emissiveColor = new Color3(0.04, 0.34, 0.46);
+      lagoonWaterMat.specularColor = new Color3(0.92, 0.98, 1.0);
+      lagoonWaterMat.specularPower = 96;
+      lagoonWaterMat.alpha = 0.82;
+
+      const foamMat = new StandardMaterial(
+        `shallowWaterFoamMat_${idx}`,
+        scene
+      );
+      foamMat.diffuseColor = new Color3(0.88, 0.96, 1.0);
+      foamMat.emissiveColor = new Color3(0.22, 0.42, 0.48);
+      foamMat.alpha = 0.75;
+
+      const waterRibbon = MeshBuilder.CreateRibbon(
+        `shallowWaterRibbon_${idx}`,
+        {
+          pathArray: [leftWater, rightWater],
+          closePath: false,
+          sideOrientation: Mesh.DOUBLESIDE,
+        },
+        scene
+      );
+      waterRibbon.parent = parent;
+      waterRibbon.material = lagoonWaterMat;
+      waterRibbon.isPickable = false;
+
+      const leftFoamRibbon = MeshBuilder.CreateRibbon(
+        `shallowWaterLeftFoam_${idx}`,
+        {
+          pathArray: [leftFoam, leftWater],
+          closePath: false,
+          sideOrientation: Mesh.DOUBLESIDE,
+        },
+        scene
+      );
+      leftFoamRibbon.parent = parent;
+      leftFoamRibbon.material = foamMat;
+      leftFoamRibbon.isPickable = false;
+
+      const rightFoamRibbon = MeshBuilder.CreateRibbon(
+        `shallowWaterRightFoam_${idx}`,
+        {
+          pathArray: [rightWater, rightFoam],
+          closePath: false,
+          sideOrientation: Mesh.DOUBLESIDE,
+        },
+        scene
+      );
+      rightFoamRibbon.parent = parent;
+      rightFoamRibbon.material = foamMat;
+      rightFoamRibbon.isPickable = false;
     }
   });
 }
@@ -3285,18 +3488,22 @@ function createSculptedOffRoadTerrain(
   wallHalfWidth: number,
   terrainHillScale: number,
   terrainMods: TerrainSculptMod[],
-  queryClosestTrackPoint: (worldPos: Vector3) => ClosestTrackQuery
+  queryClosestTrackPoint: (worldPos: Vector3) => ClosestTrackQuery,
+  biome: TrackBiome = "ALPINE_SUBURBS"
 ): Mesh {
   let minX = Number.POSITIVE_INFINITY;
   let maxX = Number.NEGATIVE_INFINITY;
   let minZ = Number.POSITIVE_INFINITY;
   let maxZ = Number.NEGATIVE_INFINITY;
+  let minRoadY = Number.POSITIVE_INFINITY;
   for (const s of samples) {
     if (s.position.x < minX) minX = s.position.x;
     if (s.position.x > maxX) maxX = s.position.x;
     if (s.position.z < minZ) minZ = s.position.z;
     if (s.position.z > maxZ) maxZ = s.position.z;
+    if (s.position.y < minRoadY) minRoadY = s.position.y;
   }
+  if (!Number.isFinite(minRoadY)) minRoadY = 0;
 
   const centerX = (minX + maxX) * 0.5;
   const centerZ = (minZ + maxZ) * 0.5;
@@ -3332,24 +3539,63 @@ function createSculptedOffRoadTerrain(
         curbOuterWidth,
         wallHalfWidth,
         terrainHillScale,
-        terrainMods
+        terrainMods,
+        biome
       );
 
       positions[i + 1] = y;
       const relHeight = y - roadY;
+      const isChecker =
+        (Math.floor(wx / 14) + Math.floor(wz / 14)) % 2 === 0;
 
-      if (dist < curbOuterWidth + 3.2) {
-        colors.push(0.46, 0.36, 0.24, 1.0); // Dirt runoff shoulder
-      } else if (relHeight > 15.0) {
-        colors.push(0.88, 0.91, 0.95, 1.0); // Snow-dusted high peak
-      } else if (relHeight > 8.5) {
-        colors.push(0.46, 0.49, 0.54, 1.0); // Rocky mountain slope
-      } else if (relHeight < -2.5) {
-        colors.push(0.36, 0.3, 0.2, 1.0); // Deep canyon / valley floor
-      } else if ((Math.floor(wx / 14) + Math.floor(wz / 14)) % 2 === 0) {
-        colors.push(0.24, 0.56, 0.26, 1.0);
+      if (biome === "TROPICAL_ATOLL") {
+        if (relHeight < -1.8) {
+          // Deep turquoise coral lagoon seabed
+          colors.push(0.05, 0.52, 0.68, 1.0);
+        } else if (relHeight < -0.75 || dist > wallHalfWidth + 6.0) {
+          // Wet golden shoreline sand & coastal beach slope
+          colors.push(0.88, 0.76, 0.48, 1.0);
+        } else if (dist < curbOuterWidth + 5.5) {
+          // Warm sun-bleached coral sand shoulder
+          colors.push(0.96, 0.87, 0.6, 1.0);
+        } else if (relHeight > 7.5) {
+          // Tropical volcanic / limestone ridge
+          colors.push(0.45, 0.42, 0.38, 1.0);
+        } else if (isChecker) {
+          // Lush island palm turf
+          colors.push(0.28, 0.66, 0.34, 1.0);
+        } else {
+          // Golden sandy dune patch
+          colors.push(0.92, 0.82, 0.54, 1.0);
+        }
+      } else if (biome === "SUNSET_CANYON") {
+        if (dist < curbOuterWidth + 3.6) {
+          colors.push(0.68, 0.36, 0.22, 1.0); // Red clay runoff shoulder
+        } else if (relHeight > 12.5) {
+          colors.push(0.92, 0.64, 0.38, 1.0); // Sunlit sandstone mesa cap
+        } else if (relHeight > 6.5) {
+          colors.push(0.76, 0.34, 0.2, 1.0); // Terracotta canyon cliff wall
+        } else if (relHeight < -2.2) {
+          colors.push(0.44, 0.24, 0.16, 1.0); // Deep arroyo floor
+        } else if (isChecker) {
+          colors.push(0.84, 0.52, 0.28, 1.0);
+        } else {
+          colors.push(0.76, 0.45, 0.24, 1.0);
+        }
       } else {
-        colors.push(0.2, 0.49, 0.23, 1.0);
+        if (dist < curbOuterWidth + 3.2) {
+          colors.push(0.46, 0.36, 0.24, 1.0); // Dirt runoff shoulder
+        } else if (relHeight > 15.0) {
+          colors.push(0.88, 0.91, 0.95, 1.0); // Snow-dusted high peak
+        } else if (relHeight > 8.5) {
+          colors.push(0.46, 0.49, 0.54, 1.0); // Rocky mountain slope
+        } else if (relHeight < -2.5) {
+          colors.push(0.36, 0.3, 0.2, 1.0); // Deep canyon / valley floor
+        } else if (isChecker) {
+          colors.push(0.24, 0.56, 0.26, 1.0);
+        } else {
+          colors.push(0.2, 0.49, 0.23, 1.0);
+        }
       }
     }
 
@@ -3386,6 +3632,52 @@ function createSculptedOffRoadTerrain(
   groundMat.specularColor = new Color3(0.05, 0.06, 0.05);
   ground.material = groundMat;
 
+  // Tropical Atoll Biome: Surround the island with a translucent turquoise ocean water plane & shoreline ripples
+  if (biome === "TROPICAL_ATOLL") {
+    const oceanTex = new DynamicTexture(
+      "tropicalOceanTex",
+      { width: 256, height: 256 },
+      scene,
+      true
+    );
+    const oCtx = oceanTex.getContext() as unknown as CanvasRenderingContext2D;
+    oCtx.fillStyle = "#0891b2";
+    oCtx.fillRect(0, 0, 256, 256);
+    for (let w = 0; w < 140; w++) {
+      const hx = Math.abs(Math.sin((w + 3) * 19.17) * 43758.5453);
+      const hy = Math.abs(Math.cos((w + 3) * 47.83) * 23421.631);
+      const x = Math.floor((hx - Math.floor(hx)) * 230);
+      const y = Math.floor((hy - Math.floor(hy)) * 248);
+      oCtx.fillStyle =
+        w % 3 === 0 ? "rgba(165, 243, 252, 0.42)" : "rgba(34, 211, 238, 0.35)";
+      oCtx.fillRect(x, y, 22, 3);
+    }
+    oceanTex.update();
+    oceanTex.uScale = 28;
+    oceanTex.vScale = 28;
+
+    const oceanMat = new StandardMaterial("tropicalOceanMat", scene);
+    oceanMat.diffuseTexture = oceanTex;
+    oceanMat.emissiveColor = new Color3(0.04, 0.36, 0.48);
+    oceanMat.specularColor = new Color3(0.9, 0.96, 1.0);
+    oceanMat.specularPower = 96;
+    oceanMat.alpha = 0.84;
+
+    const oceanPlane = MeshBuilder.CreateGround(
+      "tropical_ocean_water",
+      {
+        width: span * 1.25,
+        height: span * 1.25,
+        subdivisions: 2,
+      },
+      scene
+    );
+    oceanPlane.parent = parent;
+    oceanPlane.position = new Vector3(centerX, minRoadY - 1.15, centerZ);
+    oceanPlane.material = oceanMat;
+    oceanPlane.isPickable = false;
+  }
+
   return ground;
 }
 
@@ -3399,11 +3691,30 @@ function populateEnvironmentProps(
   terrainMods: TerrainSculptMod[],
   sceneryProps: PlacedSceneryProp[],
   queryClosestTrackPoint: (worldPos: Vector3) => ClosestTrackQuery,
-  shadowGenerator: ShadowGenerator
+  shadowGenerator: ShadowGenerator,
+  biome: TrackBiome = "ALPINE_SUBURBS"
 ): void {
   const trunkMat = new StandardMaterial("treeTrunkMat", scene);
   trunkMat.diffuseColor = new Color3(0.42, 0.26, 0.14);
   trunkMat.specularColor = Color3.Black();
+
+  const palmTrunkMat = new StandardMaterial("palmTrunkMat", scene);
+  palmTrunkMat.diffuseColor = new Color3(0.56, 0.4, 0.24);
+  palmTrunkMat.specularColor = Color3.Black();
+
+  const palmFrondMat = new StandardMaterial("palmFrondMat", scene);
+  palmFrondMat.diffuseColor = new Color3(0.18, 0.68, 0.28);
+  palmFrondMat.specularColor = new Color3(0.08, 0.12, 0.08);
+
+  const coconutMat = new StandardMaterial("coconutMat", scene);
+  coconutMat.diffuseColor = new Color3(0.34, 0.2, 0.1);
+  coconutMat.specularColor = Color3.Black();
+
+  const cabanaThatchMat = new StandardMaterial("cabanaThatchMat", scene);
+  cabanaThatchMat.diffuseColor = new Color3(0.92, 0.76, 0.38);
+
+  const cabanaCoralMat = new StandardMaterial("cabanaCoralMat", scene);
+  cabanaCoralMat.diffuseColor = new Color3(0.06, 0.74, 0.86);
 
   const pineDarkMat = new StandardMaterial("pineDarkMat", scene);
   pineDarkMat.diffuseColor = new Color3(0.14, 0.45, 0.22);
@@ -3418,11 +3729,19 @@ function populateEnvironmentProps(
   oakLeafMat.specularColor = Color3.Black();
 
   const boulderMat = new StandardMaterial("boulderMat", scene);
-  boulderMat.diffuseColor = new Color3(0.52, 0.55, 0.6);
+  boulderMat.diffuseColor =
+    biome === "SUNSET_CANYON"
+      ? new Color3(0.78, 0.38, 0.22)
+      : biome === "TROPICAL_ATOLL"
+      ? new Color3(0.62, 0.58, 0.52)
+      : new Color3(0.52, 0.55, 0.6);
   boulderMat.specularColor = new Color3(0.1, 0.1, 0.1);
 
   const wallPostMat = new StandardMaterial("wallPostMat", scene);
-  wallPostMat.diffuseColor = new Color3(0.95, 0.52, 0.12);
+  wallPostMat.diffuseColor =
+    biome === "TROPICAL_ATOLL"
+      ? new Color3(0.06, 0.78, 0.9)
+      : new Color3(0.95, 0.52, 0.12);
   wallPostMat.specularColor = new Color3(0.1, 0.1, 0.1);
 
   const houseWallMat = new StandardMaterial("houseWallMat", scene);
@@ -3477,7 +3796,8 @@ function populateEnvironmentProps(
       curbOuterWidth,
       wallHalfWidth,
       terrainHillScale,
-      terrainMods
+      terrainMods,
+      biome
     );
     // Safety guard: never spawn scenery on the asphalt road, rumble curb, or inside carved shortcut/split corridors!
     const minSafePropDist = Math.max(
@@ -3567,6 +3887,135 @@ function populateEnvironmentProps(
       crownSide.position = new Vector3(1.1 * scale, 3.3 * scale, 0.6 * scale);
       crownSide.material = pineLightMat;
       crownSide.isPickable = false;
+    } else if (prop.type === "PALM_TREE") {
+      // Curved segmented coconut palm trunk + radial arching palm fronds + coconuts
+      const segments = 4;
+      let curX = 0;
+      let curY = 0;
+      for (let seg = 0; seg < segments; seg++) {
+        const segH = 1.45 * scale;
+        const lean = (seg + 0.5) * 0.11;
+        const dBottom = (0.78 - seg * 0.1) * scale;
+        const dTop = (0.68 - seg * 0.1) * scale;
+        const segMesh = MeshBuilder.CreateCylinder(
+          `palmSeg_${idx}_${seg}`,
+          {
+            height: segH,
+            diameterBottom: dBottom,
+            diameterTop: dTop,
+            tessellation: 8,
+          },
+          scene
+        );
+        segMesh.parent = rootNode;
+        segMesh.position = new Vector3(
+          curX + Math.sin(lean) * segH * 0.5,
+          curY + Math.cos(lean) * segH * 0.5,
+          0
+        );
+        segMesh.rotation.z = -lean;
+        segMesh.material = palmTrunkMat;
+        segMesh.isPickable = false;
+        curX += Math.sin(lean) * segH;
+        curY += Math.cos(lean) * segH;
+      }
+
+      const crownNode = new TransformNode(`palmCrown_${idx}`, scene);
+      crownNode.parent = rootNode;
+      crownNode.position = new Vector3(curX, curY, 0);
+
+      for (let f = 0; f < 6; f++) {
+        const angle = (f * Math.PI * 2) / 6;
+        const frond = MeshBuilder.CreateBox(
+          `palmFrond_${idx}_${f}`,
+          {
+            width: 0.72 * scale,
+            height: 0.14 * scale,
+            depth: 3.4 * scale,
+          },
+          scene
+        );
+        frond.parent = crownNode;
+        frond.position = new Vector3(
+          Math.sin(angle) * 1.45 * scale,
+          -0.18 * scale,
+          Math.cos(angle) * 1.45 * scale
+        );
+        frond.rotation = new Vector3(0.32, angle, 0);
+        frond.material = palmFrondMat;
+        frond.isPickable = false;
+        if (idx % 10 === 0 && f === 0) {
+          shadowGenerator.addShadowCaster(frond);
+        }
+      }
+
+      for (let c = 0; c < 3; c++) {
+        const ca = (c * Math.PI * 2) / 3;
+        const nut = MeshBuilder.CreateSphere(
+          `coconut_${idx}_${c}`,
+          { diameter: 0.52 * scale, segments: 6 },
+          scene
+        );
+        nut.parent = crownNode;
+        nut.position = new Vector3(
+          Math.sin(ca) * 0.38 * scale,
+          -0.25 * scale,
+          Math.cos(ca) * 0.38 * scale
+        );
+        nut.material = coconutMat;
+        nut.isPickable = false;
+      }
+    } else if (prop.type === "BEACH_CABANA") {
+      // Coastal beach cabana hut with bamboo corner posts, striped tiki thatch roof & surfboard deck
+      const deck = MeshBuilder.CreateBox(
+        `cabanaDeck_${idx}`,
+        { width: 6.4 * scale, height: 0.35 * scale, depth: 5.4 * scale },
+        scene
+      );
+      deck.parent = rootNode;
+      deck.position.y = 0.18 * scale;
+      deck.material = palmTrunkMat;
+      deck.isPickable = false;
+
+      for (const px of [-2.6, 2.6]) {
+        for (const pz of [-2.1, 2.1]) {
+          const post = MeshBuilder.CreateCylinder(
+            `cabanaPost_${idx}_${px}_${pz}`,
+            { height: 3.4 * scale, diameter: 0.32 * scale, tessellation: 8 },
+            scene
+          );
+          post.parent = rootNode;
+          post.position = new Vector3(px * scale, 1.85 * scale, pz * scale);
+          post.material = palmTrunkMat;
+          post.isPickable = false;
+        }
+      }
+
+      const counter = MeshBuilder.CreateBox(
+        `cabanaCounter_${idx}`,
+        { width: 4.6 * scale, height: 1.15 * scale, depth: 1.1 * scale },
+        scene
+      );
+      counter.parent = rootNode;
+      counter.position = new Vector3(0, 0.9 * scale, -1.4 * scale);
+      counter.material = cabanaCoralMat;
+      counter.isPickable = false;
+
+      const thatchRoof = MeshBuilder.CreateCylinder(
+        `cabanaRoof_${idx}`,
+        {
+          height: 2.4 * scale,
+          diameterTop: 0.4 * scale,
+          diameterBottom: 8.2 * scale,
+          tessellation: 6,
+        },
+        scene
+      );
+      thatchRoof.parent = rootNode;
+      thatchRoof.position.y = 4.5 * scale;
+      thatchRoof.material = cabanaThatchMat;
+      thatchRoof.convertToFlatShadedMesh();
+      thatchRoof.isPickable = false;
     } else if (prop.type === "BOULDER") {
       const boulder = MeshBuilder.CreatePolyhedron(
         `boulder_${idx}`,

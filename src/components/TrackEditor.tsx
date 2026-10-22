@@ -20,6 +20,7 @@ import {
   GrandPrixCupDefinition,
   ObstaclePrefabType,
   SceneryPrefabType,
+  TrackBiome,
   TrackMaskType,
 } from "@/src/types/game";
 import {
@@ -129,6 +130,9 @@ function getAiTraceSampleColors(
   }
 
   // Default: "SURFACE"
+  if (s.surface === "SHALLOW_WATER") {
+    return { hex: "#38bdf8", color4: new Color4(0.22, 0.74, 0.97, 1.0) }; // Shallow Lagoon Water Splash
+  }
   if (s.surface === "OFFROAD") {
     if (s.boosting) {
       return { hex: "#22d3ee", color4: new Color4(0.13, 0.83, 0.93, 1.0) }; // Cyan Boosted Cut
@@ -226,6 +230,18 @@ const SCENERY_LIBRARY: Array<{
     color: "#22c55e",
   },
   {
+    type: "PALM_TREE",
+    name: "Tropical Palm Tree",
+    desc: "Coastal curved palm with fronds & coconuts",
+    color: "#10b981",
+  },
+  {
+    type: "BEACH_CABANA",
+    name: "Beach Tiki Cabana",
+    desc: "Coastal cabana hut with striped umbrella",
+    color: "#06b6d4",
+  },
+  {
     type: "BOULDER",
     name: "Granite Boulder",
     desc: "Low-poly rock outcropping",
@@ -248,6 +264,32 @@ const SCENERY_LIBRARY: Array<{
     name: "Streetlight Post",
     desc: "Tall suburban lamp post",
     color: "#fde047",
+  },
+];
+
+const BIOME_OPTIONS: Array<{
+  id: TrackBiome;
+  label: string;
+  subtitle: string;
+  badgeClass: string;
+}> = [
+  {
+    id: "ALPINE_SUBURBS",
+    label: "🏔️ Alpine Suburbs",
+    subtitle: "Grassy hills & mountain rim",
+    badgeClass: "border-emerald-400 bg-emerald-500/20 text-white",
+  },
+  {
+    id: "TROPICAL_ATOLL",
+    label: "🏝️ Tropical Island",
+    subtitle: "Sandy beach, ocean boundary & palms",
+    badgeClass: "border-cyan-400 bg-cyan-500/25 text-white",
+  },
+  {
+    id: "SUNSET_CANYON",
+    label: "🏜️ Sunset Canyon",
+    subtitle: "Red-rock mesa & desert dusk",
+    badgeClass: "border-orange-400 bg-orange-500/25 text-white",
   },
 ];
 
@@ -2150,13 +2192,37 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
       );
 
     const nextScenerySeed = (currentDef.scenerySeed ?? 0) + 1;
+    const activeBiome = currentDef.biome ?? "ALPINE_SUBURBS";
+    const procTrackMasks =
+      activeBiome === "TROPICAL_ATOLL"
+        ? [
+            {
+              id: `proc_lagoon_${seed}_0`,
+              type: "SHALLOW_WATER" as const,
+              normT: 0.28,
+              lateral: Number((generated.roadHalfWidth * 0.45).toFixed(1)),
+              width: 11.5,
+              length: 46,
+            },
+            {
+              id: `proc_lagoon_${seed}_1`,
+              type: "SHALLOW_WATER" as const,
+              normT: 0.68,
+              lateral: Number((-generated.roadHalfWidth * 0.45).toFixed(1)),
+              width: 11.5,
+              length: 48,
+            },
+          ]
+        : [];
     const populatedTrack = syncTracksideSceneryAndClearRoad({
       ...currentDef,
+      biome: activeBiome,
       roadHalfWidth: generated.roadHalfWidth,
       controlPoints: generated.controlPoints,
       boostPads: procBoostPads,
       itemBoxRows: procItemRows,
       obstacles: safeJumps,
+      trackMasks: procTrackMasks,
       sceneryProps: [],
       autoTracksideScenery: true,
       scenerySeed: nextScenerySeed,
@@ -2355,10 +2421,13 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     } else if (tool.kind === "TRACK_MASK") {
       const q = spline.queryClosestTrackPoint(new Vector3(worldX, 0, worldZ));
       const localHalfW = q.localRoadHalfWidth || currentDef.roadHalfWidth;
-      const isShortcut =
+      const isWideCorridorMask =
         tool.maskType === "BOOST_SHORTCUT" ||
-        tool.maskType === "PAVED_SHORTCUT";
-      const maxLatReach = isShortcut ? localHalfW + 16.0 : localHalfW - 2.0;
+        tool.maskType === "PAVED_SHORTCUT" ||
+        tool.maskType === "SHALLOW_WATER";
+      const maxLatReach = isWideCorridorMask
+        ? localHalfW + 16.0
+        : localHalfW - 2.0;
       const clampedLat =
         tool.maskType === "SPLIT_MEDIAN"
           ? 0
@@ -2519,6 +2588,7 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
         ray,
         (m) =>
           m.name === "offroad_terrain" ||
+          m.name === "tropical_ocean_water" ||
           m.name === "pavement_ribbon" ||
           m.name === "curb_left" ||
           m.name === "curb_right"
@@ -2552,7 +2622,10 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
       );
       const hit = scene.pickWithRay(
         ray,
-        (m) => m.name === "offroad_terrain" || m.name === "pavement_ribbon"
+        (m) =>
+          m.name === "offroad_terrain" ||
+          m.name === "tropical_ocean_water" ||
+          m.name === "pavement_ribbon"
       );
 
       if (
@@ -2644,6 +2717,16 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
   useEffect(() => {
     const scene = sceneRef.current;
     if (!scene) return;
+
+    // Update 3D viewport sky backdrop color based on active biome
+    const activeBiome = trackDef.biome ?? "ALPINE_SUBURBS";
+    if (activeBiome === "TROPICAL_ATOLL") {
+      scene.clearColor = new Color4(0.14, 0.52, 0.78, 1.0);
+    } else if (activeBiome === "SUNSET_CANYON") {
+      scene.clearColor = new Color4(0.28, 0.13, 0.18, 1.0);
+    } else {
+      scene.clearColor = new Color4(0.08, 0.13, 0.22, 1.0);
+    }
 
     // Dispose previous trackRoot and gizmoRoot
     scene.transformNodes
@@ -3704,6 +3787,52 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
             </div>
           )}
 
+          {/* 0. Procedural Environment Biome Switcher (Alpine Suburbs | Tropical Island | Sunset Canyon) */}
+          <div className="rounded-xl border border-cyan-400/35 bg-slate-950/75 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-black uppercase tracking-widest text-cyan-300 flex items-center gap-1.5">
+                <Sparkles className="h-3.5 w-3.5" />
+                ENVIRONMENT BIOME SKIN
+              </span>
+              <span className="text-[10px] font-mono font-bold text-slate-400">
+                {(trackDef.biome ?? "ALPINE_SUBURBS").replace("_", " ")}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {BIOME_OPTIONS.map((b) => {
+                const isSelected =
+                  (trackDef.biome ?? "ALPINE_SUBURBS") === b.id;
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    data-testid={`editor-biome-${b.id.toLowerCase()}-btn`}
+                    onClick={() =>
+                      commitWorkingEdit(
+                        syncTracksideSceneryAndClearRoad({
+                          ...trackDef,
+                          biome: b.id,
+                        })
+                      )
+                    }
+                    className={`rounded-xl border p-2 text-left transition cursor-pointer ${
+                      isSelected
+                        ? b.badgeClass
+                        : "border-white/10 bg-slate-900/75 text-slate-300 hover:border-white/25"
+                    }`}
+                  >
+                    <div className="text-[11px] font-black leading-tight">
+                      {b.label}
+                    </div>
+                    <div className="mt-0.5 text-[9px] text-slate-400 leading-tight">
+                      {b.subtitle}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
           {/* 1. Track Spline & 3D Elevation Tools */}
           <div>
             <div className="text-[11px] font-black uppercase tracking-widest text-amber-300 mb-2 flex items-center gap-1.5">
@@ -3869,11 +3998,11 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                 </div>
               )}
 
-              {/* Track Masks: Road Hole / Pit Cutout & Parallel Split-Lane Median */}
+              {/* Track Masks: Road Hole / Pit Cutout, Shallow Lagoon Water & Parallel Split-Lane Median */}
               <div className="pt-2 border-t border-white/10 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-black uppercase tracking-wider text-fuchsia-300">
-                    TRACK MASKS &amp; SPLIT LANES (
+                    TRACK MASKS &amp; SHALLOW WATER (
                     {(trackDef.trackMasks ?? []).length})
                   </span>
                   {(trackDef.trackMasks?.length ?? 0) > 0 && (
@@ -3992,6 +4121,32 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
                     </div>
                     <div className="text-[9px] text-slate-400">
                       Technical fast bypass
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="editor-mask-shallow-water-btn"
+                    onClick={() => {
+                      setMaskWidth(11.0);
+                      setMaskLength(44);
+                      setActiveTool({
+                        kind: "TRACK_MASK",
+                        maskType: "SHALLOW_WATER",
+                      });
+                    }}
+                    className={`col-span-2 rounded-xl border p-2 text-left transition cursor-pointer ${
+                      activeTool.kind === "TRACK_MASK" &&
+                      activeTool.maskType === "SHALLOW_WATER"
+                        ? "border-sky-400 bg-sky-500/25 text-white"
+                        : "border-white/10 bg-slate-900/70 text-slate-300 hover:border-white/25"
+                    }`}
+                  >
+                    <div className="text-[11px] font-black text-sky-300">
+                      🌊 LAGOON SHALLOW WATER FORD
+                    </div>
+                    <div className="text-[9px] text-slate-400">
+                      Splashable shallow lagoon water (85% top speed, wet grip &amp; water spray)
                     </div>
                   </button>
                 </div>

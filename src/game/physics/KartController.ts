@@ -452,15 +452,33 @@ export class KartController implements CollidableKartBody {
     normT: number,
     signedLat: number,
     roadHalfWidth: number
-  ): { onPavedShortcut: boolean; onBoostShortcut: boolean } {
+  ): {
+    onPavedShortcut: boolean;
+    onBoostShortcut: boolean;
+    onShallowWater: boolean;
+  } {
     let onPavedShortcut = false;
     let onBoostShortcut = false;
+    let onShallowWater = false;
+
+    // In Tropical Atoll biome, the outer coastal beach slopes into a shallow turquoise tidal lagoon
+    if (
+      this.track.biome === "TROPICAL_ATOLL" &&
+      Math.abs(signedLat) > roadHalfWidth + 6.0
+    ) {
+      onShallowWater = true;
+    }
+
     if (!this.track.trackMasks || this.track.trackMasks.length === 0) {
-      return { onPavedShortcut, onBoostShortcut };
+      return { onPavedShortcut, onBoostShortcut, onShallowWater };
     }
     const totalLen = Math.max(100, this.track.totalTrackLength);
     for (const mask of this.track.trackMasks) {
-      if (mask.type !== "PAVED_SHORTCUT" && mask.type !== "BOOST_SHORTCUT") {
+      if (
+        mask.type !== "PAVED_SHORTCUT" &&
+        mask.type !== "BOOST_SHORTCUT" &&
+        mask.type !== "SHALLOW_WATER"
+      ) {
         continue;
       }
       let dtMask = normT - mask.normT;
@@ -474,20 +492,32 @@ export class KartController implements CollidableKartBody {
           Math.min(1, (longOffset + halfLen) / Math.max(1, mask.length))
         );
         const sideSign = mask.lateral >= 0 ? 1 : -1;
-        const edgeAnchor = sideSign * Math.max(6.5, roadHalfWidth - 1.0);
-        const archLatCenter =
-          edgeAnchor + (mask.lateral - edgeAnchor) * Math.sin(u * Math.PI);
-        const halfW = mask.width * 0.5 + 1.05;
-        if (Math.abs(signedLat - archLatCenter) <= halfW) {
-          if (mask.type === "PAVED_SHORTCUT") {
-            onPavedShortcut = true;
-          } else {
-            onBoostShortcut = true;
+        if (mask.type === "SHALLOW_WATER") {
+          const isOffCenter = Math.abs(mask.lateral) > 4.0;
+          const latCenter = isOffCenter
+            ? sideSign * 6.0 +
+              (mask.lateral - sideSign * 6.0) * Math.sin(u * Math.PI)
+            : mask.lateral;
+          const halfW = mask.width * 0.5 + 0.85;
+          if (Math.abs(signedLat - latCenter) <= halfW) {
+            onShallowWater = true;
+          }
+        } else {
+          const edgeAnchor = sideSign * Math.max(6.5, roadHalfWidth - 1.0);
+          const archLatCenter =
+            edgeAnchor + (mask.lateral - edgeAnchor) * Math.sin(u * Math.PI);
+          const halfW = mask.width * 0.5 + 1.05;
+          if (Math.abs(signedLat - archLatCenter) <= halfW) {
+            if (mask.type === "PAVED_SHORTCUT") {
+              onPavedShortcut = true;
+            } else {
+              onBoostShortcut = true;
+            }
           }
         }
       }
     }
-    return { onPavedShortcut, onBoostShortcut };
+    return { onPavedShortcut, onBoostShortcut, onShallowWater };
   }
 
   public computeAiInputs(
@@ -2235,9 +2265,11 @@ export class KartController implements CollidableKartBody {
       localRoadHalf
     );
 
-    // Terrain classification via horizontal distance d_perp relative to local W_road and W_curb (or technical PAVED_SHORTCUT ribbon)
+    // Terrain classification via horizontal distance d_perp relative to local W_road and W_curb (or technical PAVED_SHORTCUT / SHALLOW_WATER ribbon)
     this.surface = preShortcut.onPavedShortcut
       ? "PAVEMENT"
+      : preShortcut.onShallowWater
+      ? "SHALLOW_WATER"
       : classifyTerrainSurface(
           this.distToCenter,
           localRoadHalf,
@@ -2247,7 +2279,8 @@ export class KartController implements CollidableKartBody {
     const isOnRoadOrCurb =
       this.distToCenter <= localCurbWidth ||
       preShortcut.onPavedShortcut ||
-      preShortcut.onBoostShortcut;
+      preShortcut.onBoostShortcut ||
+      preShortcut.onShallowWater;
     let targetGroundY = this.closestTrack.roadY;
     let surfaceNormal = this.closestTrack.normal.clone();
 
@@ -2973,6 +3006,15 @@ export class KartController implements CollidableKartBody {
     if (this.surface === "CURB") {
       surfaceSpeedMult = PHYSICS_CONSTANTS.CURB_SPEED_MULT;
       lateralGrip = PHYSICS_CONSTANTS.CURB_GRIP;
+    } else if (this.surface === "SHALLOW_WATER") {
+      // Hopping/airborne or any active boost skims across shallow lagoon water at full speed
+      if (hasOffRoadImmunity || !this.grounded) {
+        surfaceSpeedMult = 1.0;
+        lateralGrip = 0.88;
+      } else {
+        surfaceSpeedMult = PHYSICS_CONSTANTS.SHALLOW_WATER_SPEED_MULT; // 85% mild lagoon cap
+        lateralGrip = PHYSICS_CONSTANTS.SHALLOW_WATER_GRIP; // 0.78 wet-tire traction
+      }
     } else if (this.surface === "OFFROAD") {
       if (hasOffRoadImmunity) {
         surfaceSpeedMult = 1.0;
@@ -3070,8 +3112,14 @@ export class KartController implements CollidableKartBody {
       // Preserves each archetype's exact Pass #19 cruising speed (v_eq = effectiveMaxSpeed + accel * 0.16515) with zero frame-time oscillation.
       const isUnboostedOffRoad =
         this.grounded && this.surface === "OFFROAD" && !hasOffRoadImmunity;
+      const isUnboostedShallowWater =
+        this.grounded &&
+        this.surface === "SHALLOW_WATER" &&
+        !hasOffRoadImmunity;
       const steadyBonusFactor = isUnboostedOffRoad
         ? 0.0825
+        : isUnboostedShallowWater
+        ? 0.125
         : (1 - 5.5 / 60) / 5.5;
       const steadyStateAccelBonus =
         effectiveThrottle > 0
@@ -3135,11 +3183,19 @@ export class KartController implements CollidableKartBody {
         this.forwardSpeed *= Math.max(0, 1 - 1.15 * dt);
       }
 
-      // Off-Road Linear Damping (lambda_drag = 4.5 s^-1) rapidly bleeds excess speed down to 55% cap while wheels are on off-road terrain
+      // Off-Road Linear Damping (lambda_drag = 4.5 s^-1) or Shallow Water Drag (1.8 s^-1)
       if (isUnboostedOffRoad && this.forwardSpeed > targetCruiseSpeed) {
         const excess = this.forwardSpeed - targetCruiseSpeed;
         this.forwardSpeed -=
           excess * Math.min(1, PHYSICS_CONSTANTS.OFFROAD_LINEAR_DRAG * dt);
+      } else if (
+        isUnboostedShallowWater &&
+        this.forwardSpeed > targetCruiseSpeed
+      ) {
+        const excess = this.forwardSpeed - targetCruiseSpeed;
+        this.forwardSpeed -=
+          excess *
+          Math.min(1, PHYSICS_CONSTANTS.SHALLOW_WATER_LINEAR_DRAG * dt);
       }
 
       // Smoothly decay any leftover post-boost overspeed down to targetCruiseSpeed
@@ -3537,6 +3593,7 @@ export class KartController implements CollidableKartBody {
     const postOnRoadOrCurb =
       postShortcut.onPavedShortcut ||
       postShortcut.onBoostShortcut ||
+      postShortcut.onShallowWater ||
       (!postIsMaskedOffRoad &&
         postMoveTrack.horizontalDistance <= postMoveTrack.localCurbWidth);
     const postNormal = postOnRoadOrCurb ? postMoveTrack.normal : surfaceNormal;
@@ -3655,6 +3712,8 @@ export class KartController implements CollidableKartBody {
       ? "PAVEMENT"
       : postIsMaskedOffRoad
       ? "OFFROAD"
+      : postShortcut.onShallowWater
+      ? "SHALLOW_WATER"
       : classifyTerrainSurface(
           this.distToCenter,
           postMoveTrack.localRoadHalfWidth,
