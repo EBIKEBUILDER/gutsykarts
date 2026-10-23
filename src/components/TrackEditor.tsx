@@ -67,7 +67,10 @@ import {
   Zap,
   ZoomIn,
   ZoomOut,
+  Globe,
 } from "lucide-react";
+import { communityTrackClient } from "@/src/game/network/CommunityTrackClient";
+import { RacerAuthModal } from "@/src/components/RacerAuthModal";
 
 type EditorTool =
   | { kind: "SPLINE" }
@@ -1189,6 +1192,33 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
     setIsDirty(false);
     setJustSaved(true);
     setTimeout(() => setJustSaved(false), 1800);
+  };
+
+  const [isPublishingCommunity, setIsPublishingCommunity] = useState(false);
+  const [showEditorAuthModal, setShowEditorAuthModal] = useState(false);
+
+  const handlePublishToCommunity = async () => {
+    if (isPublishingCommunity) return;
+    handleSaveMap();
+    setIsPublishingCommunity(true);
+    try {
+      const res = await communityTrackClient.publishCommunityTrack(
+        trackDefRef.current
+      );
+      if (res.requiresAuth) {
+        setShowEditorAuthModal(true);
+        return;
+      }
+      if (res.error) {
+        flashIoNotice(`Publish blocked: ${res.error}`);
+      } else if (res.record) {
+        flashIoNotice(
+          `Published "${res.record.trackName}" by ${res.record.authorCallsign} to Community Catalog!`
+        );
+      }
+    } finally {
+      setIsPublishingCommunity(false);
+    }
   };
 
   const handleCommitCatalogToRepo = async () => {
@@ -3395,6 +3425,18 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
             {isDirty ? "SAVE MAP *" : "SAVE MAP"}
           </button>
 
+          <button
+            type="button"
+            data-testid="editor-publish-community-btn"
+            onClick={() => void handlePublishToCommunity()}
+            disabled={isPublishingCommunity}
+            title="Publish this circuit to the online Community Circuit Catalog (requires verified Gutsy Karts account)"
+            className="flex items-center gap-1.5 rounded-xl border border-cyan-400/70 bg-gradient-to-r from-cyan-500/25 to-emerald-500/25 px-3 py-2 text-xs font-black uppercase tracking-wider text-cyan-100 hover:from-cyan-500/35 hover:to-emerald-500/35 disabled:opacity-50 transition cursor-pointer shadow-[0_0_16px_rgba(34,211,238,0.2)]"
+          >
+            <Globe className="h-3.5 w-3.5 text-cyan-300" />
+            {isPublishingCommunity ? "PUBLISHING..." : "PUBLISH TO COMMUNITY"}
+          </button>
+
           {isDevEnvironment && (
             <button
               type="button"
@@ -4944,6 +4986,15 @@ export const TrackEditor: React.FC<TrackEditorProps> = ({
           )}
         </main>
       </div>
+      <RacerAuthModal
+        open={showEditorAuthModal}
+        onClose={() => setShowEditorAuthModal(false)}
+        reasonPrompt="Sign in or create a verified Gutsy Karts account to publish your custom circuit to the Community Catalog (anti-spam protected: max 1 new track per 60s, 10/day)."
+        onAuthenticated={() => {
+          setShowEditorAuthModal(false);
+          void handlePublishToCommunity();
+        }}
+      />
     </div>
   );
 };

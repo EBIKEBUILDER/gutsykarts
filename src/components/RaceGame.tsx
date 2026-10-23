@@ -40,6 +40,7 @@ import {
   Weight,
   Wifi,
   Zap,
+  Globe,
 } from "lucide-react";
 import {
   AiDifficulty,
@@ -102,6 +103,8 @@ import {
 } from "@/src/game/network/MultiplayerManager";
 import { globalAnalytics } from "@/src/game/network/AnalyticsTracker";
 import { AnalyticsDashboardModal } from "@/src/components/AnalyticsDashboardModal";
+import { CommunityTracksBrowser } from "@/src/components/CommunityTracksBrowser";
+import { RacerAuthModal } from "@/src/components/RacerAuthModal";
 
 const TOTAL_LAPS = 3;
 const TRACK_RECORDS_STORAGE_KEY = "gutsy_karts_track_records_v1";
@@ -187,9 +190,11 @@ declare global {
 export const RaceGame: React.FC = () => {
   const [screen, setScreen] = useState<"SELECT" | "EDITOR" | "RACE">("SELECT");
   const [menuTab, setMenuTab] = useState<
-    "SINGLE_PLAYER" | "MULTIPLAYER" | "AI_LAB"
+    "SINGLE_PLAYER" | "COMMUNITY" | "MULTIPLAYER" | "AI_LAB"
   >("SINGLE_PLAYER");
   const [isOnlineConnected, setIsOnlineConnected] = useState<boolean>(false);
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [authModalReason, setAuthModalReason] = useState<string | null>(null);
   const [cupsCatalog, setCupsCatalog] = useState<GrandPrixCupDefinition[]>(() =>
     createDefaultCupsCatalog()
   );
@@ -621,6 +626,80 @@ export const RaceGame: React.FC = () => {
       setScreen("RACE");
     },
     []
+  );
+
+  const upsertCommunityTrackIntoCatalog = useCallback(
+    (
+      commTrack: CustomTrackDefinition
+    ): { cupId: string; trackIdx: number } => {
+      const communityCupId = "community_showcase_cup";
+      const clonedTrack: CustomTrackDefinition = {
+        ...commTrack,
+        id: commTrack.id || `comm_track_${Date.now()}`,
+        cupId: communityCupId,
+        isUserModified: true,
+        updatedAt: Date.now(),
+      };
+
+      let targetTrackIdx = 0;
+      setCupsCatalog((prev) => {
+        const existingCup = prev.find((c) => c.id === communityCupId);
+        let updated: GrandPrixCupDefinition[];
+        if (existingCup) {
+          const foundIdx = existingCup.tracks.findIndex(
+            (t) => t.id === clonedTrack.id || t.name === clonedTrack.name
+          );
+          let nextTracks: CustomTrackDefinition[];
+          if (foundIdx >= 0) {
+            targetTrackIdx = foundIdx;
+            nextTracks = existingCup.tracks.map((t, i) =>
+              i === foundIdx ? clonedTrack : t
+            );
+          } else {
+            targetTrackIdx = existingCup.tracks.length;
+            nextTracks = [...existingCup.tracks, clonedTrack];
+          }
+          updated = prev.map((c) =>
+            c.id === communityCupId ? { ...c, tracks: nextTracks } : c
+          );
+        } else {
+          targetTrackIdx = 0;
+          const newCup: GrandPrixCupDefinition = {
+            id: communityCupId,
+            name: "Community Circuits Cup",
+            subtitle: "Custom Circuits Saved from Community Catalog",
+            badgeColor: "#34d399",
+            tracks: [clonedTrack],
+            isCustomCup: true,
+            updatedAt: Date.now(),
+          };
+          updated = [...prev, newCup];
+        }
+        saveCupsCatalog(updated);
+        return updated;
+      });
+
+      setSelectedCupId(communityCupId);
+      setSelectedTrackIdx(targetTrackIdx);
+      return { cupId: communityCupId, trackIdx: targetTrackIdx };
+    },
+    []
+  );
+
+  const handleRaceCommunityTrackNow = useCallback(
+    (commTrack: CustomTrackDefinition) => {
+      const { cupId, trackIdx } = upsertCommunityTrackIntoCatalog(commTrack);
+      startGrandPrixCupSeries(cupId, trackIdx);
+    },
+    [upsertCommunityTrackIntoCatalog, startGrandPrixCupSeries]
+  );
+
+  const handleRemixCommunityTrackInStudio = useCallback(
+    (commTrack: CustomTrackDefinition) => {
+      upsertCommunityTrackIntoCatalog(commTrack);
+      setScreen("EDITOR");
+    },
+    [upsertCommunityTrackIntoCatalog]
   );
 
   const startAiSelfTrainingSim = useCallback(
@@ -3941,6 +4020,22 @@ export const RaceGame: React.FC = () => {
               <button
                 type="button"
                 role="tab"
+                aria-selected={menuTab === "COMMUNITY"}
+                data-testid="nav-tab-community"
+                onClick={() => setMenuTab("COMMUNITY")}
+                className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-xs sm:text-sm font-black uppercase tracking-wider transition cursor-pointer ${
+                  menuTab === "COMMUNITY"
+                    ? "bg-gradient-to-r from-emerald-400 to-teal-400 text-slate-950 shadow-[0_0_20px_rgba(16,185,129,0.35)]"
+                    : "text-slate-300 hover:bg-white/10 hover:text-white"
+                }`}
+              >
+                <Globe className="w-4 h-4" />
+                <span>Community Tracks</span>
+              </button>
+
+              <button
+                type="button"
+                role="tab"
                 aria-selected={menuTab === "MULTIPLAYER"}
                 data-testid="nav-tab-multiplayer"
                 onClick={() => setMenuTab("MULTIPLAYER")}
@@ -3997,6 +4092,27 @@ export const RaceGame: React.FC = () => {
               </button>
             </div>
           </div>
+
+          {/* ===================================================================== */}
+          {/* TAB 1B: COMMUNITY CIRCUIT CATALOG & BIOME SHOWCASE                    */}
+          {/* ===================================================================== */}
+          {menuTab === "COMMUNITY" && (
+            <CommunityTracksBrowser
+              onRaceTrackNow={handleRaceCommunityTrackNow}
+              onSaveTrackToCustomCup={(track) => {
+                upsertCommunityTrackIntoCatalog(track);
+              }}
+              onOpenTrackInStudio={handleRemixCommunityTrackInStudio}
+              onOpenBlankStudio={() => {
+                globalAnalytics.recordFeatureUsed("circuit_studio_opened");
+                setScreen("EDITOR");
+              }}
+              onRequestAuthModal={(reason) => {
+                setAuthModalReason(reason);
+                setShowAuthModal(true);
+              }}
+            />
+          )}
 
           {/* ===================================================================== */}
           {/* TAB 1: SINGLE PLAYER GRAND PRIX & DRIVER SELECTION (DEFAULT)          */}
@@ -5139,6 +5255,16 @@ export const RaceGame: React.FC = () => {
         <AnalyticsDashboardModal
           open={showAnalyticsModal}
           onClose={() => setShowAnalyticsModal(false)}
+        />
+        <RacerAuthModal
+          open={showAuthModal}
+          onClose={() => setShowAuthModal(false)}
+          defaultCallsign={playerCallsign}
+          reasonPrompt={authModalReason}
+          onAuthenticated={(user) => {
+            setPlayerCallsign(user.callsign);
+            setShowAuthModal(false);
+          }}
         />
       </div>
     );
