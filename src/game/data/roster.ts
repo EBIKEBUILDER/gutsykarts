@@ -6,11 +6,11 @@ import {
   ResolvedRacerStats,
 } from "@/src/types/game";
 
-export const ROSTER_BALANCE_PASS = "Pass #22";
+export const ROSTER_BALANCE_PASS = "Pass #23";
 export const BUILD_INFO_STAMP = `Build ${ROSTER_BALANCE_PASS} (${
-  process.env.NEXT_PUBLIC_BUILD_SHA || "c90a5e8"
+  process.env.NEXT_PUBLIC_BUILD_SHA || "65f2b20"
 }) • Built ${
-  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 22, 2026, 09:05 PM CDT"
+  process.env.NEXT_PUBLIC_BUILD_TIME || "Oct 24, 2026, 02:58 AM CDT"
 }`;
 
 export const KART_CHASSIS_CATALOG: Record<string, KartChassisConfig> = {
@@ -233,7 +233,7 @@ export const CHARACTER_ROSTER: CharacterProfile[] = [
     mass: 85,
     topSpeed: 44.3,
     offRoadTopSpeed: 24.4,
-    acceleration: 31.5,
+    acceleration: 31.6,
     handling: 2.1,
     driftGrip: 0.83,
     miniTurboDurationBonus: 0.14,
