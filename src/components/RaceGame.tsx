@@ -105,6 +105,11 @@ import { globalAnalytics } from "@/src/game/network/AnalyticsTracker";
 import { AnalyticsDashboardModal } from "@/src/components/AnalyticsDashboardModal";
 import { CommunityTracksBrowser } from "@/src/components/CommunityTracksBrowser";
 import { RacerAuthModal } from "@/src/components/RacerAuthModal";
+import { TrackLeaderboardModal } from "@/src/components/TrackLeaderboardModal";
+import {
+  communityTrackClient,
+  CommunityAuthUser,
+} from "@/src/game/network/CommunityTrackClient";
 
 const TOTAL_LAPS = 3;
 const TRACK_RECORDS_STORAGE_KEY = "gutsy_karts_track_records_v1";
@@ -195,6 +200,13 @@ export const RaceGame: React.FC = () => {
   const [isOnlineConnected, setIsOnlineConnected] = useState<boolean>(false);
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [authModalReason, setAuthModalReason] = useState<string | null>(null);
+  const [verifiedAuthUser, setVerifiedAuthUser] =
+    useState<CommunityAuthUser | null>(() => communityTrackClient.getUser());
+  const [leaderboardModalTrack, setLeaderboardModalTrack] = useState<{
+    id: string;
+    name: string;
+    trackDef?: CustomTrackDefinition;
+  } | null>(null);
   const [cupsCatalog, setCupsCatalog] = useState<GrandPrixCupDefinition[]>(() =>
     createDefaultCupsCatalog()
   );
@@ -845,10 +857,17 @@ export const RaceGame: React.FC = () => {
     preserveOnlineRoomRef.current = false;
   }, []);
 
-  // Load saved local callsign on mount without opening any network connection
+  // Load saved local callsign & subscribe to verified Supabase Auth state on mount without opening any lobby connection
   useEffect(() => {
     setPlayerCallsign(loadOrCreatePlayerName());
+    const unsubAuth = communityTrackClient.onAuthChange((user) => {
+      setVerifiedAuthUser(user);
+      if (user?.callsign) {
+        setPlayerCallsign(user.callsign);
+      }
+    });
     return () => {
+      unsubAuth();
       mpRef.current?.dispose();
       mpRef.current = null;
     };
@@ -3275,6 +3294,48 @@ export const RaceGame: React.FC = () => {
           );
 
         setCupStandings(updatedStandings);
+
+        // Automatically sync verified race/lap personal best & career stats to Supabase if signed in
+        if (
+          isFirstFinishPass &&
+          !allAiSimModeRef.current &&
+          !shouldHostDedicatedRef.current
+        ) {
+          const localHumanFinish = sorted.find(
+            (r) => r.controlMode === "LOCAL_HUMAN"
+          );
+          if (localHumanFinish) {
+            const humanSnap = timingSnapshots[localHumanFinish.racerId];
+            const finishRaceMs =
+              humanSnap?.finishTimeMs ?? Math.round(elapsedRaceMs);
+            const validHumanLaps = (
+              humanSnap?.lapTimesMs ?? localHumanFinish.lapTimesMs
+            ).filter((ms: number) => ms > 500);
+            const bestLapMs =
+              validHumanLaps.length > 0
+                ? Math.min(...validHumanLaps)
+                : Math.round(finishRaceMs / TOTAL_LAPS);
+
+            const isFinalCupTrack =
+              isCupSeriesActive &&
+              selectedTrackIdx >= activeCup.tracks.length - 1;
+            const cupWonId =
+              isFinalCupTrack && updatedStandings[0]?.controllerLabel === "YOU"
+                ? activeCup.id
+                : null;
+
+            void communityTrackClient.submitVerifiedRaceResult({
+              trackId: trackRecordKey,
+              trackName: effectiveTrackDef.name,
+              characterId: localHumanFinish.stats.character.id,
+              kartId: localHumanFinish.stats.kart.id,
+              raceMs: finishRaceMs,
+              lapMs: bestLapMs,
+              rank: localHumanFinish.rank,
+              cupWonId,
+            });
+          }
+        }
       }
 
       // Dedicated Server OR AI Self-Training Auto-Loop Countdown on Podium
@@ -3993,6 +4054,26 @@ export const RaceGame: React.FC = () => {
                       OFFLINE / PRIVATE MODE
                     </span>
                   )}
+                  <button
+                    type="button"
+                    data-testid="header-auth-profile-btn"
+                    onClick={() => {
+                      setAuthModalReason(null);
+                      setShowAuthModal(true);
+                    }}
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider transition cursor-pointer ${
+                      verifiedAuthUser
+                        ? "border-cyan-400/50 bg-cyan-500/20 text-cyan-200 hover:bg-cyan-500/30"
+                        : "border-amber-400/40 bg-amber-500/15 text-amber-200 hover:bg-amber-500/25"
+                    }`}
+                  >
+                    <Shield className="w-3 h-3" />
+                    <span>
+                      {verifiedAuthUser
+                        ? `CAREER PROFILE: ${verifiedAuthUser.callsign} (${verifiedAuthUser.firstPlaceWins} WINS)`
+                        : "SIGN IN / CAREER PROFILE"}
+                    </span>
+                  </button>
                 </div>
                 <h1 className="mt-1.5 text-3xl sm:text-4xl font-black tracking-tight text-white">
                   GUTSY KARTS <span className="text-amber-400">3D GP</span>
@@ -4115,6 +4196,13 @@ export const RaceGame: React.FC = () => {
               onRequestAuthModal={(reason) => {
                 setAuthModalReason(reason);
                 setShowAuthModal(true);
+              }}
+              onOpenLeaderboard={(track) => {
+                setLeaderboardModalTrack({
+                  id: track.id || track.name,
+                  name: track.name,
+                  trackDef: track,
+                });
               }}
             />
           )}
@@ -4356,6 +4444,22 @@ export const RaceGame: React.FC = () => {
                               className="flex-1 rounded-lg bg-amber-400/20 border border-amber-400/50 py-1 text-[10px] font-black uppercase text-amber-200 hover:bg-amber-400/30 cursor-pointer"
                             >
                               RACE FROM R{idx + 1}
+                            </button>
+                            <button
+                              type="button"
+                              data-testid={`open-track-leaderboard-btn-${idx}`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setLeaderboardModalTrack({
+                                  id: t.id || t.name,
+                                  name: t.name,
+                                  trackDef: t,
+                                });
+                              }}
+                              className="rounded-lg bg-cyan-500/20 border border-cyan-400/50 px-2 py-1 text-[10px] font-black uppercase text-cyan-200 hover:bg-cyan-500/30 cursor-pointer"
+                              title="View Global Top 10 Leaderboard for this circuit"
+                            >
+                              🏆 TOP 10
                             </button>
                             {!joiningRoomId && !mpRef.current?.activeRoomId && (
                               <button
@@ -5269,6 +5373,45 @@ export const RaceGame: React.FC = () => {
           onAuthenticated={(user) => {
             setPlayerCallsign(user.callsign);
             setShowAuthModal(false);
+          }}
+        />
+        <TrackLeaderboardModal
+          open={Boolean(leaderboardModalTrack)}
+          onClose={() => setLeaderboardModalTrack(null)}
+          trackId={leaderboardModalTrack?.id ?? ""}
+          trackName={leaderboardModalTrack?.name ?? ""}
+          localPersonalBest={
+            leaderboardModalTrack
+              ? trackRecords[leaderboardModalTrack.id] ?? null
+              : null
+          }
+          onRaceTrackNow={
+            leaderboardModalTrack?.trackDef
+              ? () => {
+                  const tDef = leaderboardModalTrack.trackDef!;
+                  const foundCup = cupsCatalog.find((c) =>
+                    c.tracks.some((tr) => tr.id === tDef.id || tr.name === tDef.name)
+                  );
+                  if (foundCup) {
+                    const idx = Math.max(
+                      0,
+                      foundCup.tracks.findIndex(
+                        (tr) => tr.id === tDef.id || tr.name === tDef.name
+                      )
+                    );
+                    startGrandPrixCupSeries(foundCup.id, idx);
+                  } else {
+                    handleRaceCommunityTrackNow(tDef);
+                  }
+                }
+              : undefined
+          }
+          onRequestSignIn={() => {
+            setLeaderboardModalTrack(null);
+            setAuthModalReason(
+              "Sign in with your verified Gutsy Karts account to post your fastest lap and race times to the Global Cloud Leaderboard!"
+            );
+            setShowAuthModal(true);
           }}
         />
       </div>

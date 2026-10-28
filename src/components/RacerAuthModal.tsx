@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Shield, LogIn, UserPlus, LogOut, Sparkles, Check, AlertCircle, X } from "lucide-react";
+import { Shield, LogIn, UserPlus, LogOut, Sparkles, Check, AlertCircle, X, Trophy } from "lucide-react";
 import {
   communityTrackClient,
   CommunityAuthUser,
@@ -161,7 +161,7 @@ export function RacerAuthModal({
         )}
 
         {currentUser ? (
-          /* Signed-In View */
+          /* Signed-In View with Cloud Career Trophy Case */
           <div className="space-y-4">
             <div className="rounded-2xl border border-emerald-400/40 bg-slate-950/80 p-4 space-y-2">
               <div className="flex items-center justify-between text-xs">
@@ -176,10 +176,79 @@ export function RacerAuthModal({
               </div>
             </div>
 
+            {/* Cloud Career Trophy Case */}
+            <div
+              data-testid="racer-career-trophy-case"
+              className="rounded-2xl border border-amber-400/35 bg-slate-950/90 p-4 space-y-3"
+            >
+              <div className="flex items-center justify-between">
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-widest text-amber-300">
+                  <Trophy className="w-3.5 h-3.5 text-amber-400" /> Cloud Career Trophy Case
+                </span>
+                <span className="text-[10px] font-bold text-slate-400">
+                  {currentUser.racesCompleted > 0
+                    ? `${Math.round(
+                        (currentUser.firstPlaceWins / currentUser.racesCompleted) * 100
+                      )}% Win Rate`
+                    : "Ready to Race"}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="rounded-xl border border-white/10 bg-slate-900/90 p-2.5">
+                  <div className="text-lg font-black text-white">
+                    {currentUser.racesCompleted}
+                  </div>
+                  <div className="text-[9px] font-black uppercase tracking-wider text-slate-400">
+                    Races
+                  </div>
+                </div>
+                <div className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-2.5">
+                  <div className="text-lg font-black text-amber-300">
+                    {currentUser.firstPlaceWins}
+                  </div>
+                  <div className="text-[9px] font-black uppercase tracking-wider text-amber-200/80">
+                    1st Wins
+                  </div>
+                </div>
+                <div className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 p-2.5">
+                  <div className="text-lg font-black text-cyan-300">
+                    {currentUser.podiumFinishes}
+                  </div>
+                  <div className="text-[9px] font-black uppercase tracking-wider text-cyan-200/80">
+                    Podiums
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-1 border-t border-white/10">
+                <div className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  Championship Cups Won ({currentUser.cupsWon.length})
+                </div>
+                {currentUser.cupsWon.length === 0 ? (
+                  <p className="mt-1 text-[11px] text-slate-500">
+                    Finish 1st overall in any Grand Prix Cup to earn your first cloud Cup Trophy!
+                  </p>
+                ) : (
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {currentUser.cupsWon.map((cupId) => (
+                      <span
+                        key={cupId}
+                        className="inline-flex items-center gap-1 rounded-full border border-amber-400/50 bg-amber-500/20 px-2.5 py-0.5 text-[10px] font-black uppercase text-amber-200"
+                      >
+                        <Trophy className="w-2.5 h-2.5 text-amber-300" />
+                        {cupId.replace(/_/g, " ")}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
             <form onSubmit={handleUpdateCallsign} className="space-y-3">
               <div>
                 <label className="block text-[10px] font-black uppercase tracking-wider text-slate-400">
-                  Verified Creator Callsign
+                  Verified Creator &amp; Leaderboard Callsign
                 </label>
                 <div className="mt-1 flex gap-2">
                   <input

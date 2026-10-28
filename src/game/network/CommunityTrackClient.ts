@@ -7,6 +7,27 @@ export interface CommunityAuthUser {
   id: string;
   email: string;
   callsign: string;
+  racesCompleted: number;
+  firstPlaceWins: number;
+  podiumFinishes: number;
+  cupsWon: string[];
+  favoriteCharacterId: string;
+  favoriteKartId: string;
+}
+
+export interface TrackLeaderboardEntry {
+  entryId: string;
+  trackId: string;
+  trackName: string;
+  userId: string | null;
+  callsign: string;
+  characterId: string;
+  kartId: string;
+  bestRaceMs: number;
+  bestLapMs: number;
+  isOfficialBenchmark: boolean;
+  isMe: boolean;
+  updatedAt: string;
 }
 
 export interface CommunityTrackRecord {
@@ -276,18 +297,26 @@ class CommunityTrackService {
       (user.user_metadata?.full_name as string | undefined)?.trim() ||
       (user.email ? user.email.split("@")[0] : "GutsyRacer").slice(0, 20);
 
+    const defaultProfile: CommunityAuthUser = {
+      id: user.id,
+      email: user.email ?? "",
+      callsign: fallbackCallsign,
+      racesCompleted: 0,
+      firstPlaceWins: 0,
+      podiumFinishes: 0,
+      cupsWon: [],
+      favoriteCharacterId: "aero_vance",
+      favoriteKartId: "apex_striker",
+    };
+
     if (!this.supabase) {
-      return {
-        id: user.id,
-        email: user.email ?? "",
-        callsign: fallbackCallsign,
-      };
+      return defaultProfile;
     }
 
     try {
       const { data } = await this.supabase
         .from("gutsy_racer_profiles")
-        .select("callsign")
+        .select("*")
         .eq("user_id", user.id)
         .maybeSingle();
 
@@ -295,7 +324,13 @@ class CommunityTrackService {
         return {
           id: user.id,
           email: user.email ?? "",
-          callsign: data.callsign,
+          callsign: data.callsign as string,
+          racesCompleted: Number(data.races_completed ?? 0),
+          firstPlaceWins: Number(data.first_place_wins ?? 0),
+          podiumFinishes: Number(data.podium_finishes ?? 0),
+          cupsWon: Array.isArray(data.cups_won) ? (data.cups_won as string[]) : [],
+          favoriteCharacterId: (data.favorite_character_id as string) || "aero_vance",
+          favoriteKartId: (data.favorite_kart_id as string) || "apex_striker",
         };
       }
 
@@ -311,16 +346,11 @@ class CommunityTrackService {
       );
 
       return {
-        id: user.id,
-        email: user.email ?? "",
+        ...defaultProfile,
         callsign: cleanCallsign,
       };
     } catch {
-      return {
-        id: user.id,
-        email: user.email ?? "",
-        callsign: fallbackCallsign,
-      };
+      return defaultProfile;
     }
   }
 
@@ -718,6 +748,161 @@ class CommunityTrackService {
       });
     } catch {
       // Ignore network errors
+    }
+  }
+
+  public async fetchTrackLeaderboard(
+    trackId: string,
+    trackName: string,
+    sortBy: "RACE" | "LAP" = "RACE"
+  ): Promise<TrackLeaderboardEntry[]> {
+    const fallbackBenchmarks: TrackLeaderboardEntry[] = [
+      {
+        entryId: `${trackId}::bench_gold`,
+        trackId,
+        trackName,
+        userId: null,
+        callsign: "Aero Vance (Pro Pace)",
+        characterId: "aero_vance",
+        kartId: "apex_striker",
+        bestRaceMs: 96500,
+        bestLapMs: 31500,
+        isOfficialBenchmark: true,
+        isMe: false,
+        updatedAt: "2026-10-23T00:00:00.000Z",
+      },
+      {
+        entryId: `${trackId}::bench_silver`,
+        trackId,
+        trackName,
+        userId: null,
+        callsign: "Nyx Veloce (Pace)",
+        characterId: "nyx_drift",
+        kartId: "phantom_coupe",
+        bestRaceMs: 100800,
+        bestLapMs: 32900,
+        isOfficialBenchmark: true,
+        isMe: false,
+        updatedAt: "2026-10-23T00:00:00.000Z",
+      },
+      {
+        entryId: `${trackId}::bench_bronze`,
+        trackId,
+        trackName,
+        userId: null,
+        callsign: "Rex Ironclad (Pace)",
+        characterId: "rex_ironclad",
+        kartId: "behemoth_bruiser",
+        bestRaceMs: 105400,
+        bestLapMs: 34400,
+        isOfficialBenchmark: true,
+        isMe: false,
+        updatedAt: "2026-10-23T00:00:00.000Z",
+      },
+    ];
+
+    if (!this.supabase) {
+      return fallbackBenchmarks;
+    }
+
+    try {
+      const orderCol = sortBy === "LAP" ? "best_lap_ms" : "best_race_ms";
+      const { data, error } = await this.supabase
+        .from("gutsy_track_leaderboards")
+        .select("*")
+        .eq("track_id", trackId)
+        .order(orderCol, { ascending: true })
+        .limit(15);
+
+      if (error || !data || data.length === 0) {
+        return fallbackBenchmarks;
+      }
+
+      const myId = this.currentUser?.id ?? null;
+      return data.map((row) => ({
+        entryId: row.entry_id as string,
+        trackId: row.track_id as string,
+        trackName: (row.track_name as string) || trackName,
+        userId: (row.user_id as string | null) ?? null,
+        callsign: (row.callsign as string) || "GutsyRacer",
+        characterId: (row.character_id as string) || "aero_vance",
+        kartId: (row.kart_id as string) || "apex_striker",
+        bestRaceMs: Number(row.best_race_ms ?? 99999),
+        bestLapMs: Number(row.best_lap_ms ?? 33333),
+        isOfficialBenchmark: Boolean(row.is_official_benchmark),
+        isMe: Boolean(myId && row.user_id === myId),
+        updatedAt: row.updated_at as string,
+      }));
+    } catch {
+      return fallbackBenchmarks;
+    }
+  }
+
+  public async submitVerifiedRaceResult(params: {
+    trackId: string;
+    trackName: string;
+    characterId: string;
+    kartId: string;
+    raceMs: number;
+    lapMs: number;
+    rank: number;
+    cupWonId?: string | null;
+  }): Promise<{
+    isNewRacePb?: boolean;
+    isNewLapPb?: boolean;
+    bestRaceMs?: number;
+    bestLapMs?: number;
+    error?: string;
+  }> {
+    if (!this.supabase || !this.currentUser) {
+      return { error: "NOT_SIGNED_IN" };
+    }
+
+    const cleanRaceMs = Math.round(params.raceMs);
+    const cleanLapMs = Math.round(params.lapMs);
+    if (cleanRaceMs < 25000 || cleanLapMs < 8000) {
+      return { error: "Timing outside valid bounds." };
+    }
+
+    try {
+      const { data, error } = await this.supabase.rpc(
+        "submit_verified_race_result",
+        {
+          p_track_id: params.trackId,
+          p_track_name: params.trackName,
+          p_character_id: params.characterId,
+          p_kart_id: params.kartId,
+          p_race_ms: cleanRaceMs,
+          p_lap_ms: cleanLapMs,
+          p_rank: params.rank,
+          p_cup_won_id: params.cupWonId ?? null,
+        }
+      );
+
+      if (error) {
+        return { error: error.message };
+      }
+
+      // Refresh local profile snapshot so Career Trophy Case updates immediately
+      await this.refreshAuthUser();
+
+      const parsed = data as {
+        is_new_race_pb?: boolean;
+        is_new_lap_pb?: boolean;
+        best_race_ms?: number;
+        best_lap_ms?: number;
+      } | null;
+
+      return {
+        isNewRacePb: Boolean(parsed?.is_new_race_pb),
+        isNewLapPb: Boolean(parsed?.is_new_lap_pb),
+        bestRaceMs: Number(parsed?.best_race_ms ?? cleanRaceMs),
+        bestLapMs: Number(parsed?.best_lap_ms ?? cleanLapMs),
+      };
+    } catch (err) {
+      return {
+        error: err instanceof Error ? err.message : "Failed to submit record.",
+      };
     }
   }
 }

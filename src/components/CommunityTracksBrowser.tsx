@@ -13,6 +13,7 @@ import {
   Check,
   UserCheck,
   LogIn,
+  Trophy,
 } from "lucide-react";
 import { CustomTrackDefinition, TrackBiome } from "@/src/types/game";
 import {
@@ -28,6 +29,7 @@ interface CommunityTracksBrowserProps {
   onOpenTrackInStudio: (track: CustomTrackDefinition) => void;
   onOpenBlankStudio: () => void;
   onRequestAuthModal: (reason: string) => void;
+  onOpenLeaderboard?: (track: CustomTrackDefinition) => void;
 }
 
 const BIOME_META: Record<
@@ -57,6 +59,7 @@ export function CommunityTracksBrowser({
   onOpenTrackInStudio,
   onOpenBlankStudio,
   onRequestAuthModal,
+  onOpenLeaderboard,
 }: CommunityTracksBrowserProps) {
   const [tracks, setTracks] = useState<CommunityTrackRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -346,20 +349,35 @@ export function CommunityTracksBrowser({
 
               {/* Upvote, Stats & Action Buttons */}
               <div className="mt-4 pt-3 border-t border-white/10 space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <button
-                    type="button"
-                    data-testid={`upvote-track-btn-${rec.trackId}`}
-                    onClick={() => void handleToggleUpvote(rec)}
-                    className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-black transition cursor-pointer ${
-                      rec.upvotedByMe
-                        ? "border-amber-400 bg-amber-400/25 text-amber-200"
-                        : "border-white/15 bg-slate-950 text-slate-300 hover:border-amber-400/50 hover:text-amber-200"
-                    }`}
-                  >
-                    <ThumbsUp className="w-3.5 h-3.5" />
-                    <span>{rec.upvotesCount}</span>
-                  </button>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      data-testid={`upvote-track-btn-${rec.trackId}`}
+                      onClick={() => void handleToggleUpvote(rec)}
+                      className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-black transition cursor-pointer ${
+                        rec.upvotedByMe
+                          ? "border-amber-400 bg-amber-400/25 text-amber-200"
+                          : "border-white/15 bg-slate-950 text-slate-300 hover:border-amber-400/50 hover:text-amber-200"
+                      }`}
+                    >
+                      <ThumbsUp className="w-3.5 h-3.5" />
+                      <span>{rec.upvotesCount}</span>
+                    </button>
+
+                    {onOpenLeaderboard && (
+                      <button
+                        type="button"
+                        data-testid={`community-leaderboard-btn-${rec.trackId}`}
+                        onClick={() => onOpenLeaderboard(rec.trackDef)}
+                        className="inline-flex items-center gap-1 rounded-xl border border-amber-400/40 bg-amber-500/15 px-2.5 py-1.5 text-[11px] font-black uppercase text-amber-200 hover:bg-amber-500/25 transition cursor-pointer"
+                        title="View Global Top 10 Leaderboard for this circuit"
+                      >
+                        <Trophy className="w-3 h-3 text-amber-300" />
+                        <span>Top 10</span>
+                      </button>
+                    )}
+                  </div>
 
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
                     🏁 {rec.playsCount} RACES
