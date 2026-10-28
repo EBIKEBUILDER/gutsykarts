@@ -165,6 +165,7 @@ export class AnalyticsTracker {
   private supabaseTablesReady = true;
   private lastSchemaError: string | null = null;
   private lastAiLabCloudSyncAt = 0;
+  private pendingAiLabRow: AnalyticsAiLabRow | null = null;
 
   private sessionId: string;
   private peerId: string;
@@ -428,8 +429,8 @@ export class AnalyticsTracker {
     if (totalSec % 5 === 0) {
       this.saveSessionToLocalCache();
     }
-    // Upsert to Supabase at most once every 30 seconds to keep writes minimal
-    if (totalSec > 0 && totalSec % 30 === 0) {
+    // Upsert to Supabase at most once every 3 minutes (180s) to keep cloud writes and API logs minimal
+    if (totalSec > 0 && totalSec % 180 === 0) {
       void this.flushSessionNow();
     }
   }
@@ -680,30 +681,40 @@ export class AnalyticsTracker {
     };
 
     this.saveAiLabToLocalCache(row);
+    this.pendingAiLabRow = row;
 
     if (!this.supabase) return;
     const now = Date.now();
-    if (now - this.lastAiLabCloudSyncAt < 10000) return;
-    this.lastAiLabCloudSyncAt = now;
+    // Throttle cloud upserts during 16x AI training runs to at most once per 60 seconds
+    if (now - this.lastAiLabCloudSyncAt < 60000) return;
+    void this.flushAiLabNow();
+  }
 
-    void (async () => {
-      try {
-        const { error } = await this.supabase!
-          .from("gutsy_analytics_ai_lab")
-          .upsert(row, { onConflict: "build_pass,peer_id" });
-        if (error) {
-          this.handleSupabaseTableError(error.message);
-        } else {
-          this.supabaseTablesReady = true;
-          this.lastSchemaError = null;
-        }
-      } catch {
-        // Ignore transient network errors
+  public async flushAiLabNow(): Promise<void> {
+    const row = this.pendingAiLabRow;
+    if (!row || !this.supabase) return;
+    this.pendingAiLabRow = null;
+    this.lastAiLabCloudSyncAt = Date.now();
+
+    try {
+      const { error } = await this.supabase
+        .from("gutsy_analytics_ai_lab")
+        .upsert(row, { onConflict: "build_pass,peer_id" });
+      if (error) {
+        this.handleSupabaseTableError(error.message);
+      } else {
+        this.supabaseTablesReady = true;
+        this.lastSchemaError = null;
       }
-    })();
+    } catch {
+      // Ignore transient network errors
+    }
   }
 
   public async flushSessionNow(): Promise<void> {
+    if (this.pendingAiLabRow) {
+      void this.flushAiLabNow();
+    }
     if (!this.dirtySession) return;
     this.dirtySession = false;
     this.sessionRow.updated_at = new Date().toISOString();
