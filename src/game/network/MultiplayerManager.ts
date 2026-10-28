@@ -239,6 +239,8 @@ export class MultiplayerManager {
   private currentRoomSummary: OnlineRoomSummary | null = null;
 
   private lobbyHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private lastSupabaseLobbyBroadcastAt = 0;
+  private lastSupabaseRelayTickAt = 0;
   private lastHostPacketTime = 0;
   private hostMonitorTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
@@ -267,6 +269,12 @@ export class MultiplayerManager {
     kartId: string
   ): void {
     const trimmed = playerName.trim().slice(0, 18);
+    const nextName = trimmed.length > 0 ? trimmed : this.playerName;
+    const changed =
+      nextName !== this.playerName ||
+      characterId !== this.characterId ||
+      kartId !== this.kartId;
+
     if (trimmed.length > 0) {
       this.playerName = trimmed;
       try {
@@ -277,7 +285,9 @@ export class MultiplayerManager {
     }
     this.characterId = characterId;
     this.kartId = kartId;
-    this.broadcastLobbyPresence();
+    if (changed) {
+      this.broadcastLobbyPresence(true);
+    }
   }
 
   private getIceServers(): RTCIceServer[] {
@@ -366,6 +376,23 @@ export class MultiplayerManager {
               // Ignore malformed presence state
             }
           })
+          .on("presence", { event: "join" }, ({ key }) => {
+            if (this.disposed || !key || key === this.peerId) return;
+            // When a new player enters the lobby while we are hosting a room, announce our room so they see it immediately
+            if (this.isHost && this.activeRoomId) {
+              this.broadcastLobbyPresence(true);
+            }
+          })
+          .on("presence", { event: "leave" }, ({ key }) => {
+            if (this.disposed || !key || key === this.peerId) return;
+            this.onlinePlayersMap.delete(key);
+            for (const [roomId, room] of this.openRoomsMap.entries()) {
+              if (room.hostPeerId === key) {
+                this.openRoomsMap.delete(roomId);
+              }
+            }
+            this.pruneAndNotifyLobby();
+          })
           .on("broadcast", { event: "lobby_bus" }, ({ payload }) => {
             if (this.disposed || !payload) return;
             this.handleLobbyBusPayload(payload);
@@ -379,7 +406,7 @@ export class MultiplayerManager {
               } catch {
                 // Ignore track error
               }
-              this.broadcastLobbyPresence();
+              this.broadcastLobbyPresence(true);
               this.pruneAndNotifyLobby();
             } else if (
               status === "CHANNEL_ERROR" ||
@@ -402,15 +429,15 @@ export class MultiplayerManager {
 
     // Seed our own presence immediately
     this.onlinePlayersMap.set(this.peerId, this.buildLocalPresence());
-    this.broadcastLobbyPresence();
+    this.broadcastLobbyPresence(true);
     this.pruneAndNotifyLobby();
 
-    // Periodic heartbeat (every 1.4s) to keep presence & open rooms fresh
+    // Periodic heartbeat (every 2.5s locally; throttled to every 8s on Supabase) to keep presence & open rooms fresh without wasting Realtime quota
     this.lobbyHeartbeatTimer = setInterval(() => {
       if (this.disposed) return;
-      this.broadcastLobbyPresence();
+      this.broadcastLobbyPresence(false);
       this.pruneAndNotifyLobby();
-    }, 1400);
+    }, 2500);
   }
 
   private buildLocalPresence(): OnlinePlayerPresence {
@@ -434,6 +461,28 @@ export class MultiplayerManager {
 
   public updateHostedRoomSummary(summary: Omit<OnlineRoomSummary, "roomId" | "hostPeerId" | "hostName" | "updatedAt">): void {
     if (!this.activeRoomId || !this.isHost) return;
+    const prev = this.currentRoomSummary;
+    const prevSlotsSig = prev
+      ? prev.slotSummaries
+          .map((s) => `${s.slotIndex}:${s.isHuman ? 1 : 0}:${s.playerName}:${s.characterId}:${s.kartId}`)
+          .join("|")
+      : "";
+    const nextSlotsSig = summary.slotSummaries
+      .map((s) => `${s.slotIndex}:${s.isHuman ? 1 : 0}:${s.playerName}:${s.characterId}:${s.kartId}`)
+      .join("|");
+
+    const hasMeaningfulChange =
+      !prev ||
+      prev.cupId !== summary.cupId ||
+      prev.trackIdx !== summary.trackIdx ||
+      prev.trackName !== summary.trackName ||
+      prev.racePhase !== summary.racePhase ||
+      prev.currentLap !== summary.currentLap ||
+      prev.humanCount !== summary.humanCount ||
+      prev.aiDifficulty !== summary.aiDifficulty ||
+      prev.isDedicatedServer !== this.isDedicatedServer ||
+      prevSlotsSig !== nextSlotsSig;
+
     const fullSummary: OnlineRoomSummary = {
       ...summary,
       isDedicatedServer: this.isDedicatedServer,
@@ -444,7 +493,7 @@ export class MultiplayerManager {
     };
     this.currentRoomSummary = fullSummary;
     this.openRoomsMap.set(this.activeRoomId, fullSummary);
-    this.broadcastLobbyPresence();
+    this.broadcastLobbyPresence(hasMeaningfulChange);
     this.pruneAndNotifyLobby();
   }
 
@@ -473,11 +522,12 @@ export class MultiplayerManager {
       this.roomPeers = others;
     }
 
-    this.broadcastLobbyPresence();
+    this.broadcastLobbyPresence(true);
     this.pruneAndNotifyLobby();
   }
 
-  private broadcastLobbyPresence(): void {
+  private broadcastLobbyPresence(forceSupabase = false): void {
+    const now = Date.now();
     const presence = this.buildLocalPresence();
     this.onlinePlayersMap.set(this.peerId, presence);
 
@@ -488,7 +538,7 @@ export class MultiplayerManager {
         isDedicatedServer: this.isDedicatedServer,
         hostPeerId: this.peerId,
         hostName: this.playerName,
-        updatedAt: Date.now(),
+        updatedAt: now,
       };
       this.openRoomsMap.set(this.activeRoomId, roomToAnnounce);
     }
@@ -507,8 +557,10 @@ export class MultiplayerManager {
 
     if (
       this.supabaseLobbyChannel &&
-      this.backendStatus === "SUPABASE_ONLINE"
+      this.backendStatus === "SUPABASE_ONLINE" &&
+      (forceSupabase || now - this.lastSupabaseLobbyBroadcastAt >= 8000)
     ) {
+      this.lastSupabaseLobbyBroadcastAt = now;
       try {
         this.supabaseLobbyChannel
           .send({
@@ -560,7 +612,7 @@ export class MultiplayerManager {
     this.onlinePlayersMap.set(this.peerId, this.buildLocalPresence());
 
     for (const [peerId, p] of this.onlinePlayersMap.entries()) {
-      if (peerId !== this.peerId && now - p.updatedAt > 5200) {
+      if (peerId !== this.peerId && now - p.updatedAt > 22000) {
         this.onlinePlayersMap.delete(peerId);
       }
     }
@@ -568,18 +620,18 @@ export class MultiplayerManager {
     for (const [roomId, r] of this.openRoomsMap.entries()) {
       if (
         !(this.isHost && this.activeRoomId === roomId) &&
-        now - r.updatedAt > 5200
+        now - r.updatedAt > 22000
       ) {
         this.openRoomsMap.delete(roomId);
       }
     }
 
-    // Host-side peer inactivity watchdog: if a connected player locks their phone or drops offline (> 3.2s silent), replace them with AI immediately
+    // Host-side peer inactivity watchdog: if a connected player locks their phone or drops offline (> 7.0s silent), replace them with AI immediately
     if (this.isHost && this.activeRoomId) {
       const timedOutPeers = this.roomPeers.filter((p) => {
         if (p.peerId === this.peerId) return false;
         const lastSeen = this.lastPeerActivityTime.get(p.peerId) ?? p.joinedAt;
-        return now - lastSeen > 3200;
+        return now - lastSeen > 7000;
       });
 
       for (const stalePeer of timedOutPeers) {
@@ -717,7 +769,7 @@ export class MultiplayerManager {
     if (!keepExisting) {
       this.connectRoomChannels(roomId);
     }
-    this.broadcastLobbyPresence();
+    this.broadcastLobbyPresence(true);
     this.pruneAndNotifyLobby();
     return roomId;
   }
@@ -763,7 +815,7 @@ export class MultiplayerManager {
 
     // Start Host Migration Watchdog
     this.startHostMigrationMonitor();
-    this.broadcastLobbyPresence();
+    this.broadcastLobbyPresence(true);
   }
 
   public leaveCurrentRoom(notifyPeers = true): void {
@@ -771,18 +823,20 @@ export class MultiplayerManager {
     const leavingRoomId = this.activeRoomId;
 
     if (notifyPeers) {
-      this.sendRoomMessage(
-        {
-          type: "PEER_LEAVE",
-          senderId: this.peerId,
-          slotIndex: this.localSlotIndex,
-        },
-        true
-      );
-
       const remotePeerCount = this.roomPeers.filter(
         (p) => p.peerId !== this.peerId
       ).length;
+      if (!this.isHost || remotePeerCount > 0) {
+        this.sendRoomMessage(
+          {
+            type: "PEER_LEAVE",
+            senderId: this.peerId,
+            slotIndex: this.localSlotIndex,
+          },
+          true
+        );
+      }
+
       if (this.isHost && remotePeerCount === 0) {
         const closePacket = {
           kind: "ROOM_CLOSED",
@@ -858,7 +912,7 @@ export class MultiplayerManager {
     this.lastHostSeq = -1;
     this.lastClientSeqByPeer.clear();
 
-    this.broadcastLobbyPresence();
+    this.broadcastLobbyPresence(true);
     this.pruneAndNotifyLobby();
   }
 
@@ -1062,14 +1116,59 @@ export class MultiplayerManager {
     }
   }
 
+  public hasRemoteRoomPeers(): boolean {
+    if (!this.activeRoomId) return false;
+    if (this.isHost) {
+      return this.roomPeers.some((p) => p.peerId !== this.peerId);
+    }
+    return Boolean(this.hostPeerId && this.hostPeerId !== this.peerId);
+  }
+
   public sendRoomMessage(msg: RoomWireMessage, reliable = false): void {
     if (!this.activeRoomId) return;
 
-    const serialized = JSON.stringify(msg);
-    let allPeersReachedViaWebRtc = this.rtcPeers.size > 0;
+    // 1. Always post to Local Cross-Tab BroadcastChannel (zero network overhead)
+    try {
+      this.localRoomBus?.postMessage(msg);
+    } catch {
+      // Ignore
+    }
 
-    for (const bundle of this.rtcPeers.values()) {
-      const ch = reliable ? bundle.reliableChannel : bundle.fastChannel;
+    const remotePeerIds = this.isHost
+      ? this.roomPeers
+          .filter((p) => p.peerId !== this.peerId)
+          .map((p) => p.peerId)
+      : this.hostPeerId && this.hostPeerId !== this.peerId
+      ? [this.hostPeerId]
+      : [];
+
+    const isMembershipControl =
+      msg.type === "JOIN_REQUEST" ||
+      msg.type === "WELCOME_SNAPSHOT" ||
+      msg.type === "CLAIM_AI_SLOT" ||
+      msg.type === "SLOT_TAKEOVER" ||
+      msg.type === "STEP_OUT_SPECTATE" ||
+      msg.type === "PEER_LEAVE" ||
+      msg.type === "HOST_MIGRATED";
+
+    // Never send room traffic over WebRTC or Supabase when no remote peers are in the room
+    if (remotePeerIds.length === 0 && !isMembershipControl) {
+      return;
+    }
+    if (this.isHost && remotePeerIds.length === 0 && msg.type === "PEER_LEAVE") {
+      return;
+    }
+
+    const serialized = JSON.stringify(msg);
+    let allPeersReachedViaWebRtc = remotePeerIds.length > 0;
+
+    for (const remotePeerId of remotePeerIds) {
+      const bundle = this.rtcPeers.get(remotePeerId);
+      const ch = bundle
+        ? reliable
+          ? bundle.reliableChannel
+          : bundle.fastChannel
+        : null;
       if (ch && ch.readyState === "open") {
         try {
           ch.send(serialized);
@@ -1081,18 +1180,23 @@ export class MultiplayerManager {
       }
     }
 
-    // Always mirror on Local BroadcastChannel (zero overhead) and on Supabase Broadcast if any peer lacks an open WebRTC channel or for reliable control events
-    try {
-      this.localRoomBus?.postMessage(msg);
-    } catch {
-      // Ignore
-    }
-
+    // Only use Supabase Realtime if WebRTC could not reach all remote peers, or for membership/handshaking control events
     if (
-      (reliable || !allPeersReachedViaWebRtc) &&
+      (isMembershipControl || !allPeersReachedViaWebRtc) &&
       this.supabaseRoomChannel &&
       this.backendStatus === "SUPABASE_ONLINE"
     ) {
+      if (
+        msg.type === "HOST_WORLD_TICK" ||
+        msg.type === "CLIENT_KART_TICK"
+      ) {
+        const now = Date.now();
+        if (now - this.lastSupabaseRelayTickAt < 100) {
+          return;
+        }
+        this.lastSupabaseRelayTickAt = now;
+      }
+
       try {
         this.supabaseRoomChannel
           .send({
@@ -1338,7 +1442,7 @@ export class MultiplayerManager {
         },
         true
       );
-      this.broadcastLobbyPresence();
+      this.broadcastLobbyPresence(true);
     }
 
     this.callbacks.onHostMigrated?.({
@@ -1360,7 +1464,7 @@ export class MultiplayerManager {
     elapsedRaceMs: number;
     slots: KartNetState[];
   }): void {
-    if (!this.activeRoomId || !this.isHost) return;
+    if (!this.activeRoomId || !this.isHost || !this.hasRemoteRoomPeers()) return;
     this.sendRoomMessage(
       {
         type: "HOST_WORLD_TICK",
@@ -1377,7 +1481,7 @@ export class MultiplayerManager {
   }
 
   public broadcastClientKartTick(slot: KartNetState): void {
-    if (!this.activeRoomId || this.isHost) return;
+    if (!this.activeRoomId || this.isHost || !this.hasRemoteRoomPeers()) return;
     this.sendRoomMessage(
       {
         type: "CLIENT_KART_TICK",
@@ -1390,7 +1494,7 @@ export class MultiplayerManager {
   }
 
   public broadcastClientReady(slotIndex: number): void {
-    if (!this.activeRoomId) return;
+    if (!this.activeRoomId || !this.hasRemoteRoomPeers()) return;
     this.sendRoomMessage(
       {
         type: "CLIENT_READY",
@@ -1431,7 +1535,7 @@ export class MultiplayerManager {
   }
 
   public broadcastCollisionImpulse(payload: NetCollisionImpulsePayload): void {
-    if (!this.activeRoomId) return;
+    if (!this.activeRoomId || !this.hasRemoteRoomPeers()) return;
     const eventId = `col_${this.peerId}_${this.outgoingSeq++}`;
     this.processedEventIds.add(eventId);
     this.sendRoomMessage(
@@ -1446,7 +1550,7 @@ export class MultiplayerManager {
   }
 
   public broadcastItemActivate(payload: NetItemActivatePayload): void {
-    if (!this.activeRoomId) return;
+    if (!this.activeRoomId || !this.hasRemoteRoomPeers()) return;
     const eventId = `item_${this.peerId}_${this.outgoingSeq++}`;
     this.processedEventIds.add(eventId);
     this.sendRoomMessage(
@@ -1461,7 +1565,7 @@ export class MultiplayerManager {
   }
 
   public broadcastItemBoxPickup(payload: NetItemBoxPickupPayload): void {
-    if (!this.activeRoomId) return;
+    if (!this.activeRoomId || !this.hasRemoteRoomPeers()) return;
     const eventId = `box_${this.peerId}_${this.outgoingSeq++}`;
     this.processedEventIds.add(eventId);
     this.sendRoomMessage(

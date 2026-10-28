@@ -1,4 +1,4 @@
-import { createClient, RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import {
   AiCharacterBalanceStat,
   AiPolicyWeights,
@@ -161,10 +161,10 @@ function detectDeviceType(): "desktop" | "mobile" {
 
 export class AnalyticsTracker {
   private supabase: SupabaseClient | null = null;
-  private telemetryChannel: RealtimeChannel | null = null;
   private supabaseConfigured = false;
   private supabaseTablesReady = true;
   private lastSchemaError: string | null = null;
+  private lastAiLabCloudSyncAt = 0;
 
   private sessionId: string;
   private peerId: string;
@@ -184,9 +184,6 @@ export class AnalyticsTracker {
     aiDifficulty: string;
     humanCount: number;
   } | null = null;
-
-  private remoteRealtimeAiLabs = new Map<string, AnalyticsAiLabRow>();
-  private remoteRealtimeSessions = new Map<string, AnalyticsSessionRow>();
 
   constructor() {
     this.sessionId = getOrCreateSessionId();
@@ -281,31 +278,6 @@ export class AnalyticsTracker {
       this.supabase = createClient(supabaseUrl, supabaseKey, {
         auth: { persistSession: false, autoRefreshToken: false },
       });
-
-      // Also attach a lightweight Realtime channel so active machines (e.g. AI Sim PC + Dev PC)
-      // automatically exchange live AI Lab & Session telemetry even before SQL tables are created!
-      const channel = this.supabase.channel("gutsykarts:telemetry_v1", {
-        config: {
-          presence: { key: this.sessionId },
-          broadcast: { self: false },
-        },
-      });
-
-      channel
-        .on("broadcast", { event: "ai_lab_upsert" }, ({ payload }) => {
-          if (!payload || !payload.build_pass || !payload.peer_id) return;
-          const row = payload as AnalyticsAiLabRow;
-          this.remoteRealtimeAiLabs.set(`${row.build_pass}::${row.peer_id}`, row);
-          this.saveAiLabToLocalCache(row);
-        })
-        .on("broadcast", { event: "session_upsert" }, ({ payload }) => {
-          if (!payload || !payload.session_id) return;
-          const row = payload as AnalyticsSessionRow;
-          this.remoteRealtimeSessions.set(row.session_id, row);
-        })
-        .subscribe();
-
-      this.telemetryChannel = channel;
     } catch {
       this.supabase = null;
     }
@@ -709,16 +681,11 @@ export class AnalyticsTracker {
 
     this.saveAiLabToLocalCache(row);
 
-    // Broadcast live over Realtime channel for instant cross-computer visibility
-    if (this.telemetryChannel) {
-      void this.telemetryChannel.send({
-        type: "broadcast",
-        event: "ai_lab_upsert",
-        payload: row,
-      });
-    }
-
     if (!this.supabase) return;
+    const now = Date.now();
+    if (now - this.lastAiLabCloudSyncAt < 10000) return;
+    this.lastAiLabCloudSyncAt = now;
+
     void (async () => {
       try {
         const { error } = await this.supabase!
@@ -741,14 +708,6 @@ export class AnalyticsTracker {
     this.dirtySession = false;
     this.sessionRow.updated_at = new Date().toISOString();
     this.saveSessionToLocalCache();
-
-    if (this.telemetryChannel) {
-      void this.telemetryChannel.send({
-        type: "broadcast",
-        event: "session_upsert",
-        payload: this.sessionRow,
-      });
-    }
 
     if (!this.supabase) return;
     try {
@@ -837,11 +796,8 @@ export class AnalyticsTracker {
     const racesMap = new Map<string, AnalyticsHumanRaceRow>();
     const aiLabMap = new Map<string, AnalyticsAiLabRow>();
 
-    // 1. Seed with local cache & realtime peer snapshots
+    // 1. Seed with local cache
     for (const s of Object.values(localCache.sessionsById)) {
-      sessionsMap.set(s.session_id, s);
-    }
-    for (const s of this.remoteRealtimeSessions.values()) {
       sessionsMap.set(s.session_id, s);
     }
     sessionsMap.set(this.sessionRow.session_id, { ...this.sessionRow });
@@ -851,9 +807,6 @@ export class AnalyticsTracker {
     }
 
     for (const a of Object.values(localCache.aiLabByKey)) {
-      aiLabMap.set(`${a.build_pass}::${a.peer_id}`, a);
-    }
-    for (const a of this.remoteRealtimeAiLabs.values()) {
       aiLabMap.set(`${a.build_pass}::${a.peer_id}`, a);
     }
 

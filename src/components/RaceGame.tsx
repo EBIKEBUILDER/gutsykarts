@@ -2866,9 +2866,14 @@ export const RaceGame: React.FC = () => {
 
       const focusKart = getFocusKart(sorted);
 
-      // 25Hz Network Tick Broadcast (every 40ms) when in an Online Room
+      // 25Hz Network Tick Broadcast (every 40ms) when in an Online Room with connected remote peers
       const now = performance.now();
-      if (isOnlineSession && mp && now - lastNetTickTime >= 40) {
+      if (
+        isOnlineSession &&
+        mp &&
+        mp.hasRemoteRoomPeers() &&
+        now - lastNetTickTime >= 40
+      ) {
         lastNetTickTime = now;
         if (mp.isHost) {
           mp.broadcastHostWorldTick({
@@ -2882,8 +2887,8 @@ export const RaceGame: React.FC = () => {
         }
       }
 
-      // Update Hosted Lobby Room Summary (or send Client Spectator Heartbeat) every 900ms
-      if (isOnlineSession && mp && now - lastLobbySummaryTime >= 900) {
+      // Update Hosted Lobby Room Summary (or send Client Spectator Heartbeat) every 2500ms
+      if (isOnlineSession && mp && now - lastLobbySummaryTime >= 2500) {
         lastLobbySummaryTime = now;
         if (mp.isHost) {
           const aiCount = racers.filter((r) => r.controlMode === "AI").length;
